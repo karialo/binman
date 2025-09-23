@@ -22,7 +22,7 @@ Version in this README: **v1.2.1**
 ## Quick install (of BinMan itself)
 
 ```
-git clone <your repo url> ~/Projects/BinMan
+git clone https://github.com/karialo/binman ~/Projects/BinMan
 cd ~/Projects/BinMan
 chmod +x binman.sh
 ./binman.sh install binman.sh
