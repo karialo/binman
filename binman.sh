@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # binman.sh — Personal CLI utility manager for your ~/bin toys
 # Manage install/uninstall/list/update for single-file scripts AND multi-file apps.
-# Includes a TUI menu and a generator for new scripts/apps.
+# Includes a TUI menu, a generator, and an interactive wizard.
 
 set -Eeuo pipefail
 shopt -s nullglob
 
 SCRIPT_NAME="binman"
-VERSION="1.2.1"
+VERSION="1.3.0"
 BIN_DIR="${HOME}/.local/bin"
 APP_STORE="${HOME}/.local/share/binman/apps"
 COPY_MODE="copy"   # or link
@@ -27,7 +27,7 @@ usage(){ cat <<USAGE
 ${SCRIPT_NAME} v${VERSION}
 Manage your personal CLI scripts in ${BIN_DIR} and apps in ${APP_STORE}
 
-USAGE: ${SCRIPT_NAME} <install|uninstall|list|update|doctor|new|tui|version|help> [args] [options]
+USAGE: ${SCRIPT_NAME} <install|uninstall|list|update|doctor|new|wizard|tui|version|help> [args] [options]
 
 Options:
   --from DIR       Operate on all executable files in DIR
@@ -48,6 +48,7 @@ Examples:
   ${SCRIPT_NAME} list
   ${SCRIPT_NAME} doctor --fix-path
   ${SCRIPT_NAME} new smartassapp.py
+  ${SCRIPT_NAME} wizard                           # interactive project generator
   ${SCRIPT_NAME} tui
 USAGE
 }
@@ -155,7 +156,7 @@ op_update(){
   [[ ${#targets[@]} -gt 0 ]] && FORCE=1 op_install "${targets[@]}" || warn "Nothing to reinstall"
 }
 
-# ---- Generator (fixed Python scaffold) ----
+# ---- Generator (bash/python) ----
 new_cmd(){
   local name="$1"; shift || true
   local lang="bash" make_app=0 target_dir="$PWD"
@@ -235,6 +236,146 @@ PY
   fi
 }
 
+# ---- Wizard (interactive project creator) ----
+new_wizard(){
+  say ""
+  ok "🧙  BinMan Project Wizard"
+  say "Press Enter to accept [brackets] defaults."
+
+  # Name
+  local name
+  read -rp "Project name (no spaces) [MyTool]: " name
+  name=${name:-MyTool}
+
+  # Single vs App
+  local kind
+  read -rp "Type: (s)ingle-file or (a)pp? [a]: " kind
+  kind=${kind:-a}
+  [[ "${kind,,}" =~ ^s ]] && kind="single" || kind="app"
+
+  # Language
+  local lang
+  read -rp "Language: (b)ash or (p)ython? [b]: " lang
+  lang=${lang:-b}
+  [[ "${lang,,}" =~ ^p ]] && lang="python" || lang="bash"
+
+  # Target directory
+  local target_dir="$PWD" _td
+  read -rp "Create in directory [${target_dir}]: " _td
+  [[ -n "$_td" ]] && target_dir="$_td"
+  mkdir -p "$target_dir"
+
+  # Description + Author
+  local desc author
+  read -rp "Short description [A neat little tool]: " desc
+  desc=${desc:-A neat little tool}
+  read -rp "Author [${USER}]: " author
+  author=${author:-$USER}
+
+  # Generate via new_cmd
+  say ""; ok "Generating…"
+  local filename path
+  if [[ "$kind" == "single" ]]; then
+    filename="$name"
+    [[ "$lang" == "bash" ]] && [[ "$filename" != *.sh ]] && filename="${filename}.sh"
+    [[ "$lang" == "python" ]] && [[ "$filename" != *.py ]] && filename="${filename}.py"
+    new_cmd "$filename" --lang "$lang" --dir "$target_dir"
+    path="${target_dir}/${filename}"
+
+    # README
+    cat > "${target_dir}/README.md" <<EOF
+# ${name}
+
+${desc}
+
+Author: ${author}
+
+## Usage
+
+\`\`\`
+${name%.*} [args]
+\`\`\`
+EOF
+    ok "README.md created"
+  else
+    new_cmd "$name" --app --lang "$lang" --dir "$target_dir"
+    path="${target_dir}/${name}"
+
+    # README
+    cat > "${path}/README.md" <<EOF
+# ${name}
+
+${desc}
+
+Author: ${author}
+
+## Layout
+
+\`\`\`
+${name}/
+├─ bin/${name}    # entrypoint
+├─ src/           # your modules
+└─ VERSION
+\`\`\`
+
+## Run
+
+\`\`\`
+${name} [args]
+\`\`\`
+EOF
+    ok "README.md created"
+  fi
+
+  # Install now?
+  say ""
+  local install_now="y" link_mode="n"
+  read -rp "Install now? (y/N) [y]: " install_now
+  install_now=${install_now:-y}
+  if [[ "${install_now,,}" == "y" ]]; then
+    read -rp "Use symlink instead of copy? (y/N) [n]: " link_mode
+    link_mode=${link_mode:-n}
+    local saved_mode="$COPY_MODE"
+    [[ "${link_mode,,}" == "y" ]] && COPY_MODE="link" || COPY_MODE="copy"
+    op_install "$path"
+    COPY_MODE="$saved_mode"
+  fi
+
+  # Git init with gitprep?
+  say ""
+  local do_git="n"
+  read -rp "Initialize a git repo here with gitprep? (y/N) [n]: " do_git
+  do_git=${do_git:-n}
+  if [[ "${do_git,,}" == "y" ]]; then
+    if exists gitprep; then
+      local gp_branch="main" gp_remote="" gp_push="n"
+      read -rp "Default branch name [main]: " gp_branch; gp_branch=${gp_branch:-main}
+      read -rp "Remote (git@... or https://...) [blank to skip]: " gp_remote
+      read -rp "Push after setup? (y/N) [n]: " gp_push; gp_push=${gp_push:-n}
+
+      if [[ -d "$path" && -d "$path/.git" ]]; then
+        warn "Looks like a repo already exists in $path; skipping gitprep."
+      else
+        (
+          # cd into the project root
+          if [[ "$kind" == "app" ]]; then cd "$path"; else cd "$target_dir"; fi
+          if [[ -n "$gp_remote" && "${gp_push,,}" == "y" ]]; then
+            gitprep --branch "$gp_branch" --remote "$gp_remote" --push
+          elif [[ -n "$gp_remote" ]]; then
+            gitprep --branch "$gp_branch" --remote "$gp_remote"
+          else
+            gitprep --branch "$gp_branch"
+          fi
+        )
+      fi
+    else
+      warn "gitprep not found; skipping git init (install with: binman install gitprep.sh)"
+    fi
+  fi
+
+  ok "Wizard complete. Happy hacking, ${author}! ✨"
+}
+
 # ---- Banner ----
 print_banner(){
   tput clear || clear
@@ -256,7 +397,7 @@ EOF
 binman_tui(){
   while :; do
     print_banner
-    echo "1) Install  2) Uninstall  3) List  4) Doctor  5) New  q) Quit"
+    echo "1) Install  2) Uninstall  3) List  4) Doctor  5) New  6) Wizard  q) Quit"
     read -rp "Choice: " c
     case "$c" in
       1) read -rp "File/dir: " f; op_install "$f"; read -rp "Enter...";;
@@ -264,7 +405,9 @@ binman_tui(){
       3) op_list; read -rp "Enter...";;
       4) op_doctor; read -rp "Enter...";;
       5) read -rp "Name: " n; new_cmd "$n"; read -rp "Enter...";;
+      6) new_wizard; read -rp "Enter...";;
       q|Q) exit 0;;
+      *) warn "Unknown choice: $c"; sleep 0.7;;
     esac
   done
 }
@@ -278,6 +421,7 @@ case "$ACTION" in
   doctor) op_doctor;;
   update) op_update "$@";;
   new) new_cmd "$@";;
+  wizard) new_wizard;;
   tui|"") binman_tui;;
   version) say "${SCRIPT_NAME} v${VERSION}";;
   help|*) usage;;
