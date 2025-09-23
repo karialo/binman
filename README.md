@@ -153,6 +153,11 @@ rehash 2>/dev/null || hash -r 2>/dev/null || true
 
 ## Troubleshooting
 
+- **TRY THIS FIRST**
+
+- **If installed** → binman -h
+- **If NOT installed** → ./binman.sh -h
+
 - **command not found** → check PATH includes `~/.local/bin` + rehash.
 - **permission denied** → `chmod +x` before install.
 - **app won’t install** → must contain `bin/<name>`.
