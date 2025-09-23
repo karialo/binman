@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # binman.sh — Personal CLI utility manager for your ~/bin toys
 # Manage install/uninstall/list/update for single-file scripts AND multi-file apps.
-# Includes a TUI menu, a generator, and an interactive wizard.
+# Includes a TUI menu, a generator, an interactive wizard, and backup/restore.
 
 set -Eeuo pipefail
 shopt -s nullglob
 
 SCRIPT_NAME="binman"
-VERSION="1.3.0"
+VERSION="1.4.0"
 BIN_DIR="${HOME}/.local/bin"
 APP_STORE="${HOME}/.local/share/binman/apps"
 COPY_MODE="copy"   # or link
@@ -27,16 +27,20 @@ usage(){ cat <<USAGE
 ${SCRIPT_NAME} v${VERSION}
 Manage your personal CLI scripts in ${BIN_DIR} and apps in ${APP_STORE}
 
-USAGE: ${SCRIPT_NAME} <install|uninstall|list|update|doctor|new|wizard|tui|version|help> [args] [options]
+USAGE: ${SCRIPT_NAME} <install|uninstall|list|update|doctor|new|wizard|tui|backup|restore|version|help> [args] [options]
+        ${SCRIPT_NAME} --backup [FILE]
+        ${SCRIPT_NAME} --restore FILE [--force]
 
 Options:
   --from DIR       Operate on all executable files in DIR
   --link           Symlink instead of copying
-  --force          Overwrite existing files in bin/app store
+  --force          Overwrite existing files in bin/app store and during restore
   --git DIR        For update: git pull in DIR before install
   --bin DIR        Override bin directory (default: ${BIN_DIR})
   --apps DIR       Override apps directory (default: ${APP_STORE})
   --fix-path       (doctor) Append ~/.local/bin to zsh PATH (~/.zshrc & ~/.zprofile)
+  --backup [FILE]  Create an archive of BIN_DIR & APP_STORE (default: binman_backup-YYYYmmdd-HHMMSS.zip)
+  --restore FILE   Restore from an archive into BIN_DIR & APP_STORE (respecting --force)
 
 new (generator) options:
   ${SCRIPT_NAME} new <name[.sh|.py]> [--app] [--lang bash|python] [--dir DIR]
@@ -50,6 +54,10 @@ Examples:
   ${SCRIPT_NAME} new smartassapp.py
   ${SCRIPT_NAME} wizard                           # interactive project generator
   ${SCRIPT_NAME} tui
+  ${SCRIPT_NAME} backup                           # create timestamped zip in CWD
+  ${SCRIPT_NAME} --backup custom.zip
+  ${SCRIPT_NAME} restore binman_backup-*.zip
+  ${SCRIPT_NAME} --restore backup.tgz --force
 USAGE
 }
 
@@ -117,7 +125,7 @@ op_install(){
     if [[ -d "$src" ]]; then _install_app "$src"; count=$((count+1)); continue; fi
     local base=$(basename "$src"); local dst="$BIN_DIR/${base%.*}"
     [[ -f "$src" ]] || { warn "Skip (not a file): $src"; continue; }
-    [[ -e "$dst" && $FORCE -ne 1 ]] && { warn "Exists: $(basename "$dst")"; continue; }
+    [[ -e "$dst" && $FORCE -ne 1 ]] && { warn "Exists: $(basename "$dst") (use --force to overwrite)"; continue; }
     [[ "$COPY_MODE" == "link" ]] && ln -sf "$src" "$dst" || { cp "$src" "$dst"; chmod +x "$dst"; }
     ok "Installed: $dst (v$(script_version "$src"))"; count=$((count+1))
   done
@@ -148,12 +156,166 @@ op_doctor(){
   ensure_bin; ensure_apps
   say "BIN_DIR: $BIN_DIR"; say "APP_STORE: $APP_STORE"
   in_path && ok "PATH ok" || warn "PATH missing ${BIN_DIR}"
+  exists zip   && ok "zip: present"   || warn "zip: not found (fallback to .tar.gz)"
+  exists unzip && ok "unzip: present" || warn "unzip: not found (needed to restore .zip)"
+  exists tar   && ok "tar: present"   || warn "tar: not found (needed to restore .tar.gz)"
 }
 
 op_update(){
   [[ -n "$GIT_DIR" && -d "$GIT_DIR/.git" ]] && (cd "$GIT_DIR" && git pull --rebase --autostash)
   local targets=("$@"); [[ -n "$FROM_DIR" ]] && mapfile -t targets < <(list_targets)
   [[ ${#targets[@]} -gt 0 ]] && FORCE=1 op_install "${targets[@]}" || warn "Nothing to reinstall"
+}
+
+# ---- Backup/Restore ----
+_backup_filename_default(){
+  local ext="$1"
+  local ts
+  ts=$(date +%Y%m%d-%H%M%S)
+  echo "binman_backup-${ts}.${ext}"
+}
+
+op_backup(){
+  ensure_bin; ensure_apps
+  local prefer_zip=1
+  local ext zipcmd unzipcmd
+  if exists zip && exists unzip; then
+    ext="zip"
+  else
+    prefer_zip=0
+    ext="tar.gz"
+    warn "zip/unzip not fully available; using .tar.gz"
+  fi
+
+  local outfile="$1"
+  if [[ -z "${outfile:-}" ]]; then
+    outfile="$(_backup_filename_default "$ext")"
+  else
+    # normalize extension
+    if [[ "$outfile" != *.zip && "$outfile" != *.tar.gz && "$outfile" != *.tgz ]]; then
+      outfile="${outfile}.${ext}"
+    fi
+  fi
+
+  local tmp
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+
+  mkdir -p "$tmp"/{bin,apps,meta}
+  # Copy with attributes; don't fail if empty
+  [[ -d "$BIN_DIR" ]]  && cp -a "$BIN_DIR"/.  "$tmp/bin"  2>/dev/null || true
+  [[ -d "$APP_STORE" ]]&& cp -a "$APP_STORE"/. "$tmp/apps" 2>/dev/null || true
+
+  # Metadata
+  cat > "$tmp/meta/info.txt" <<EOF
+Created: $(iso_now)
+BinMan:  ${SCRIPT_NAME} v${VERSION}
+BIN_DIR: ${BIN_DIR}
+APP_STORE: ${APP_STORE}
+Host: $(uname -a)
+EOF
+
+  if [[ $prefer_zip -eq 1 ]]; then
+    (cd "$tmp" && zip -qr "../$outfile" bin apps meta)
+  else
+    (cd "$tmp" && tar -czf "../$outfile" bin apps meta)
+  fi
+
+  local abs_out
+  abs_out="$(cd "$(dirname "$tmp/../$outfile")" && pwd)/$(basename "$outfile")"
+  ok "Backup created: ${abs_out}"
+  say "Contains: bin ($(ls -1 "$tmp/bin" 2>/dev/null | wc -l || echo 0) items), apps ($(ls -1 "$tmp/apps" 2>/dev/null | wc -l || echo 0) items)."
+}
+
+_detect_extract_root(){
+  # finds directory containing bin/ and/or apps/ after extraction
+  local base="$1"
+  if [[ -d "$base/bin" || -d "$base/apps" ]]; then
+    echo "$base"; return 0
+  fi
+  # Try first subdir
+  local d
+  for d in "$base"/*; do
+    [[ -d "$d" ]] || continue
+    if [[ -d "$d/bin" || -d "$d/apps" ]]; then
+      echo "$d"; return 0
+    fi
+  done
+  echo "$base"
+}
+
+_merge_dir(){
+  # merge $src_dir into $dst_dir; respect FORCE
+  local src_dir="$1" dst_dir="$2"
+  mkdir -p "$dst_dir"
+  shopt -s dotglob
+  for p in "$src_dir"/*; do
+    [[ -e "$p" ]] || continue
+    local name="$(basename "$p")"
+    local dst="$dst_dir/$name"
+    if [[ -e "$dst" && $FORCE -ne 1 ]]; then
+      warn "Skip existing: $dst (use --force to overwrite)"
+      continue
+    fi
+    if [[ -d "$p" ]]; then
+      rm -rf "$dst" 2>/dev/null || true
+      cp -a "$p" "$dst"
+    else
+      cp -a "$p" "$dst"
+    fi
+  done
+}
+
+_chmod_bin_execs(){
+  # ensure files in BIN_DIR are executable after restore
+  if [[ -d "$BIN_DIR" ]]; then
+    find "$BIN_DIR" -maxdepth 1 -type f -exec chmod +x {} \; 2>/dev/null || true
+  fi
+}
+
+op_restore(){
+  ensure_bin; ensure_apps
+  local archive="$1"
+  [[ -n "$archive" ]] || { err "restore requires an archive file"; exit 2; }
+  [[ -f "$archive" ]] || { err "not found: $archive"; exit 2; }
+
+  local tmp
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+
+  case "$archive" in
+    *.zip)
+      exists unzip || { err "unzip not available"; exit 2; }
+      unzip -q "$archive" -d "$tmp"
+      ;;
+    *.tar.gz|*.tgz)
+      exists tar || { err "tar not available"; exit 2; }
+      tar -xzf "$archive" -C "$tmp"
+      ;;
+    *)
+      err "Unknown archive type (use .zip or .tar.gz): $archive"; exit 2;;
+  esac
+
+  local root
+  root="$(_detect_extract_root "$tmp")"
+
+  if [[ -d "$root/bin" ]]; then
+    say "Restoring scripts to ${BIN_DIR}..."
+    _merge_dir "$root/bin" "$BIN_DIR"
+  else
+    warn "No bin/ directory found in archive."
+  fi
+
+  if [[ -d "$root/apps" ]]; then
+    say "Restoring apps to ${APP_STORE}..."
+    _merge_dir "$root/apps" "$APP_STORE"
+  else
+    warn "No apps/ directory found in archive."
+  fi
+
+  _chmod_bin_execs
+  rehash_shell
+  ok "Restore complete."
 }
 
 # ---- Generator (bash/python) ----
@@ -357,7 +519,6 @@ EOF
         warn "Looks like a repo already exists in $path; skipping gitprep."
       else
         (
-          # cd into the project root
           if [[ "$kind" == "app" ]]; then cd "$path"; else cd "$target_dir"; fi
           if [[ -n "$gp_remote" && "${gp_push,,}" == "y" ]]; then
             gitprep --branch "$gp_branch" --remote "$gp_remote" --push
@@ -393,11 +554,29 @@ EOF
   printf "   v%s\n\nHome: %s\nApps: %s\n\n" "$VERSION" "$BIN_DIR" "$APP_STORE"
 }
 
+# ---- Option parsing (common flags after subcommand) ----
+parse_common_opts(){
+  ARGS_OUT=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --from) FROM_DIR="$2"; shift 2;;
+      --link) COPY_MODE="link"; shift;;
+      --force) FORCE=1; shift;;
+      --git) GIT_DIR="$2"; shift 2;;
+      --bin) BIN_DIR="$2"; shift 2;;
+      --apps) APP_STORE="$2"; shift 2;;
+      --fix-path) FIX_PATH=1; shift;;
+      --) shift; while [[ $# -gt 0 ]]; do ARGS_OUT+=("$1"); shift; done;;
+      *) ARGS_OUT+=("$1"); shift;;
+    esac
+  done
+}
+
 # ---- TUI ----
 binman_tui(){
   while :; do
     print_banner
-    echo "1) Install  2) Uninstall  3) List  4) Doctor  5) New  6) Wizard  q) Quit"
+    echo "1) Install  2) Uninstall  3) List  4) Doctor  5) New  6) Wizard  7) Backup  8) Restore  q) Quit"
     read -rp "Choice: " c
     case "$c" in
       1) read -rp "File/dir: " f; op_install "$f"; read -rp "Enter...";;
@@ -406,6 +585,8 @@ binman_tui(){
       4) op_doctor; read -rp "Enter...";;
       5) read -rp "Name: " n; new_cmd "$n"; read -rp "Enter...";;
       6) new_wizard; read -rp "Enter...";;
+      7) read -rp "Output file [blank=auto]: " f; op_backup "${f}"; read -rp "Enter...";;
+      8) read -rp "Archive to restore: " f; op_restore "$f"; read -rp "Enter...";;
       q|Q) exit 0;;
       *) warn "Unknown choice: $c"; sleep 0.7;;
     esac
@@ -413,15 +594,51 @@ binman_tui(){
 }
 
 # ---- Main ----
+if [[ $# -eq 0 ]]; then
+  binman_tui
+  exit 0
+fi
+
+# Convenience flags as primary action
+case "${1:-}" in
+  --backup)
+    shift || true
+    parse_common_opts "$@"
+    op_backup "${ARGS_OUT[0]:-}"
+    exit 0
+    ;;
+  --restore)
+    shift || true
+    parse_common_opts "$@"
+    op_restore "${ARGS_OUT[0]:-}"
+    exit 0
+    ;;
+esac
+
 ACTION="${1:-}"; shift || true
+parse_common_opts "$@"
+
 case "$ACTION" in
-  install) op_install "$@";;
-  uninstall) op_uninstall "$@";;
+  install) op_install "${ARGS_OUT[@]}";;
+  uninstall) op_uninstall "${ARGS_OUT[@]}";;
   list) op_list;;
-  doctor) op_doctor;;
-  update) op_update "$@";;
-  new) new_cmd "$@";;
+  doctor)
+    if [[ $FIX_PATH -eq 1 ]]; then
+      # append to zsh PATH if needed
+      for f in "$HOME/.zshrc" "$HOME/.zprofile"; do
+        if [[ -f "$f" ]] && ! grep -qE '(^|:)\$HOME/\.local/bin(:|$)' "$f"; then
+          printf '\n# Added by binman doctor\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$f"
+          ok "Patched PATH in $f"
+        fi
+      done
+    fi
+    op_doctor
+    ;;
+  update) op_update "${ARGS_OUT[@]}";;
+  new) new_cmd "${ARGS_OUT[@]}";;
   wizard) new_wizard;;
+  backup) op_backup "${ARGS_OUT[0]:-}";;
+  restore) op_restore "${ARGS_OUT[0]:-}";;
   tui|"") binman_tui;;
   version) say "${SCRIPT_NAME} v${VERSION}";;
   help|*) usage;;
