@@ -7,7 +7,7 @@ set -Eeuo pipefail
 shopt -s nullglob
 
 SCRIPT_NAME="binman"
-VERSION="1.6.1"
+VERSION="1.6.3"
 
 # Default (user) locations
 BIN_DIR="${HOME}/.local/bin"
@@ -179,6 +179,37 @@ _app_entry(){ local appdir="$1"; local name; name=$(basename "$appdir"); echo "$
 _make_shim(){ local name="$1" entry="$2" shim="$BIN_DIR/$name"; printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"; chmod +x "$shim"; }
 _make_shim_system(){ local name="$1" entry="$2" shim="$SYSTEM_BIN/$name"; printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"; chmod +x "$shim"; }
 
+# Prompt helpers (TTY-safe)
+prompt_init(){ : "${UI_RESET:=}"; : "${UI_BOLD:=}"; : "${UI_DIM:=}"; : "${UI_CYAN:=}"; : "${UI_GREEN:=}"; : "${UI_YELLOW:=}"; }
+prompt_kv(){ printf "  %s%-14s%s %s\n" "$UI_BOLD" "$1:" "$UI_RESET" "$2"; }
+ask(){
+  local q="$1" def="$2" out
+  if [[ -n "$def" ]]; then
+    printf "  %s?%s %s %s[%s]%s: " "$UI_CYAN" "$UI_RESET" "$q" "$UI_DIM" "$def" "$UI_RESET" > /dev/tty
+  else
+    printf "  %s?%s %s: " "$UI_CYAN" "$UI_RESET" "$q" > /dev/tty
+  fi
+  IFS= read -r out < /dev/tty
+  [[ -z "$out" ]] && out="$def"
+  printf "%s\n" "$out"
+}
+ask_choice(){
+  local label="$1" opts="$2" def="$3" out
+  printf "  %s?%s %s %s(%s)%s %s[%s]%s: " \
+    "$UI_CYAN" "$UI_RESET" "$label" "$UI_DIM" "$opts" "$UI_RESET" "$UI_DIM" "$def" "$UI_RESET" > /dev/tty
+  IFS= read -r out < /dev/tty
+  [[ -z "$out" ]] && out="$def"
+  printf "%s\n" "$out"
+}
+ask_yesno(){
+  local q="$1" def="${2:-n}" out hint="[y/N]"
+  [[ "${def,,}" == "y" ]] && hint="[Y/n]"
+  printf "  %s?%s %s %s%s%s: " "$UI_CYAN" "$UI_RESET" "$q" "$UI_DIM" "$hint" "$UI_RESET" > /dev/tty
+  IFS= read -r out < /dev/tty
+  [[ -z "$out" ]] && out="$def"
+  [[ "${out,,}" =~ ^y ]]
+}
+
 _install_app(){
   ensure_apps; ensure_bin
   local src="$1"; local name; name=$(basename "$src"); local dest="$APP_STORE/$name"
@@ -252,33 +283,108 @@ _chmod_bin_execs(){
 
 # Install / Uninstall
 op_install(){
+  # Build the target list (from args or --from DIR)
   local targets=("$@")
   [[ -n "$FROM_DIR" ]] && mapfile -t targets < <(list_targets)
   [[ ${#targets[@]} -gt 0 ]] || { err "Nothing to install"; return 2; }
 
-  stash_before_change >/dev/null
+  # Snapshot current state so rollback can undo a bad batch
+  stash_before_change >/dev/null || true
 
   local count=0
   for src in "${targets[@]}"; do
+    # Allow remote URLs (curl/wget). We fetch to a temp file first.
     if is_url "$src"; then
-      local fetched; fetched=$(fetch_remote "$src") || { warn "Fetch failed: $src"; continue; }
+      local fetched
+      if ! fetched=$(fetch_remote "$src"); then
+        warn "Fetch failed: $src"
+        continue
+      fi
       src="$fetched"
     fi
+
+    # App install (directory containing bin/<appname>)
     if [[ -d "$src" ]]; then
-      if (( SYSTEM_MODE )); then _install_app_system "$src"; else _install_app "$src"; fi
-      count=$((count+1)); continue
+      if (( SYSTEM_MODE )); then
+        _install_app_system "$src"
+      else
+        _install_app "$src"
+      fi
+      count=$((count+1))
+      continue
     fi
-    [[ -f "$src" ]] || { warn "Skip (not a file): $src"; continue; }
-    local base dst
-    base=$(basename "$src"); dst="${BIN_DIR}/${base%.*}"
-    if (( SYSTEM_MODE )); then dst="${SYSTEM_BIN}/${base%.*}"; ensure_system_write; ensure_system_dirs; fi
-    [[ -e "$dst" && $FORCE -ne 1 ]] && { warn "Exists: $(basename "$dst") (use --force)"; continue; }
-    if [[ "$COPY_MODE" == "link" && $SYSTEM_MODE -eq 0 ]]; then ln -sf "$src" "$dst"; else cp "$src" "$dst"; chmod +x "$dst"; fi
-    ok "Installed: $dst (v$(script_version "$src"))"; count=$((count+1))
+
+    # Single-file install
+    if [[ ! -f "$src" ]]; then
+      warn "Skip (not a file): $src"
+      continue
+    fi
+
+    local base dst tmp
+    base=$(basename "$src")                    # e.g., binman.sh
+    dst="${BIN_DIR}/${base%.*}"                # → ~/.local/bin/binman
+
+    # System-wide target?
+    if (( SYSTEM_MODE )); then
+      dst="${SYSTEM_BIN}/${base%.*}"           # → /usr/local/bin/binman
+      ensure_system_write
+      ensure_system_dirs
+    fi
+
+    # Protect existing unless --force
+    if [[ -e "$dst" && $FORCE -ne 1 ]]; then
+      warn "Exists: $(basename "$dst") (use --force)"
+      continue
+    fi
+
+    # Symlink mode (dev-friendly), only for user installs
+    if [[ "$COPY_MODE" == "link" && $SYSTEM_MODE -eq 0 ]]; then
+      ln -sf "$src" "$dst"
+      ok "Installed: $dst (symlink) (v$(script_version "$src"))"
+      count=$((count+1))
+      continue
+    fi
+
+    # Copy mode: write atomically via temp file
+    if ! tmp="$(mktemp "${dst}.tmp.XXXXXX")"; then
+      err "mktemp failed for $dst"
+      continue
+    fi
+    if ! cp -f "$src" "$tmp"; then
+      rm -f "$tmp"
+      warn "Copy failed: $src"
+      continue
+    fi
+    chmod +x "$tmp" 2>/dev/null || true
+
+    # Light sanity check: if it looks like a shell script, run bash -n
+    if head -n1 "$tmp" | grep -qiE '^#!.*(bash|sh)'; then
+      if ! bash -n "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        err "Syntax check failed; keeping existing $(basename "$dst")."
+        continue
+      fi
+    fi
+
+    # Atomic replace
+    if mv -f "$tmp" "$dst"; then
+      ok "Installed: $dst (v$(script_version "$src"))"
+      count=$((count+1))
+    else
+      rm -f "$tmp"
+      warn "Failed to install: $src"
+    fi
   done
-  if (( SYSTEM_MODE )); then :; else ! in_path && warn "${BIN_DIR} not in PATH. Run: export PATH=\"${BIN_DIR}:$PATH\""; fi
-  rehash_shell; say "$count item(s) installed."
+
+  # PATH hint (user mode only)
+  if (( ! SYSTEM_MODE )) && ! in_path; then
+    warn "${BIN_DIR} not in PATH. Run: export PATH=\"${BIN_DIR}:\$PATH\""
+  fi
+
+  rehash_shell
+  say "$count item(s) installed."
 }
+
 
 op_uninstall(){
   stash_before_change >/dev/null
@@ -482,7 +588,9 @@ new_cmd(){
     local appdir="$target_dir/$cmdname"
     mkdir -p "$appdir/bin" "$appdir/src"
     echo "0.1.0" > "$appdir/VERSION"
+
     if [[ "$lang" == "bash" ]]; then
+      # Bash app entry
       cat > "$appdir/bin/$cmdname" <<'BASH'
 #!/usr/bin/env bash
 # Description: Hello from app
@@ -492,24 +600,66 @@ echo "Hello from __APPNAME__ v$VERSION"
 BASH
       sed -i "s/__APPNAME__/$cmdname/g" "$appdir/bin/$cmdname"
       chmod +x "$appdir/bin/$cmdname"
+
     else
+      # Python app
       if [[ $with_venv -eq 1 ]]; then
+        # Create venv and modern Python package layout
         python3 -m venv "$appdir/.venv"
-        cat > "$appdir/bin/$cmdname" <<'PY'
-#!/usr/bin/env bash
-# Description: Hello from app (venv)
-set -Eeuo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$HERE/.venv/bin/activate"
-python - <<'EOF'
+
+        # Package scaffold
+        mkdir -p "$appdir/src/$cmdname"
+        cat > "$appdir/src/$cmdname/__init__.py" <<'PY'
 __version__ = "0.1.0"
+PY
+        cat > "$appdir/src/$cmdname/__main__.py" <<'PY'
+from . import __version__
+
 def main():
     print(f"Hello from __APPNAME__ v{__version__} (venv)")
+
 if __name__ == "__main__":
     main()
-EOF
 PY
+        sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/$cmdname/__main__.py"
+
+        # Empty requirements placeholder
+        cat > "$appdir/requirements.txt" <<'REQ'
+# Add your dependencies here, one per line, e.g.:
+# scapy
+REQ
+
+        # Launcher (venv + auto-install requirements + PYTHONPATH=src + run module)
+        cat > "$appdir/bin/$cmdname" <<'BASH'
+#!/usr/bin/env bash
+# Description: __APPNAME__ (venv launcher)
+set -Eeuo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Ensure venv exists (idempotent)
+if [[ ! -x "$HERE/.venv/bin/python" ]]; then
+  python3 -m venv "$HERE/.venv"
+fi
+
+# shellcheck source=/dev/null
+source "$HERE/.venv/bin/activate"
+
+# Auto-install requirements if present (quiet; non-fatal)
+if [[ -f "$HERE/requirements.txt" ]]; then
+  "$HERE/.venv/bin/pip" install -r "$HERE/requirements.txt" >/dev/null 2>&1 || true
+fi
+
+# Make package under src/ importable
+export PYTHONPATH="$HERE/src${PYTHONPATH:+:$PYTHONPATH}"
+
+# Run the package as a module
+exec python -m __APPNAME__ "$@"
+BASH
+        sed -i "s/__APPNAME__/$cmdname/g" "$appdir/bin/$cmdname"
+        chmod +x "$appdir/bin/$cmdname"
+
       else
+        # Simple Python entry without venv
         cat > "$appdir/bin/$cmdname" <<'PY'
 #!/usr/bin/env python3
 # Description: Hello from app
@@ -521,12 +671,15 @@ if __name__ == "__main__":
     import sys
     sys.exit(main())
 PY
+        sed -i "s/__APPNAME__/$cmdname/g" "$appdir/bin/$cmdname"
+        chmod +x "$appdir/bin/$cmdname"
       fi
-      sed -i "s/__APPNAME__/$cmdname/g" "$appdir/bin/$cmdname"
-      chmod +x "$appdir/bin/$cmdname"
     fi
+
     ok "App scaffolded: $appdir"
+
   else
+    # Single-file script
     mkdir -p "$target_dir"
     if [[ "$lang" == "bash" ]]; then
       [[ "$name" != *.sh ]] && name="${name}.sh"
@@ -561,22 +714,67 @@ PY
 
 # Wizard
 new_wizard(){
-  say ""; ok "🧙  BinMan Project Wizard"; say "Press Enter to accept [brackets] defaults."
-  local name kind lang target_dir="$PWD" _td desc author venv="n"
-  read -rp "Project name (no spaces) [MyTool]: " name; name=${name:-MyTool}
-  read -rp "Type: (s)ingle-file or (a)pp? [a]: " kind; kind=${kind:-a}; [[ "${kind,,}" =~ ^s ]] && kind="single" || kind="app"
-  read -rp "Language: (b)ash or (p)ython? [b]: " lang; lang=${lang:-b}; [[ "${lang,,}" =~ ^p ]] && lang="python" || lang="bash"
-  if [[ "$lang" == "python" && "$kind" == "app" ]]; then read -rp "Create venv? (y/N) [n]: " venv; venv=${venv:-n}; fi
-  read -rp "Create in directory [${target_dir}]: " _td; [[ -n "$_td" ]] && target_dir="$_td"; mkdir -p "$target_dir"
-  read -rp "Short description [A neat little tool]: " desc; desc=${desc:-A neat little tool}
-  read -rp "Author [${USER}]: " author; author=${author:-$USER}
-  say ""; ok "Generating…"
+  ui_init; prompt_init
+  tput clear 2>/dev/null || clear
+  echo
+  printf "%s🧙  BinMan Project Wizard%s\n" "$UI_BOLD" "$UI_RESET"
+  printf "%sPress Enter to accept defaults in %s[brackets]%s.%s\n\n" "$UI_DIM" "$UI_BOLD" "$UI_RESET" "$UI_RESET"
+
+  # Section: Basics
+  printf "%s==> Basics%s\n" "$UI_GREEN" "$UI_RESET"
+  local name kind lang target_dir desc author
+  name="$(ask "Project name (no spaces)" "MyTool")"
+
+  # choose kind
+  kind="$(ask_choice "Type" "single/app" "app")"
+  [[ "${kind,,}" =~ ^s ]] && kind="single" || kind="app"
+
+  # language
+  lang="$(ask_choice "Language" "bash/python" "bash")"
+  [[ "${lang,,}" =~ ^p ]] && lang="python" || lang="bash"
+
+  # destination
+  target_dir="$(ask "Create in directory" "$PWD")"
+  mkdir -p "$target_dir"
+
+  desc="$(ask "Short description" "A neat little tool")"
+  author="$(ask "Author" "${USER}")"
+
+  # Python venv toggle (only for app+python)
+  local with_venv="n"
+  if [[ "$kind" == "app" && "$lang" == "python" ]]; then
+    printf "\n%s==> Python options%s\n" "$UI_GREEN" "$UI_RESET"
+    if ask_yesno "Create virtual environment (.venv)?" "y"; then with_venv="y"; fi
+  fi
+
+  # Preview summary
+  printf "\n%s==> Summary%s\n" "$UI_GREEN" "$UI_RESET"
+  prompt_kv "Name"        "$name"
+  prompt_kv "Type"        "$kind"
+  prompt_kv "Language"    "$lang"
+  prompt_kv "Directory"   "$target_dir"
+  prompt_kv "Description" "$desc"
+  prompt_kv "Author"      "$author"
+  [[ "$with_venv" == "y" ]] && prompt_kv "Python venv" "enabled"
+
+  echo
+  if ! ask_yesno "Proceed with generation?" "y"; then
+    warn "Aborted by user."
+    return 1
+  fi
+
+  echo; ok "Generating…"
+
+  # Generate via new_cmd
   local filename path
   if [[ "$kind" == "single" ]]; then
-    filename="$name"; [[ "$lang" == "bash" ]] && [[ "$filename" != *.sh ]] && filename="${filename}.sh"
-    [[ "$lang" == "python" ]] && [[ "$filename" != *.py ]] && filename="${filename}.py"
+    filename="$name"
+    [[ "$lang" == "bash"   && "$filename" != *.sh ]] && filename="${filename}.sh"
+    [[ "$lang" == "python" && "$filename" != *.py ]] && filename="${filename}.py"
     new_cmd "$filename" --lang "$lang" --dir "$target_dir"
     path="${target_dir}/${filename}"
+
+    # README
     cat > "${target_dir}/README.md" <<EOF
 # ${name}
 
@@ -590,12 +788,14 @@ Author: ${author}
 ${name%.*} [args]
 \`\`\`
 EOF
-    ok "README.md created"
+    ok "README.md created → ${target_dir}/README.md"
   else
     local vflag=()
-    [[ "${venv,,}" == "y" ]] && vflag+=(--venv)
+    [[ "${with_venv,,}" == "y" ]] && vflag+=(--venv)
     new_cmd "$name" --app --lang "$lang" --dir "$target_dir" "${vflag[@]}"
     path="${target_dir}/${name}"
+
+    # README
     cat > "${path}/README.md" <<EOF
 # ${name}
 
@@ -618,35 +818,140 @@ ${name}/
 ${name} [args]
 \`\`\`
 EOF
-    ok "README.md created"
+    ok "README.md created → ${path}/README.md"
   fi
-  say ""; local install_now="y" link_mode="n"
-  read -rp "Install now? (y/N) [y]: " install_now; install_now=${install_now:-y}
-  if [[ "${install_now,,}" == "y" ]]; then
-    read -rp "Use symlink instead of copy? (y/N) [n]: " link_mode; link_mode=${link_mode:-n}
-    local saved_mode="$COPY_MODE"; [[ "${link_mode,,}" == "y" ]] && COPY_MODE="link" || COPY_MODE="copy"
-    op_install "$path"; COPY_MODE="$saved_mode"
+
+  # Install now?
+  echo
+  printf "%s==> Install%s\n" "$UI_GREEN" "$UI_RESET"
+  local saved_mode="$COPY_MODE"
+  if ask_yesno "Install now?" "y"; then
+    if ask_yesno "Use symlink instead of copy?" "n"; then COPY_MODE="link"; else COPY_MODE="copy"; fi
+    op_install "$path"
   fi
-  say ""; local do_git="n"
-  read -rp "Initialize a git repo here with gitprep? (y/N) [n]: " do_git; do_git=${do_git:-n}
-  if [[ "${do_git,,}" == "y" ]]; then
+  COPY_MODE="$saved_mode"
+
+  # ─────────────────────────────────────────────────────────────
+  # Git setup (auto-friendly, but never blocks)
+  # ─────────────────────────────────────────────────────────────
+  echo
+  printf "%s==> Git%s\n" "$UI_GREEN" "$UI_RESET"
+  if ask_yesno "Initialize a git repo here?" "y"; then
+    local repo_root
+    [[ "$kind" == "app" ]] && repo_root="$path" || repo_root="$target_dir"
+
+    # Initialize with gitprep if available, else plain git
     if exists gitprep; then
-      local gp_branch="main" gp_remote="" gp_push="n"
-      read -rp "Default branch name [main]: " gp_branch; gp_branch=${gp_branch:-main}
-      read -rp "Remote (git@... or https://...) [blank to skip]: " gp_remote
-      read -rp "Push after setup? (y/N) [n]: " gp_push; gp_push=${gp_push:-n}
-      (
-        cd "$path" 2>/dev/null || cd "$target_dir"
-        if [[ -n "$gp_remote" && "${gp_push,,}" == "y" ]]; then gitprep --branch "$gp_branch" --remote "$gp_remote" --push
-        elif [[ -n "$gp_remote" ]]; then gitprep --branch "$gp_branch" --remote "$gp_remote"
-        else gitprep --branch "$gp_branch"; fi
-      )
+      ( cd "$repo_root" && gitprep --branch main )
     else
-      warn "gitprep not found; skipping git init (install with: binman install gitprep.sh)"
+      warn "gitprep not found; doing a plain git init"
+      (
+        cd "$repo_root"
+        git init -b main >/dev/null 2>&1 || { git init >/dev/null; git symbolic-ref HEAD refs/heads/main >/dev/null 2>&1 || true; }
+        git add -A
+        git commit -m "init: ${name} (wizard)" >/dev/null 2>&1 || true
+      )
     fi
+
+    # Decide remote flow
+    local have_gh=0
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+      have_gh=1
+    fi
+
+    echo
+    say "Git setup options:"
+    if (( have_gh )); then
+      say "  A) Create GitHub repo now (auto)"
+    fi
+    say "  B) Add an existing remote URL (SSH/HTTPS)"
+    say "  C) Local only (skip remote)"
+
+    local default_choice="C"
+    (( have_gh )) && default_choice="A"
+    local choice; choice="$(ask "Choose [A/B/C]" "$default_choice")"
+    choice="${choice^^}"
+
+    (
+      cd "$repo_root"
+      case "$choice" in
+        A)
+          if (( have_gh )); then
+            local owner repo visflag
+            owner="$(gh api user -q .login 2>/dev/null || echo "")"
+            repo="${name}"
+            visflag="--public"
+            ask_yesno "Create as private?" "n" && visflag="--private"
+
+            if gh repo create "${owner}/${repo}" $visflag --source . --push >/dev/null 2>&1; then
+              ok "Created GitHub repo ${owner}/${repo} and pushed."
+            else
+              warn "GitHub create/push failed (auth/perm/network?)."
+              warn "Leaving repo local-only. You can add a remote later."
+              say  "Try: gh repo create ${owner}/${repo} $visflag --source . --push"
+            fi
+          else
+            warn "'gh' not available or not authenticated; remaining local-only."
+          fi
+          ;;
+        B)
+          local remote_url
+          remote_url="$(ask "Remote URL (git@... or https://...)" "")"
+
+          if [[ -z "$remote_url" ]]; then
+            warn "No URL given; remaining local-only."
+            break
+          fi
+
+          # If user pasted a GitHub HTTPS URL, offer to convert to SSH
+          if [[ "$remote_url" =~ ^https://github\.com/([^/]+)/([^/.]+)(\.git)?$ ]]; then
+            local gh_owner="${BASH_REMATCH[1]}"
+            local gh_repo="${BASH_REMATCH[2]}"
+            local ssh_url="git@github.com:${gh_owner}/${gh_repo}.git"
+
+            # Check if SSH is likely to work
+            local can_ssh=0
+            if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+              can_ssh=1
+            elif ssh -T git@github.com -o BatchMode=yes >/dev/null 2>&1; then
+              can_ssh=1
+            fi
+
+            if (( can_ssh )) && ask_yesno "Use SSH instead of HTTPS for GitHub? ($ssh_url)" "y"; then
+              remote_url="$ssh_url"
+            else
+              warn "Keeping HTTPS. Note: pushes will prompt for a Personal Access Token."
+            fi
+          fi
+
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "$remote_url"
+          else
+            git remote add origin "$remote_url"
+          fi
+
+          # First push
+          git push -u origin main || warn "Push failed. If using HTTPS, use a PAT as the password."
+          ok "Remote set and push attempted."
+          ;;
+
+        *)
+          say ""
+          say "Next steps:"
+          say "  • Set remote: git remote add origin <git@... or https://...>"
+          say "  • Then push: git push -u origin main"
+          say "  • Or use:    gh repo create <owner>/<repo> --source . --push"
+          ;;
+      esac
+    )
+  else
+    warn "Skipping git init."
   fi
+
+  echo
   ok "Wizard complete. Happy hacking, ${author}! ✨"
 }
+
 
 # Banner
 print_banner(){
