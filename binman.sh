@@ -1,39 +1,101 @@
 #!/usr/bin/env bash
+# ==================================================================================================
 # binman.sh — Personal CLI utility manager for your ~/bin toys
+# --------------------------------------------------------------------------------------------------
 # Manage install/uninstall/list/update for single-file scripts AND multi-file apps.
-# TUI, generator, wizard, backup/restore, self-update, system installs, rollbacks, remotes, manifests, bundles, tests.
+# Extras: TUI, generator, wizard, backup/restore, self-update, system installs, rollbacks, remotes,
+#         manifests, bundles, test harness.
+#
+# Design notes:
+#   • “Scripts” live in ~/.local/bin/<name> (extension dropped on install).
+#   • “Apps” live in ~/.local/share/binman/apps/<name> with a shim in ~/.local/bin/<name> that execs
+#     ./apps/<name>/bin/<name>.
+#   • When copying a single-file script, we stage to a temp path and mv atomically.
+#   • “link” mode uses symlinks for dev workflows (only for user installs, never /usr/local).
+#   • Rollback snapshots keep last state of bin/ and apps/ before mutating operations.
+# ==================================================================================================
 
 set -Eeuo pipefail
 shopt -s nullglob
 
+# --------------------------------------------------------------------------------------------------
+# Constants & defaults
+# --------------------------------------------------------------------------------------------------
 SCRIPT_NAME="binman"
-VERSION="1.6.3"
+VERSION="1.6.4"
 
-# Default (user) locations
+# User-scoped locations (XDG-ish)
 BIN_DIR="${HOME}/.local/bin"
 APP_STORE="${HOME}/.local/share/binman/apps"
 
-# System locations (when --system)
+# System-scoped locations (used with --system; requires write perms/sudo)
 SYSTEM_BIN="/usr/local/bin"
 SYSTEM_APPS="/usr/local/share/binman/apps"
 
-COPY_MODE="copy"   # or link
-FORCE=0
-FROM_DIR=""
-GIT_DIR=""
-FIX_PATH=0
-SYSTEM_MODE=0
-MANIFEST_FILE=""
-QUIET=0
+# Runtime flags (influenced by CLI options)
+COPY_MODE="copy"   # copy | link
+FORCE=0            # overwrite on conflicts
+FROM_DIR=""        # bulk install from a directory (executables only)
+GIT_DIR=""         # optional git dir to pull before update
+FIX_PATH=0         # doctor --fix-path flag
+SYSTEM_MODE=0      # target system dirs
+MANIFEST_FILE=""   # bulk install manifest
+QUIET=0            # less noisy
 
+# --------------------------------------------------------------------------------------------------
+# Small helpers (consistent messages, detection, paths)
+# --------------------------------------------------------------------------------------------------
 say(){ printf "%s\n" "$*"; }
 err(){ printf "\e[31m%s\e[0m\n" "$*" 1>&2; }
 warn(){ printf "\e[33m%s\e[0m\n" "$*" 1>&2; }
 ok(){ printf "\e[32m%s\e[0m\n" "$*"; }
+
 exists(){ command -v "$1" >/dev/null 2>&1; }
 iso_now(){ date -Iseconds; }
+
+# POSIX-friendly realpath fallback (prefers python3, then readlink -f)
 realpath_f(){ python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null || readlink -f "$1"; }
 
+# Return just the names of installed commands (user or system)
+_get_installed_cmd_names() {
+  local dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
+  [[ -d "$dir" ]] || return 0
+  for f in "$dir"/*; do [[ -x "$f" && -f "$f" ]] && basename "$f"; done
+}
+
+# Return just the names of installed apps (user or system)
+_get_installed_app_names() {
+  local adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
+  [[ -d "$adir" ]] || return 0
+  for d in "$adir"/*; do [[ -d "$d" || -L "$d" ]] && basename "$d"; done
+}
+
+# Pretty print a compact list for uninstall prompt
+_print_uninstall_menu() {
+  local cmds apps
+  cmds=($(_get_installed_cmd_names))
+  apps=($(_get_installed_app_names))
+
+  echo
+  echo "Installed commands:"
+  if ((${#cmds[@]})); then
+    printf "  %s\n" "${cmds[@]}"
+  else
+    echo "  (none)"
+  fi
+  echo
+  echo "Installed apps:"
+  if ((${#apps[@]})); then
+    printf "  %s\n" "${apps[@]}"
+  else
+    echo "  (none)"
+  fi
+  echo
+}
+
+# --------------------------------------------------------------------------------------------------
+# Usage banner
+# --------------------------------------------------------------------------------------------------
 usage(){ cat <<USAGE
 ${SCRIPT_NAME} v${VERSION}
 Manage personal CLI scripts in ${BIN_DIR} and apps in ${APP_STORE}
@@ -65,37 +127,46 @@ Extra commands:
   test NAME [-- ARGS]  Run NAME with --help (or ARGS) to sanity-check exit
 
 Examples:
-  ${SCRIPT_NAME} install albumforge.sh
-  ${SCRIPT_NAME} install mytool/                      # app dir (expects bin/mytool)
-  ${SCRIPT_NAME} install https://.../script.sh        # remote file
-  ${SCRIPT_NAME} install --manifest tools.txt         # bulk installs
+  ${SCRIPT_NAME} install tool.sh
+  ${SCRIPT_NAME} install MyApp/                      # app dir (expects bin/MyApp)
+  ${SCRIPT_NAME} install https://.../script.sh       # remote file
+  ${SCRIPT_NAME} install --manifest tools.txt        # bulk installs
   ${SCRIPT_NAME} backup ; ${SCRIPT_NAME} restore file.zip
   ${SCRIPT_NAME} self-update
 USAGE
 }
 
+# --------------------------------------------------------------------------------------------------
+# Shell rehash for zsh/bash (after installs/uninstalls)
+# --------------------------------------------------------------------------------------------------
 rehash_shell(){
   if [ -n "${ZSH_VERSION:-}" ]; then hash -r || true; rehash || true; fi
   if [ -n "${BASH_VERSION:-}" ]; then hash -r || true; fi
 }
 
-# Path helpers
+# --------------------------------------------------------------------------------------------------
+# Path / dir helpers
+# --------------------------------------------------------------------------------------------------
 in_path(){ case ":$PATH:" in *":${BIN_DIR}:"*) return 0;; *) return 1;; esac; }
 ensure_dir(){ mkdir -p "$1"; }
 ensure_bin(){ ensure_dir "$BIN_DIR"; }
 ensure_apps(){ ensure_dir "$APP_STORE"; }
 ensure_system_dirs(){ ensure_dir "$SYSTEM_BIN"; ensure_dir "$SYSTEM_APPS"; }
 
-# Rollback stash
+# --------------------------------------------------------------------------------------------------
+# Rollback snapshots (pre-change backups of bin/ & apps/)
+# --------------------------------------------------------------------------------------------------
 ROLLBACK_ROOT="${HOME}/.local/share/binman/rollback"
 
 stash_before_change(){
-  local ts; ts=$(date +%Y%m%d-%H%M%S)
-  local root="${ROLLBACK_ROOT}/${ts}"
+  local ts root
+  ts=$(date +%Y%m%d-%H%M%S)
+  root="${ROLLBACK_ROOT}/${ts}"
   mkdir -p "${root}/bin" "${root}/apps" "${root}/meta"
-  [[ -d "$BIN_DIR" ]] && cp -a "$BIN_DIR"/. "${root}/bin" 2>/dev/null || true
-  [[ -d "$APP_STORE" ]] && cp -a "$APP_STORE"/. "${root}/apps" 2>/dev/null || true
-  printf "Created: %s\nBinMan: %s\nBIN_DIR: %s\nAPP_STORE: %s\n" "$(iso_now)" "${VERSION}" "$BIN_DIR" "$APP_STORE" > "${root}/meta/info.txt"
+  [[ -d "$BIN_DIR"  ]] && cp -a "$BIN_DIR"/.  "${root}/bin"  2>/dev/null || true
+  [[ -d "$APP_STORE" ]]&& cp -a "$APP_STORE"/. "${root}/apps" 2>/dev/null || true
+  printf "Created: %s\nBinMan: %s\nBIN_DIR: %s\nAPP_STORE: %s\n" \
+    "$(iso_now)" "${VERSION}" "$BIN_DIR" "$APP_STORE" > "${root}/meta/info.txt"
   ! (( QUIET )) && ok "Rollback snapshot: ${ts}"
   echo "${ts}"
 }
@@ -106,22 +177,25 @@ latest_rollback_id(){
 }
 
 apply_rollback(){
-  local id="$1"
-  local src="${ROLLBACK_ROOT}/${id}"
+  local id="$1" src="${ROLLBACK_ROOT}/${id}"
   [[ -d "$src" ]] || { err "No rollback id: $id"; return 2; }
-  _merge_dir "${src}/bin" "$BIN_DIR"
+  _merge_dir "${src}/bin"  "$BIN_DIR"
   _merge_dir "${src}/apps" "$APP_STORE"
   rehash_shell
   ok "Rollback applied: $id"
 }
 
-# Version detection & description
+# --------------------------------------------------------------------------------------------------
+# Script/app metadata extraction (version, description)
+# --------------------------------------------------------------------------------------------------
 script_version(){
+  # Accepts either a file or an app dir. Tries VERSION file, then markers in the entry script.
   local f="$1"
   if [[ -d "$f" ]]; then
     [[ -f "$f/VERSION" ]] && { head -n1 "$f/VERSION" | tr -d '\r'; return; }
     local name; name=$(basename "$f")
-    [[ -f "$f/bin/$name" ]] && grep -m1 -E '^(VERSION=|# *Version:|__version__ *=)' "$f/bin/$name" \
+    [[ -f "$f/bin/$name" ]] && \
+      grep -m1 -E '^(VERSION=|# *Version:|__version__ *=)' "$f/bin/$name" \
       | sed -E 's/^[# ]*Version:? *//; s/^VERSION=//; s/__version__ *= *//; s/[\"\x27]//g' && return
     echo "unknown"; return
   fi
@@ -131,22 +205,25 @@ script_version(){
 }
 
 script_desc(){
+  # First non-shebang comment or "Description:" line from an entry script.
   local f="$1"
   if [[ -d "$f" ]]; then
-    local name; name=$(basename "$f")
-    f="$f/bin/$name"
+    local name; name=$(basename "$f"); f="$f/bin/$name"
   fi
   [[ -f "$f" ]] || { echo ""; return; }
-  local line
-  line=$(grep -m1 -E '^(# *[^!/].*|# *Description:.*)' "$f" 2>/dev/null | sed -E 's/^# *//; s/^Description: *//')
-  echo "${line:-}"
+  grep -m1 -E '^(# *[^!/].*|# *Description:.*)' "$f" 2>/dev/null \
+    | sed -E 's/^# *//; s/^Description: *//'
 }
 
-# Target list
+# --------------------------------------------------------------------------------------------------
+# Build list of install targets (files) based on args or --from
+# --------------------------------------------------------------------------------------------------
 list_targets(){
   local arr=()
   if [[ -n "$FROM_DIR" ]]; then
-    while IFS= read -r -d '' f; do arr+=("$f"); done < <(find "$FROM_DIR" -maxdepth 1 -type f -perm -u+x -print0)
+    # only executables in the top of FROM_DIR
+    while IFS= read -r -d '' f; do arr+=("$f"); done \
+      < <(find "$FROM_DIR" -maxdepth 1 -type f -perm -u+x -print0)
   else
     [[ $# -eq 0 ]] && { err "No scripts specified, and --from not set."; exit 2; }
     for s in "$@"; do arr+=("$s"); done
@@ -154,7 +231,9 @@ list_targets(){
   printf '%s\n' "${arr[@]}"
 }
 
-# ---- UI helpers --------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------
+# Pretty TUI helpers (colors, separations, kv rendering)
+# --------------------------------------------------------------------------------------------------
 ui_init(){
   if [[ -t 1 && -z "${NO_COLOR:-}" && "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
     UI_BOLD="$(tput bold)"; UI_DIM="$(tput dim)"; UI_RESET="$(tput sgr0)"
@@ -164,22 +243,45 @@ ui_init(){
   fi
   UI_WIDTH=${COLUMNS:-80}
 }
+
 ui_hr(){ printf "%s\n" "$(printf '─%.0s' $(seq 1 "${1:-$UI_WIDTH}"))"; }
-shorten_path(){
-  local p="$1" max="${2:-$((UI_WIDTH-10))}"
+
+shorten_path() {
+  local p="${1-}" max="${2:-$((UI_WIDTH-10))}"
+  # if empty or already short, just echo
+  [[ -z "${p}" ]] && { echo ""; return; }
   local n=${#p}
-  if (( n <= max )); then echo "$p"; else
-    local keep=$(( (max-3)/2 )); echo "${p:0:keep}...${p:(-keep)}"
+  if (( n <= max || max < 8 )); then
+    echo "$p"
+  else
+    # keep head and tail around an ellipsis
+    local head=$(( (max - 3) / 2 ))
+    local tail=$(( max - 3 - head ))
+    # NOTE: space before -tail is required for negative offsets in bash
+    echo "${p:0:head}...${p: -tail}"
   fi
 }
+
 ui_kv(){ printf "%s%-10s%s %s\n" "$UI_DIM" "$1" "$UI_RESET" "$2"; }
 
-# App helpers
+# --------------------------------------------------------------------------------------------------
+# App utilities (entry resolution + shim creation)
+# --------------------------------------------------------------------------------------------------
 _app_entry(){ local appdir="$1"; local name; name=$(basename "$appdir"); echo "$appdir/bin/$name"; }
-_make_shim(){ local name="$1" entry="$2" shim="$BIN_DIR/$name"; printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"; chmod +x "$shim"; }
-_make_shim_system(){ local name="$1" entry="$2" shim="$SYSTEM_BIN/$name"; printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"; chmod +x "$shim"; }
+_make_shim(){
+  local name="$1" entry="$2" shim="$BIN_DIR/$name"
+  printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"
+  chmod +x "$shim"
+}
+_make_shim_system(){
+  local name="$1" entry="$2" shim="$SYSTEM_BIN/$name"
+  printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"
+  chmod +x "$shim"
+}
 
-# Prompt helpers (TTY-safe)
+# --------------------------------------------------------------------------------------------------
+# Prompt helpers (TTY-safe; we always read/write via /dev/tty inside wizard/TUI)
+# --------------------------------------------------------------------------------------------------
 prompt_init(){ : "${UI_RESET:=}"; : "${UI_BOLD:=}"; : "${UI_DIM:=}"; : "${UI_CYAN:=}"; : "${UI_GREEN:=}"; : "${UI_YELLOW:=}"; }
 prompt_kv(){ printf "  %s%-14s%s %s\n" "$UI_BOLD" "$1:" "$UI_RESET" "$2"; }
 ask(){
@@ -210,9 +312,13 @@ ask_yesno(){
   [[ "${out,,}" =~ ^y ]]
 }
 
+# --------------------------------------------------------------------------------------------------
+# App install/uninstall (user and system variants)
+# --------------------------------------------------------------------------------------------------
 _install_app(){
   ensure_apps; ensure_bin
-  local src="$1"; local name; name=$(basename "$src"); local dest="$APP_STORE/$name"
+  local src="$1" name dest
+  name=$(basename "$src"); dest="$APP_STORE/$name"
   [[ -x "$src/bin/$name" ]] || { err "App '$name' missing bin/$name"; return 2; }
   rm -rf "$dest"
   [[ "$COPY_MODE" == "link" ]] && ln -s "$src" "$dest" || cp -a "$src" "$dest"
@@ -220,9 +326,9 @@ _install_app(){
   ok "App installed: $name → $dest (v$(script_version "$dest"))"
 }
 _install_app_system(){
-  ensure_system_write
-  ensure_system_dirs
-  local src="$1"; local name; name=$(basename "$src"); local dest="$SYSTEM_APPS/$name"
+  ensure_system_write; ensure_system_dirs
+  local src="$1" name dest
+  name=$(basename "$src"); dest="$SYSTEM_APPS/$name"
   [[ -x "$src/bin/$name" ]] || { err "App '$name' missing bin/$name"; return 2; }
   rm -rf "$dest"
   [[ "$COPY_MODE" == "link" ]] && ln -s "$src" "$dest" || cp -a "$src" "$dest"
@@ -230,43 +336,44 @@ _install_app_system(){
   ok "App installed (system): $name → $dest"
 }
 _uninstall_app(){
-  local name="$1"; local dest="$APP_STORE/$name"; local shim="$BIN_DIR/$name"
+  local name="$1" dest="$APP_STORE/$name" shim="$BIN_DIR/$name"
   [[ -e "$shim" ]] && rm -f "$shim" && ok "Removed shim: $shim"
   [[ -e "$dest" ]] && rm -rf "$dest" && ok "Removed app: $dest"
 }
 _uninstall_app_system(){
   ensure_system_write
-  local name="$1"; local dest="$SYSTEM_APPS/$name"; local shim="$SYSTEM_BIN/$name"
+  local name="$1" dest="$SYSTEM_APPS/$name" shim="$SYSTEM_BIN/$name"
   [[ -e "$shim" ]] && rm -f "$shim" && ok "Removed shim: $shim"
   [[ -e "$dest" ]] && rm -rf "$dest" && ok "Removed app: $dest"
 }
 
-# Remote fetch
+# --------------------------------------------------------------------------------------------------
+# Remote file fetch (curl/wget)
+# --------------------------------------------------------------------------------------------------
 is_url(){ [[ "$1" =~ ^https?:// ]]; }
 fetch_remote(){
-  local url="$1"; local outdir; outdir=$(mktemp -d)
-  local fname="${2:-$(basename "${url%%\?*}")}"
-  local out="${outdir}/${fname}"
-  if exists curl; then
-    curl -fsSL "$url" -o "$out"
-  elif exists wget; then
-    wget -q "$url" -O "$out"
-  else
-    err "Need curl or wget for remote installs"; return 2
-  fi
+  local url="$1" outdir fname out
+  outdir=$(mktemp -d)
+  fname="${2:-$(basename "${url%%\?*}")}"
+  out="${outdir}/${fname}"
+  if exists curl; then curl -fsSL "$url" -o "$out"
+  elif exists wget; then wget -q "$url" -O "$out"
+  else err "Need curl or wget for remote installs"; return 2; fi
   echo "$out"
 }
 
+# --------------------------------------------------------------------------------------------------
 # Merge/copy helpers
+# --------------------------------------------------------------------------------------------------
 _merge_dir(){
+  # Merges one dir into another (clobber when --force). Includes dotfiles.
   local src_dir="$1" dst_dir="$2"
   [[ -d "$src_dir" ]] || return 0
   mkdir -p "$dst_dir"
   shopt -s dotglob
   for p in "$src_dir"/*; do
     [[ -e "$p" ]] || continue
-    local name; name="$(basename "$p")"
-    local dst="$dst_dir/$name"
+    local name dst; name="$(basename "$p")"; dst="$dst_dir/$name"
     if [[ -e "$dst" && $FORCE -ne 1 ]]; then
       warn "Skip existing: $dst (use --force to overwrite)"
       continue
@@ -276,116 +383,97 @@ _merge_dir(){
   done
 }
 _chmod_bin_execs(){
+  # Re-assert executable bit on files in BIN_DIR (after restore).
   if [[ -d "$BIN_DIR" ]]; then
     find "$BIN_DIR" -maxdepth 1 -type f -exec chmod +x {} \; 2>/dev/null || true
   fi
 }
 
-# Install / Uninstall
+# --------------------------------------------------------------------------------------------------
+# INSTALL — core installer for scripts and apps (atomic for single files)
+# --------------------------------------------------------------------------------------------------
 op_install(){
-  # Build the target list (from args or --from DIR)
+  # Build targets list (args or --from)
   local targets=("$@")
   [[ -n "$FROM_DIR" ]] && mapfile -t targets < <(list_targets)
   [[ ${#targets[@]} -gt 0 ]] || { err "Nothing to install"; return 2; }
 
-  # Snapshot current state so rollback can undo a bad batch
-  stash_before_change >/dev/null || true
+  # Capture rollback snapshot before mutating
+  stash_before_change >/dev/null
 
   local count=0
   for src in "${targets[@]}"; do
-    # Allow remote URLs (curl/wget). We fetch to a temp file first.
+    # 1) Support URL installs
     if is_url "$src"; then
-      local fetched
-      if ! fetched=$(fetch_remote "$src"); then
-        warn "Fetch failed: $src"
-        continue
-      fi
+      local fetched; fetched=$(fetch_remote "$src") || { warn "Fetch failed: $src"; continue; }
       src="$fetched"
     fi
 
-    # App install (directory containing bin/<appname>)
+    # 2) App install (directory with bin/<name> entry)
     if [[ -d "$src" ]]; then
-      if (( SYSTEM_MODE )); then
-        _install_app_system "$src"
-      else
-        _install_app "$src"
-      fi
+      if (( SYSTEM_MODE )); then _install_app_system "$src"; else _install_app "$src"; fi
       count=$((count+1))
       continue
     fi
 
-    # Single-file install
-    if [[ ! -f "$src" ]]; then
-      warn "Skip (not a file): $src"
-      continue
-    fi
+    # 3) Single-file install
+    [[ -f "$src" ]] || { warn "Skip (not a file): $src"; continue; }
 
+    # Destination path: drop extension for final name
     local base dst tmp
-    base=$(basename "$src")                    # e.g., binman.sh
-    dst="${BIN_DIR}/${base%.*}"                # → ~/.local/bin/binman
-
-    # System-wide target?
+    base=$(basename "$src")
     if (( SYSTEM_MODE )); then
-      dst="${SYSTEM_BIN}/${base%.*}"           # → /usr/local/bin/binman
-      ensure_system_write
-      ensure_system_dirs
+      dst="${SYSTEM_BIN}/${base%.*}"
+      ensure_system_write; ensure_system_dirs
+    else
+      dst="${BIN_DIR}/${base%.*}"
+      ensure_bin
     fi
 
-    # Protect existing unless --force
+    # Skip unless --force when dest already exists
     if [[ -e "$dst" && $FORCE -ne 1 ]]; then
       warn "Exists: $(basename "$dst") (use --force)"
       continue
     fi
 
-    # Symlink mode (dev-friendly), only for user installs
     if [[ "$COPY_MODE" == "link" && $SYSTEM_MODE -eq 0 ]]; then
+      # Dev-friendly: symlink (only for user scope)
       ln -sf "$src" "$dst"
       ok "Installed: $dst (symlink) (v$(script_version "$src"))"
-      count=$((count+1))
-      continue
-    fi
-
-    # Copy mode: write atomically via temp file
-    if ! tmp="$(mktemp "${dst}.tmp.XXXXXX")"; then
-      err "mktemp failed for $dst"
-      continue
-    fi
-    if ! cp -f "$src" "$tmp"; then
-      rm -f "$tmp"
-      warn "Copy failed: $src"
-      continue
-    fi
-    chmod +x "$tmp" 2>/dev/null || true
-
-    # Light sanity check: if it looks like a shell script, run bash -n
-    if head -n1 "$tmp" | grep -qiE '^#!.*(bash|sh)'; then
-      if ! bash -n "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        err "Syntax check failed; keeping existing $(basename "$dst")."
-        continue
-      fi
-    fi
-
-    # Atomic replace
-    if mv -f "$tmp" "$dst"; then
-      ok "Installed: $dst (v$(script_version "$src"))"
-      count=$((count+1))
     else
-      rm -f "$tmp"
-      warn "Failed to install: $src"
+      # Atomic copy: write to tmp then mv into place
+      tmp="$(mktemp "${dst}.tmp.XXXXXX")"
+      cp "$src" "$tmp"
+      chmod +x "$tmp"
+
+      # Light syntax sanity for bash/sh shebangs (non-blocking for other types)
+      if head -n1 "$tmp" | grep -qE '/(ba)?sh'; then
+        if ! bash -n "$tmp" 2>/dev/null; then
+          rm -f "$tmp"
+          err "Syntax check failed; keeping existing $(basename "$dst")."
+          continue
+        fi
+      fi
+
+      mv -f "$tmp" "$dst"
+      ok "Installed: $dst (v$(script_version "$src"))"
     fi
+
+    count=$((count+1))
   done
 
-  # PATH hint (user mode only)
-  if (( ! SYSTEM_MODE )) && ! in_path; then
-    warn "${BIN_DIR} not in PATH. Run: export PATH=\"${BIN_DIR}:\$PATH\""
+  # Path tip for user mode
+  if (( SYSTEM_MODE )); then :; else
+    ! in_path && warn "${BIN_DIR} not in PATH. Add: export PATH=\"${BIN_DIR}:\$PATH\""
   fi
 
   rehash_shell
   say "$count item(s) installed."
 }
 
-
+# --------------------------------------------------------------------------------------------------
+# UNINSTALL — remove scripts or apps (user/system)
+# --------------------------------------------------------------------------------------------------
 op_uninstall(){
   stash_before_change >/dev/null
   local count=0
@@ -400,14 +488,19 @@ op_uninstall(){
       [[ -e "$dst" ]] && { rm -f "$dst"; ok "Removed: $dst"; count=$((count+1)); } || warn "Not found: $name"
     fi
   done
-  rehash_shell; say "$count item(s) removed."
+  rehash_shell
+  say "$count item(s) removed."
 }
 
+# --------------------------------------------------------------------------------------------------
+# LIST — show installed scripts/apps with versions and descriptions
+# --------------------------------------------------------------------------------------------------
 op_list(){
   ensure_bin; ensure_apps
   print_banner
   say "Commands in ${SYSTEM_MODE:+(system) }$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN" || echo "$BIN_DIR"):"
-  printf "%-20s %-10s %s\n" "Name" "Version" "Description"; printf "%-20s %-10s %s\n" "----" "-------" "-----------"
+  printf "%-20s %-10s %s\n" "Name" "Version" "Description"
+  printf "%-20s %-10s %s\n" "----" "-------" "-----------"
   local dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
   for f in "$dir"/*; do
     [[ -x "$f" && -f "$f" ]] || continue
@@ -415,7 +508,8 @@ op_list(){
   done
   echo
   say "Apps in $([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_APPS" || echo "$APP_STORE"):"
-  printf "%-20s %-10s %s\n" "App" "Version" "Description"; printf "%-20s %-10s %s\n" "---" "-------" "-----------"
+  printf "%-20s %-10s %s\n" "App" "Version" "Description"
+  printf "%-20s %-10s %s\n" "---" "-------" "-----------"
   local adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
   for d in "$adir"/*; do
     [[ -d "$d" || -L "$d" ]] || continue
@@ -424,6 +518,9 @@ op_list(){
   done
 }
 
+# --------------------------------------------------------------------------------------------------
+# DOCTOR — environment checks (+ optional PATH patch)
+# --------------------------------------------------------------------------------------------------
 op_doctor(){
   say "Mode      : $([[ $SYSTEM_MODE -eq 1 ]] && echo system || echo user)"
   say "BIN_DIR   : $([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN" || echo "$BIN_DIR")"
@@ -442,14 +539,20 @@ op_doctor(){
   fi
 }
 
+# --------------------------------------------------------------------------------------------------
+# UPDATE — reinstall with overwrite (optionally pull a git dir first)
+# --------------------------------------------------------------------------------------------------
 op_update(){
   [[ -n "$GIT_DIR" && -d "$GIT_DIR/.git" ]] && (cd "$GIT_DIR" && git pull --rebase --autostash)
   local targets=("$@"); [[ -n "$FROM_DIR" ]] && mapfile -t targets < <(list_targets)
   [[ ${#targets[@]} -gt 0 ]] && { FORCE=1; stash_before_change >/dev/null; op_install "${targets[@]}"; } || warn "Nothing to reinstall"
 }
 
-# Backup/Restore
+# --------------------------------------------------------------------------------------------------
+# BACKUP & RESTORE — archive management (zip preferred; tar.gz fallback)
+# --------------------------------------------------------------------------------------------------
 _backup_filename_default(){ local ext="$1"; local ts; ts=$(date +%Y%m%d-%H%M%S); echo "binman_backup-${ts}.${ext}"; }
+
 op_backup(){
   ensure_bin; ensure_apps
   local prefer_zip=1 ext
@@ -458,7 +561,7 @@ op_backup(){
   [[ "$outfile" != *.zip && "$outfile" != *.tar.gz && "$outfile" != *.tgz ]] && outfile="${outfile}.${ext}"
   local tmp; tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   mkdir -p "$tmp"/{bin,apps,meta}
-  [[ -d "$BIN_DIR" ]]  && cp -a "$BIN_DIR"/.  "$tmp/bin"  2>/dev/null || true
+  [[ -d "$BIN_DIR"  ]] && cp -a "$BIN_DIR"/.  "$tmp/bin"  2>/dev/null || true
   [[ -d "$APP_STORE" ]]&& cp -a "$APP_STORE"/. "$tmp/apps" 2>/dev/null || true
   cat > "$tmp/meta/info.txt" <<EOF
 Created: $(iso_now)
@@ -471,12 +574,14 @@ EOF
   local abs_out; abs_out="$(cd "$(dirname "$tmp/../$outfile")" && pwd)/$(basename "$outfile")"
   ok "Backup created: ${abs_out}"
 }
+
 _detect_extract_root(){
   local base="$1"
   if [[ -d "$base/bin" || -d "$base/apps" ]]; then echo "$base"; return 0; fi
   for d in "$base"/*; do [[ -d "$d" ]] || continue; [[ -d "$d/bin" || -d "$d/apps" ]] && { echo "$d"; return 0; }; done
   echo "$base"
 }
+
 op_restore(){
   ensure_bin; ensure_apps; stash_before_change >/dev/null
   local archive="$1"; [[ -n "$archive" && -f "$archive" ]] || { err "restore requires an existing archive"; exit 2; }
@@ -492,7 +597,9 @@ op_restore(){
   _chmod_bin_execs; rehash_shell; ok "Restore complete."
 }
 
-# Self-update
+# --------------------------------------------------------------------------------------------------
+# SELF-UPDATE — pull repo and reinstall the binman shim
+# --------------------------------------------------------------------------------------------------
 op_self_update(){
   local script_path repo root
   script_path="$(realpath_f "$0" || echo "$0")"
@@ -515,13 +622,15 @@ op_self_update(){
   ok "Self-update complete."
 }
 
-# Bundle export (bin+apps+manifest)
+# --------------------------------------------------------------------------------------------------
+# BUNDLE — export bin+apps plus a manifest file
+# --------------------------------------------------------------------------------------------------
 op_bundle(){
   ensure_bin; ensure_apps
   local out="${1:-binman_bundle-$(date +%Y%m%d-%H%M%S).zip}"
   local tmp; tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   mkdir -p "$tmp"/{bin,apps}
-  [[ -d "$BIN_DIR" ]]  && cp -a "$BIN_DIR"/.  "$tmp/bin"  2>/dev/null || true
+  [[ -d "$BIN_DIR"  ]] && cp -a "$BIN_DIR"/.  "$tmp/bin"  2>/dev/null || true
   [[ -d "$APP_STORE" ]]&& cp -a "$APP_STORE"/. "$tmp/apps" 2>/dev/null || true
   {
     echo "# BinMan bundle manifest"
@@ -529,28 +638,29 @@ op_bundle(){
     echo "bin_dir=$BIN_DIR"
     echo "app_store=$APP_STORE"
     echo
-    echo "[bin]"
-    find "$tmp/bin" -maxdepth 1 -type f -printf "%f\n" 2>/dev/null || true
-    echo
-    echo "[apps]"
-    find "$tmp/apps" -maxdepth 1 -mindepth 1 -type d -printf "%f\n" 2>/dev/null || true
+    echo "[bin]";  find "$tmp/bin"  -maxdepth 1 -type f -printf "%f\n" 2>/dev/null || true
+    echo; echo "[apps]"; find "$tmp/apps" -maxdepth 1 -mindepth 1 -type d -printf "%f\n" 2>/dev/null || true
   } > "$tmp/manifest.txt"
-  if exists zip; then (cd "$tmp" && zip -qr "../$out" bin apps manifest.txt); else (cd "$tmp" && tar -czf "../${out%.zip}.tar.gz" bin apps manifest.txt; out="${out%.zip}.tar.gz"); fi
+  if exists zip; then (cd "$tmp" && zip -qr "../$out" bin apps manifest.txt)
+  else (cd "$tmp" && tar -czf "../${out%.zip}.tar.gz" bin apps manifest.txt; out="${out%.zip}.tar.gz"); fi
   ok "Bundle created: $(realpath_f "$tmp/../$out")"
 }
 
-# Testing harness
+# --------------------------------------------------------------------------------------------------
+# TEST — run an installed command (default --help) to check exit status
+# --------------------------------------------------------------------------------------------------
 op_test(){
   local name="$1"; shift || true
   [[ -n "$name" ]] || { err "test requires a command name"; return 2; }
-  local path
-  if (( SYSTEM_MODE )); then path="$SYSTEM_BIN/$name"; else path="$BIN_DIR/$name"; fi
+  local path; if (( SYSTEM_MODE )); then path="$SYSTEM_BIN/$name"; else path="$BIN_DIR/$name"; fi
   [[ -x "$path" ]] || { err "not installed or not executable: $name"; return 2; }
   local args=("$@"); [[ ${#args[@]} -eq 0 ]] && args=(--help)
   "$path" "${args[@]}" >/dev/null 2>&1 && ok "PASS: $name ${args[*]}" || { local rc=$?; warn "FAIL: $name (exit $rc)"; return $rc; }
 }
 
-# Manifest install (line list; optional JSON with jq)
+# --------------------------------------------------------------------------------------------------
+# MANIFEST — install from a plain list (or JSON array when jq available)
+# --------------------------------------------------------------------------------------------------
 op_install_manifest(){
   local mf="$1"; [[ -f "$mf" ]] || { err "manifest not found: $mf"; return 2; }
   local items=()
@@ -566,7 +676,11 @@ op_install_manifest(){
   op_install "${items[@]}"
 }
 
-# Generator (bash/python) with optional venv for python apps
+# --------------------------------------------------------------------------------------------------
+# Generator (bash/python) with optional venv launcher for python apps
+#   • python app with --venv creates: .venv + src/<name>/{__init__,__main__}.py + bin/<name>
+#   • launcher auto-activates venv, installs requirements.txt quietly if present, sets PYTHONPATH=src
+# --------------------------------------------------------------------------------------------------
 new_cmd(){
   local name="$1"; shift || true
   local lang="bash" make_app=0 target_dir="$PWD" with_venv=0
@@ -590,7 +704,6 @@ new_cmd(){
     echo "0.1.0" > "$appdir/VERSION"
 
     if [[ "$lang" == "bash" ]]; then
-      # Bash app entry
       cat > "$appdir/bin/$cmdname" <<'BASH'
 #!/usr/bin/env bash
 # Description: Hello from app
@@ -600,66 +713,48 @@ echo "Hello from __APPNAME__ v$VERSION"
 BASH
       sed -i "s/__APPNAME__/$cmdname/g" "$appdir/bin/$cmdname"
       chmod +x "$appdir/bin/$cmdname"
-
     else
-      # Python app
       if [[ $with_venv -eq 1 ]]; then
-        # Create venv and modern Python package layout
         python3 -m venv "$appdir/.venv"
-
-        # Package scaffold
         mkdir -p "$appdir/src/$cmdname"
         cat > "$appdir/src/$cmdname/__init__.py" <<'PY'
 __version__ = "0.1.0"
 PY
         cat > "$appdir/src/$cmdname/__main__.py" <<'PY'
 from . import __version__
-
 def main():
     print(f"Hello from __APPNAME__ v{__version__} (venv)")
-
 if __name__ == "__main__":
     main()
 PY
         sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/$cmdname/__main__.py"
-
-        # Empty requirements placeholder
         cat > "$appdir/requirements.txt" <<'REQ'
 # Add your dependencies here, one per line, e.g.:
-# scapy
+# click>=8.1
 REQ
-
-        # Launcher (venv + auto-install requirements + PYTHONPATH=src + run module)
         cat > "$appdir/bin/$cmdname" <<'BASH'
 #!/usr/bin/env bash
 # Description: __APPNAME__ (venv launcher)
 set -Eeuo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
 # Ensure venv exists (idempotent)
 if [[ ! -x "$HERE/.venv/bin/python" ]]; then
   python3 -m venv "$HERE/.venv"
 fi
-
 # shellcheck source=/dev/null
 source "$HERE/.venv/bin/activate"
-
 # Auto-install requirements if present (quiet; non-fatal)
 if [[ -f "$HERE/requirements.txt" ]]; then
   "$HERE/.venv/bin/pip" install -r "$HERE/requirements.txt" >/dev/null 2>&1 || true
 fi
-
 # Make package under src/ importable
 export PYTHONPATH="$HERE/src${PYTHONPATH:+:$PYTHONPATH}"
-
 # Run the package as a module
 exec python -m __APPNAME__ "$@"
 BASH
         sed -i "s/__APPNAME__/$cmdname/g" "$appdir/bin/$cmdname"
         chmod +x "$appdir/bin/$cmdname"
-
       else
-        # Simple Python entry without venv
         cat > "$appdir/bin/$cmdname" <<'PY'
 #!/usr/bin/env python3
 # Description: Hello from app
@@ -675,11 +770,8 @@ PY
         chmod +x "$appdir/bin/$cmdname"
       fi
     fi
-
     ok "App scaffolded: $appdir"
-
   else
-    # Single-file script
     mkdir -p "$target_dir"
     if [[ "$lang" == "bash" ]]; then
       [[ "$name" != *.sh ]] && name="${name}.sh"
@@ -712,7 +804,14 @@ PY
   fi
 }
 
-# Wizard
+# --------------------------------------------------------------------------------------------------
+# Wizard — interactive project scaffolder + optional install + optional git prep
+#   • Reuses ask/ask_choice/ask_yesno which write to /dev/tty (no stdin capture weirdness)
+#   • Git step:
+#       - We NEVER prompt for username/password.
+#       - We print exactly what to run for SSH or HTTPS, and recommend SSH.
+#       - If the user enters a remote URL, we just wire it; otherwise we leave instructions.
+# --------------------------------------------------------------------------------------------------
 new_wizard(){
   ui_init; prompt_init
   tput clear 2>/dev/null || clear
@@ -720,34 +819,24 @@ new_wizard(){
   printf "%s🧙  BinMan Project Wizard%s\n" "$UI_BOLD" "$UI_RESET"
   printf "%sPress Enter to accept defaults in %s[brackets]%s.%s\n\n" "$UI_DIM" "$UI_BOLD" "$UI_RESET" "$UI_RESET"
 
-  # Section: Basics
+  # == Basics =================================================================
   printf "%s==> Basics%s\n" "$UI_GREEN" "$UI_RESET"
   local name kind lang target_dir desc author
   name="$(ask "Project name (no spaces)" "MyTool")"
-
-  # choose kind
-  kind="$(ask_choice "Type" "single/app" "app")"
-  [[ "${kind,,}" =~ ^s ]] && kind="single" || kind="app"
-
-  # language
-  lang="$(ask_choice "Language" "bash/python" "bash")"
-  [[ "${lang,,}" =~ ^p ]] && lang="python" || lang="bash"
-
-  # destination
-  target_dir="$(ask "Create in directory" "$PWD")"
-  mkdir -p "$target_dir"
-
+  kind="$(ask_choice "Type" "single/app" "app")"; [[ "${kind,,}" =~ ^s ]] && kind="single" || kind="app"
+  lang="$(ask_choice "Language" "bash/python" "bash")"; [[ "${lang,,}" =~ ^p ]] && lang="python" || lang="bash"
+  target_dir="$(ask "Create in directory" "$PWD")"; mkdir -p "$target_dir"
   desc="$(ask "Short description" "A neat little tool")"
   author="$(ask "Author" "${USER}")"
 
-  # Python venv toggle (only for app+python)
+  # == Python options (venv) ==================================================
   local with_venv="n"
   if [[ "$kind" == "app" && "$lang" == "python" ]]; then
     printf "\n%s==> Python options%s\n" "$UI_GREEN" "$UI_RESET"
-    if ask_yesno "Create virtual environment (.venv)?" "y"; then with_venv="y"; fi
+    ask_yesno "Create virtual environment (.venv)?" "y" && with_venv="y"
   fi
 
-  # Preview summary
+  # == Summary ================================================================
   printf "\n%s==> Summary%s\n" "$UI_GREEN" "$UI_RESET"
   prompt_kv "Name"        "$name"
   prompt_kv "Type"        "$kind"
@@ -756,16 +845,12 @@ new_wizard(){
   prompt_kv "Description" "$desc"
   prompt_kv "Author"      "$author"
   [[ "$with_venv" == "y" ]] && prompt_kv "Python venv" "enabled"
-
   echo
-  if ! ask_yesno "Proceed with generation?" "y"; then
-    warn "Aborted by user."
-    return 1
-  fi
+  ask_yesno "Proceed with generation?" "y" || { warn "Aborted by user."; return 1; }
 
   echo; ok "Generating…"
 
-  # Generate via new_cmd
+  # == Generate ===============================================================
   local filename path
   if [[ "$kind" == "single" ]]; then
     filename="$name"
@@ -774,7 +859,6 @@ new_wizard(){
     new_cmd "$filename" --lang "$lang" --dir "$target_dir"
     path="${target_dir}/${filename}"
 
-    # README
     cat > "${target_dir}/README.md" <<EOF
 # ${name}
 
@@ -783,19 +867,16 @@ ${desc}
 Author: ${author}
 
 ## Usage
-
 \`\`\`
 ${name%.*} [args]
 \`\`\`
 EOF
     ok "README.md created → ${target_dir}/README.md"
   else
-    local vflag=()
-    [[ "${with_venv,,}" == "y" ]] && vflag+=(--venv)
+    local vflag=(); [[ "${with_venv,,}" == "y" ]] && vflag+=(--venv)
     new_cmd "$name" --app --lang "$lang" --dir "$target_dir" "${vflag[@]}"
     path="${target_dir}/${name}"
 
-    # README
     cat > "${path}/README.md" <<EOF
 # ${name}
 
@@ -804,7 +885,6 @@ ${desc}
 Author: ${author}
 
 ## Layout
-
 \`\`\`
 ${name}/
 ├─ bin/${name}
@@ -813,7 +893,6 @@ ${name}/
 \`\`\`
 
 ## Run
-
 \`\`\`
 ${name} [args]
 \`\`\`
@@ -821,139 +900,101 @@ EOF
     ok "README.md created → ${path}/README.md"
   fi
 
-  # Install now?
-  echo
-  printf "%s==> Install%s\n" "$UI_GREEN" "$UI_RESET"
+  # == Install (optional) =====================================================
+  echo; printf "%s==> Install%s\n" "$UI_GREEN" "$UI_RESET"
   local saved_mode="$COPY_MODE"
   if ask_yesno "Install now?" "y"; then
-    if ask_yesno "Use symlink instead of copy?" "n"; then COPY_MODE="link"; else COPY_MODE="copy"; fi
+    ask_yesno "Use symlink instead of copy?" "n" && COPY_MODE="link" || COPY_MODE="copy"
     op_install "$path"
   fi
   COPY_MODE="$saved_mode"
 
-  # ─────────────────────────────────────────────────────────────
-  # Git setup (auto-friendly, but never blocks)
-  # ─────────────────────────────────────────────────────────────
-  echo
-  printf "%s==> Git%s\n" "$UI_GREEN" "$UI_RESET"
+  # == Git / GitHub (SSH, no passwords) ======================================
+  echo; printf "%s==> Git%s\n" "$UI_GREEN" "$UI_RESET"
   if ask_yesno "Initialize a git repo here?" "y"; then
-    local repo_root
-    [[ "$kind" == "app" ]] && repo_root="$path" || repo_root="$target_dir"
+    # Where to run git commands
+    local projdir; [[ "$kind" == "app" ]] && projdir="$path" || projdir="$target_dir"
 
-    # Initialize with gitprep if available, else plain git
-    if exists gitprep; then
-      ( cd "$repo_root" && gitprep --branch main )
-    else
-      warn "gitprep not found; doing a plain git init"
-      (
-        cd "$repo_root"
-        git init -b main >/dev/null 2>&1 || { git init >/dev/null; git symbolic-ref HEAD refs/heads/main >/dev/null 2>&1 || true; }
-        git add -A
-        git commit -m "init: ${name} (wizard)" >/dev/null 2>&1 || true
-      )
-    fi
-
-    # Decide remote flow
-    local have_gh=0
-    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-      have_gh=1
-    fi
-
-    echo
-    say "Git setup options:"
-    if (( have_gh )); then
-      say "  A) Create GitHub repo now (auto)"
-    fi
-    say "  B) Add an existing remote URL (SSH/HTTPS)"
-    say "  C) Local only (skip remote)"
-
-    local default_choice="C"
-    (( have_gh )) && default_choice="A"
-    local choice; choice="$(ask "Choose [A/B/C]" "$default_choice")"
-    choice="${choice^^}"
+    # Branch name
+    local gp_branch; gp_branch="$(ask "Default branch name" "main")"
 
     (
-      cd "$repo_root"
-      case "$choice" in
-        A)
-          if (( have_gh )); then
-            local owner repo visflag
-            owner="$(gh api user -q .login 2>/dev/null || echo "")"
-            repo="${name}"
-            visflag="--public"
-            ask_yesno "Create as private?" "n" && visflag="--private"
+      cd "$projdir"
+      # init via gitprep if available (gives README/.gitignore and first commit)
+      if exists gitprep; then
+        gitprep --branch "$gp_branch"
+      else
+        # minimal fallback init if gitprep isn't installed
+        if git init -b "$gp_branch" >/dev/null 2>&1; then :; else git init >/dev/null; git symbolic-ref HEAD "refs/heads/$gp_branch" >/dev/null 2>&1 || true; fi
+        [[ -f README.md ]] || printf "# %s\n\nInitialized with BinMan wizard.\n" "$name" > README.md
+        [[ -f .gitignore ]] || printf ".venv/\n.DS_Store\nnode_modules/\n__pycache__/\n" > .gitignore
+        git add -A && git commit -m "init: ${name} (BinMan wizard)" >/dev/null
+      fi
 
-            if gh repo create "${owner}/${repo}" $visflag --source . --push >/dev/null 2>&1; then
-              ok "Created GitHub repo ${owner}/${repo} and pushed."
-            else
-              warn "GitHub create/push failed (auth/perm/network?)."
-              warn "Leaving repo local-only. You can add a remote later."
-              say  "Try: gh repo create ${owner}/${repo} $visflag --source . --push"
-            fi
+      # Offer to wire a GitHub remote over SSH
+      if ask_yesno "Set up a GitHub remote (SSH) now?" "y"; then
+        # Try to guess GitHub username from gh auth; fall back to $USER
+        local gh_user gh_repo gh_vis ssh_url
+        gh_user="$USER"
+        if command -v gh >/dev/null 2>&1; then
+          # parse "Logged in to github.com as <user>"
+          gh_user_guess="$(gh auth status 2>/dev/null | awk '/as /{print $NF}' | tail -n1)"
+          [[ -n "$gh_user_guess" ]] && gh_user="$gh_user_guess"
+        fi
+
+        gh_user="$(ask "GitHub username" "$gh_user")"
+        gh_repo="$(ask "Repository name" "$(basename "$projdir")")"
+        gh_vis="$(ask_choice "Visibility" "public/private" "public")"
+        [[ "${gh_vis,,}" == "private" ]] && gh_vis="private" || gh_vis="public"
+
+        ssh_url="git@github.com:${gh_user}/${gh_repo}.git"
+
+        if command -v gh >/dev/null 2>&1 && ask_yesno "Create ${gh_user}/${gh_repo} on GitHub with 'gh' now?" "y"; then
+          # Create + set origin + push (no password prompts; uses your gh auth)
+          local visflag="--public"; [[ "$gh_vis" == "private" ]] && visflag="--private"
+          # -b selects default branch on create; --source . wires origin automatically
+          if gh repo create "${gh_user}/${gh_repo}" $visflag --source . --push -y -b "$gp_branch"; then
+            ok "Created and pushed → ${gh_user}/${gh_repo}"
           else
-            warn "'gh' not available or not authenticated; remaining local-only."
+            warn "gh failed to create/push. Wiring origin locally instead."
+            git remote remove origin >/dev/null 2>&1 || true
+            git remote add origin "$ssh_url"
+            say "Next:"
+            say "  git push -u origin ${gp_branch}"
           fi
-          ;;
-        B)
-          local remote_url
-          remote_url="$(ask "Remote URL (git@... or https://...)" "")"
-
-          if [[ -z "$remote_url" ]]; then
-            warn "No URL given; remaining local-only."
-            break
-          fi
-
-          # If user pasted a GitHub HTTPS URL, offer to convert to SSH
-          if [[ "$remote_url" =~ ^https://github\.com/([^/]+)/([^/.]+)(\.git)?$ ]]; then
-            local gh_owner="${BASH_REMATCH[1]}"
-            local gh_repo="${BASH_REMATCH[2]}"
-            local ssh_url="git@github.com:${gh_owner}/${gh_repo}.git"
-
-            # Check if SSH is likely to work
-            local can_ssh=0
-            if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-              can_ssh=1
-            elif ssh -T git@github.com -o BatchMode=yes >/dev/null 2>&1; then
-              can_ssh=1
-            fi
-
-            if (( can_ssh )) && ask_yesno "Use SSH instead of HTTPS for GitHub? ($ssh_url)" "y"; then
-              remote_url="$ssh_url"
-            else
-              warn "Keeping HTTPS. Note: pushes will prompt for a Personal Access Token."
-            fi
-          fi
-
-          if git remote get-url origin >/dev/null 2>&1; then
-            git remote set-url origin "$remote_url"
-          else
-            git remote add origin "$remote_url"
-          fi
-
-          # First push
-          git push -u origin main || warn "Push failed. If using HTTPS, use a PAT as the password."
-          ok "Remote set and push attempted."
-          ;;
-
-        *)
-          say ""
+        else
+          # No gh (or user declined). Just set origin to SSH and print next steps.
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "$ssh_url"
+          ok "Added origin → $ssh_url"
+          echo
           say "Next steps:"
-          say "  • Set remote: git remote add origin <git@... or https://...>"
-          say "  • Then push: git push -u origin main"
-          say "  • Or use:    gh repo create <owner>/<repo> --source . --push"
-          ;;
-      esac
+          say "  • Create the repo on GitHub named '${gh_repo}' under '${gh_user}'."
+          say "  • Or, with GitHub CLI:"
+          say "      gh repo create ${gh_user}/${gh_repo} --public --source . --push -y -b ${gp_branch}"
+          say "  • Then push:"
+          say "      git push -u origin ${gp_branch}"
+          echo
+        fi
+      else
+        echo
+        say "Next steps:"
+        say "  • Set remote: git remote add origin git@github.com:<user>/<repo>.git"
+        say "  • Then push:  git push -u origin ${gp_branch}"
+        echo
+      fi
     )
-  else
-    warn "Skipping git init."
+
+    ok "Git repository initialized."
   fi
 
   echo
   ok "Wizard complete. Happy hacking, ${author}! ✨"
 }
 
-
-# Banner
+# --------------------------------------------------------------------------------------------------
+# Banner & simple menu (TUI)
+# --------------------------------------------------------------------------------------------------
 print_banner(){
   ui_init
   tput clear 2>/dev/null || clear
@@ -988,12 +1029,14 @@ EOF
   ui_hr
 }
 
-# System write guard
+# Write guard for /usr/local
 ensure_system_write(){
   [[ -w "$SYSTEM_BIN" && -w "$SYSTEM_APPS" ]] || warn "Need write access to ${SYSTEM_BIN} and ${SYSTEM_APPS}. Try: sudo $SCRIPT_NAME --system <cmd> ..."
 }
 
-# Option parsing (also handles --backup/--restore immediate)
+# --------------------------------------------------------------------------------------------------
+# Option parser (top-level flags). Special-cases --backup/--restore to run immediately.
+# --------------------------------------------------------------------------------------------------
 parse_common_opts(){
   ARGS_OUT=()
   while [[ $# -gt 0 ]]; do
@@ -1017,7 +1060,9 @@ parse_common_opts(){
   return 1
 }
 
-# TUI
+# --------------------------------------------------------------------------------------------------
+# TUI loop
+# --------------------------------------------------------------------------------------------------
 binman_tui(){
   while :; do
     print_banner
@@ -1027,7 +1072,47 @@ binman_tui(){
       1) printf "File/dir/URL (or --manifest FILE): "; read -r f
          if [[ "$f" =~ ^--manifest[[:space:]]+ ]]; then op_install_manifest "${f#--manifest }"; else op_install "$f"; fi
          printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      2) printf "Name: "; read -r n; op_uninstall "$n"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+      2)
+        # Uninstall: show options, allow multi-select via fzf when available
+        if exists fzf; then
+          # Build combined list: prefix types for clarity; strip when passing to op_uninstall
+          mapfile -t _cmds < <(_get_installed_cmd_names)
+          mapfile -t _apps < <(_get_installed_app_names)
+
+          if ((${#_cmds[@]}==0 && ${#_apps[@]}==0)); then
+            warn "Nothing to uninstall."
+            printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+            continue
+          fi
+
+          _choices=()
+          for c in "${_cmds[@]}"; do _choices+=("cmd  $c"); done
+          for a in "${_apps[@]}"; do _choices+=("app  $a"); done
+
+          sel="$(printf "%s\n" "${_choices[@]}" | fzf --multi --prompt="Uninstall > " --height=60% --reverse || true)"
+          if [[ -n "$sel" ]]; then
+            names="$(echo "$sel" | awk '{print $2}' | tr '\n' ' ')"
+            # shellcheck disable=SC2086
+            op_uninstall $names
+          else
+            echo "Cancelled."
+          fi
+        else
+          # No fzf: print a compact list, then ask
+          _print_uninstall_menu
+          printf "Name (space-separated for multiple, Enter to cancel): "
+          IFS= read -r names
+          if [[ -n "$names" ]]; then
+            # shellcheck disable=SC2086
+            op_uninstall $names
+          else
+            echo "Cancelled."
+          fi
+        fi
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+        ;;
+
+
       3) op_list; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
       4) op_doctor; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
       5) printf "Name: "; read -r n; new_cmd "$n"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
@@ -1046,15 +1131,14 @@ binman_tui(){
   done
 }
 
-# ---- Main ----
+# --------------------------------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------------------------------
 if [[ $# -eq 0 ]]; then binman_tui; exit 0; fi
-
-# Parse opts (also handles --backup/--restore immediate)
 if parse_common_opts "$@"; then exit 0; fi
 set -- "${ARGS_OUT[@]}"
 
 ACTION="${1:-}"; shift || true
-
 case "$ACTION" in
   install)
     if [[ -n "$MANIFEST_FILE" ]]; then op_install_manifest "$MANIFEST_FILE"; else op_install "$@"; fi;;
