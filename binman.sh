@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# ==================================================================================================
 # binman.sh — Personal CLI utility manager for your ~/bin toys
 # --------------------------------------------------------------------------------------------------
 # Manage install/uninstall/list/update for single-file scripts AND multi-file apps.
@@ -812,6 +811,7 @@ PY
 #       - We print exactly what to run for SSH or HTTPS, and recommend SSH.
 #       - If the user enters a remote URL, we just wire it; otherwise we leave instructions.
 # --------------------------------------------------------------------------------------------------
+
 new_wizard(){
   ui_init; prompt_init
   tput clear 2>/dev/null || clear
@@ -909,88 +909,118 @@ EOF
   fi
   COPY_MODE="$saved_mode"
 
-  # == Git / GitHub (SSH, no passwords) ======================================
-  echo; printf "%s==> Git%s\n" "$UI_GREEN" "$UI_RESET"
-  if ask_yesno "Initialize a git repo here?" "y"; then
-    # Where to run git commands
-    local projdir; [[ "$kind" == "app" ]] && projdir="$path" || projdir="$target_dir"
+ # == Git / GitHub (SSH, gh-driven create if available) =====================
+ echo; printf "%s==> Git%s\n" "$UI_GREEN" "$UI_RESET"
+ if ask_yesno "Initialize a git repo here?" "y"; then
+   # Where to run git commands
+   local projdir; [[ "$kind" == "app" ]] && projdir="$path" || projdir="$target_dir"
 
-    # Branch name
-    local gp_branch; gp_branch="$(ask "Default branch name" "main")"
+   # Branch name
+   local gp_branch; gp_branch="$(ask "Default branch name" "main")"
 
-    (
-      cd "$projdir"
-      # init via gitprep if available (gives README/.gitignore and first commit)
-      if exists gitprep; then
-        gitprep --branch "$gp_branch"
-      else
-        # minimal fallback init if gitprep isn't installed
-        if git init -b "$gp_branch" >/dev/null 2>&1; then :; else git init >/dev/null; git symbolic-ref HEAD "refs/heads/$gp_branch" >/dev/null 2>&1 || true; fi
-        [[ -f README.md ]] || printf "# %s\n\nInitialized with BinMan wizard.\n" "$name" > README.md
-        [[ -f .gitignore ]] || printf ".venv/\n.DS_Store\nnode_modules/\n__pycache__/\n" > .gitignore
-        git add -A && git commit -m "init: ${name} (BinMan wizard)" >/dev/null
-      fi
+   (
+     cd "$projdir" || { err "Failed to cd $projdir"; return 1; }
 
-      # Offer to wire a GitHub remote over SSH
-      if ask_yesno "Set up a GitHub remote (SSH) now?" "y"; then
-        # Try to guess GitHub username from gh auth; fall back to $USER
-        local gh_user gh_repo gh_vis ssh_url
-        gh_user="$USER"
-        if command -v gh >/dev/null 2>&1; then
-          # parse "Logged in to github.com as <user>"
-          gh_user_guess="$(gh auth status 2>/dev/null | awk '/as /{print $NF}' | tail -n1)"
-          [[ -n "$gh_user_guess" ]] && gh_user="$gh_user_guess"
-        fi
+     # init via gitprep if available (preferred)
+     if exists gitprep; then
+       gitprep --branch "$gp_branch" || true
+     else
+       if git init -b "$gp_branch" >/dev/null 2>&1; then :; else
+         git init >/dev/null 2>&1
+         git symbolic-ref HEAD "refs/heads/$gp_branch" >/dev/null 2>&1 || true
+       fi
+       [[ -f README.md ]] || printf "# %s\n\nInitialized with BinMan wizard.\n" "$name" > README.md
+       [[ -f .gitignore ]] || printf ".venv/\n.DS_Store\nnode_modules/\n__pycache__/\n" > .gitignore
+       git add -A >/dev/null 2>&1
+       if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+         git commit -m "init: ${name} (BinMan wizard)" >/dev/null 2>&1 || true
+       else
+         if ! git diff --cached --quiet >/dev/null 2>&1; then
+           git commit -m "chore: snapshot (BinMan wizard)" >/dev/null 2>&1 || true
+         fi
+       fi
+     fi
 
-        gh_user="$(ask "GitHub username" "$gh_user")"
-        gh_repo="$(ask "Repository name" "$(basename "$projdir")")"
-        gh_vis="$(ask_choice "Visibility" "public/private" "public")"
-        [[ "${gh_vis,,}" == "private" ]] && gh_vis="private" || gh_vis="public"
+     # Offer to wire/create a GitHub repo
+     if ask_yesno "Set up a GitHub remote (SSH) now?" "y"; then
+       local gh_user gh_repo gh_vis ssh_url created_ok push_rc
+       # Prefer gh-detected login, fall back to $USER
+       gh_user="$USER"
+       if exists gh; then
+         local gh_user_guess
+         gh_user_guess="$(gh api user --jq '.login' 2>/dev/null || true)"
+         [[ -n "$gh_user_guess" ]] && gh_user="$gh_user_guess"
+       fi
 
-        ssh_url="git@github.com:${gh_user}/${gh_repo}.git"
+       gh_user="$(ask "GitHub username" "$gh_user")"
+       gh_repo="$(ask "Repository name" "$(basename "$projdir")")"
+       gh_vis="$(ask_choice "Visibility" "public/private" "private")"
+       [[ "${gh_vis,,}" == "private" ]] && gh_vis="private" || gh_vis="public"
 
-        if command -v gh >/dev/null 2>&1 && ask_yesno "Create ${gh_user}/${gh_repo} on GitHub with 'gh' now?" "y"; then
-          # Create + set origin + push (no password prompts; uses your gh auth)
-          local visflag="--public"; [[ "$gh_vis" == "private" ]] && visflag="--private"
-          # -b selects default branch on create; --source . wires origin automatically
-          if gh repo create "${gh_user}/${gh_repo}" $visflag --source . --push -y -b "$gp_branch"; then
-            ok "Created and pushed → ${gh_user}/${gh_repo}"
-          else
-            warn "gh failed to create/push. Wiring origin locally instead."
-            git remote remove origin >/dev/null 2>&1 || true
-            git remote add origin "$ssh_url"
-            say "Next:"
-            say "  git push -u origin ${gp_branch}"
-          fi
-        else
-          # No gh (or user declined). Just set origin to SSH and print next steps.
-          git remote remove origin >/dev/null 2>&1 || true
-          git remote add origin "$ssh_url"
-          ok "Added origin → $ssh_url"
-          echo
-          say "Next steps:"
-          say "  • Create the repo on GitHub named '${gh_repo}' under '${gh_user}'."
-          say "  • Or, with GitHub CLI:"
-          say "      gh repo create ${gh_user}/${gh_repo} --public --source . --push -y -b ${gp_branch}"
-          say "  • Then push:"
-          say "      git push -u origin ${gp_branch}"
-          echo
-        fi
-      else
-        echo
-        say "Next steps:"
-        say "  • Set remote: git remote add origin git@github.com:<user>/<repo>.git"
-        say "  • Then push:  git push -u origin ${gp_branch}"
-        echo
-      fi
-    )
+       ssh_url="git@github.com:${gh_user}/${gh_repo}.git"
+       created_ok=0
 
-    ok "Git repository initialized."
-  fi
+       if exists gh && ask_yesno "Create ${gh_user}/${gh_repo} on GitHub with 'gh' now?" "y"; then
+         # Create + set origin + push current branch
+         if gh repo create "${gh_user}/${gh_repo}" --"${gh_vis}" \
+              --source=. --remote=origin --push -y >/dev/null 2>&1; then
+           # Double-check it truly exists and capture the official SSH URL
+           local real_ssh
+           real_ssh="$(gh repo view "${gh_user}/${gh_repo}" --json sshUrl -q .sshUrl 2>/dev/null || true)"
+           if [[ -n "$real_ssh" ]]; then
+             git remote set-url origin "$real_ssh" >/dev/null 2>&1 || true
+           fi
+           ok "Created and pushed → ${gh_user}/${gh_repo}"
+           created_ok=1
+         else
+           warn "gh repo create failed (auth/permissions/name may be the issue). Falling back to manual wiring."
+         fi
+       fi
+
+       if [[ $created_ok -ne 1 ]]; then
+         # Manual wiring + first push attempt
+         git remote remove origin >/dev/null 2>&1 || true
+         git remote add origin "$ssh_url" >/dev/null 2>&1 || true
+         ok "Added origin → $ssh_url"
+
+         say "Attempting to push (will show failures if repo doesn't exist or auth missing)..."
+         git push -u origin "$gp_branch" >/dev/null 2>&1
+         push_rc=$?
+         if [[ $push_rc -eq 0 ]]; then
+           ok "Pushed to origin/$gp_branch"
+         else
+           warn "Push failed (exit $push_rc). Common reasons:"
+           warn "  • Repository not created on GitHub yet"
+           warn "  • SSH key not linked to your GitHub or access rights missing"
+           echo
+           say "Next steps (pick one):"
+           say "  1) Create the repo on GitHub named '${gh_repo}' under '${gh_user}', then:"
+           say "       git push -u origin ${gp_branch}"
+           say "  2) Use GitHub CLI (now that it's installed & authed):"
+           say "       gh repo create ${gh_user}/${gh_repo} --${gh_vis} --source . --remote=origin --push -y"
+           say "  3) Prefer HTTPS? (not recommended here):"
+           say "       git remote set-url origin https://github.com/${gh_user}/${gh_repo}.git"
+           say "       git push -u origin ${gp_branch}"
+           echo
+         fi
+       fi
+     else
+       echo
+       say "Next steps:"
+       say "  • Set remote: git remote add origin git@github.com:<user>/<repo>.git"
+       say "  • Then push:  git push -u origin ${gp_branch}"
+       echo
+     fi
+   )
+
+   ok "Git repository initialized."
+ fi
 
   echo
   ok "Wizard complete. Happy hacking, ${author}! ✨"
 }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # Banner & simple menu (TUI)
