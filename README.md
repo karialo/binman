@@ -22,7 +22,7 @@ Now with **backup/restore**, **rollback snapshots**, **self-update**, **bundles*
 - **TUI**: run `binman` with no args → full menu of operations.
 - **System mode**: `--system` installs to `/usr/local/*` (requires perms).
 
-Version in this README: **v1.6.0**
+Version in this README: **v1.6.4**
 
 ---
 
