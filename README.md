@@ -2,22 +2,27 @@
 
 Personal CLI script/app manager for your `~/.local/bin` toys.  
 Install, uninstall, list, update, and scaffold **single-file scripts** *and* **multi-file apps**.  
-Now with **backup/restore**, a tidy **doctor**, and both **wizard** + **TUI**.
+Now with **backup/restore**, **rollback snapshots**, **self-update**, **bundles**, **remote sources**, **manifests**, **system installs**, and more.
 
 ---
 
 ## Features
 
-- **Install**: drop a script into `~/.local/bin/<name>` or an app into `~/.local/share/binman/apps/<name>`.
+- **Install**: files, apps, or even remote URLs → into `~/.local/bin` or `~/.local/share/binman/apps`.
 - **Uninstall**: remove a single command or a whole app (shim + store dir).
-- **List**: show installed commands & apps with versions.
-- **Update**: force-reinstall from a given file/dir path (great for quick edits).
-- **Generator**: `binman new` scaffolds a ready-to-run script or app (bash/python).
-- **Wizard**: interactive project generator with README + optional git init.
-- **TUI**: run `binman` with no args for a simple menu.
-- **Backup/Restore**: snapshot `BIN_DIR` and `APP_STORE` to `.zip` (or `.tar.gz` fallback) and restore later.
+- **List**: show installed commands & apps with version and docstring (from top comment).
+- **Update**: force-reinstall from file/dir, optionally with a `--git` pull first.
+- **Backup/Restore**: snapshot + restore everything, `.zip` or `.tar.gz`.
+- **Rollback**: auto-snapshots before changes; roll back to previous state.
+- **Self-update**: pull the BinMan repo and reinstall itself.
+- **Bundle export**: pack bin+apps+manifest for sync/migration.
+- **Manifest install**: bulk installs from text or JSON (with `jq`).
+- **Generator**: `binman new` scaffolds scripts/apps (bash/python), with optional venv.
+- **Wizard**: interactive generator (with README + gitprep support).
+- **TUI**: run `binman` with no args → full menu of operations.
+- **System mode**: `--system` installs to `/usr/local/*` (requires perms).
 
-Version in this README: **v1.4.0**
+Version in this README: **v1.6.0**
 
 ---
 
@@ -43,9 +48,9 @@ source ~/.zshrc
 
 ## How it works
 
-- **Scripts**: Installed as `~/.local/bin/<name>`. (Extension dropped.)
-- **Apps**: Copied/symlinked into `~/.local/share/binman/apps/<name>` with a shim at `~/.local/bin/<name>`.
-- **Versions**: Detected from `VERSION=` / `# Version:` / `__version__` or a `VERSION` file.
+- **Scripts**: installed as `~/.local/bin/<name>` (extension dropped).
+- **Apps**: copied/symlinked into `~/.local/share/binman/apps/<name>` with a shim at `~/.local/bin/<name>`.
+- **Versions**: detected from `VERSION=`, `# Version:`, `__version__`, or a `VERSION` file.
 
 Shim looks like:
 
@@ -58,22 +63,27 @@ exec "$HOME/.local/share/binman/apps/<name>/bin/<name>" "$@"
 
 ## Usage
 
-### Global Options (apply to most commands)
+### Global Options
 
 - `--from DIR` — operate on all executables in DIR  
 - `--link` — use symlinks instead of copying  
-- `--force` — overwrite during install/restore  
-- `--git DIR` — before `update`, run `git pull` in DIR  
+- `--force` — overwrite on install/restore  
+- `--git DIR` — pull repo before `update` or `self-update`  
 - `--bin DIR` — override bin directory (default `~/.local/bin`)  
 - `--apps DIR` — override apps directory (default `~/.local/share/binman/apps`)  
-- `--fix-path` — with `doctor`, patch PATH into `~/.zshrc`/`~/.zprofile`
+- `--system` — use `/usr/local/*` (global install/uninstall)  
+- `--fix-path` — patch PATH into `~/.zshrc` / `~/.zprofile`  
+- `--manifest FILE` — bulk install from manifest  
+- `--quiet` — reduce chatter  
 
 ### Install
 
 ```
 binman install ./hello.sh
 binman install ./tools/resize.py
-binman install ./MyApp            # expects ./MyApp/bin/MyApp
+binman install ./MyApp/                  # expects ./MyApp/bin/MyApp
+binman install https://host/script.sh    # remote file
+binman install --manifest tools.txt      # bulk install
 ```
 
 ### Uninstall
@@ -89,20 +99,55 @@ binman uninstall MyApp
 binman list
 ```
 
-### Update (reinstall with overwrite)
+### Update (with optional git pull)
 
 ```
 binman update ./hello.sh
 binman update ./MyApp
-# Optional: auto-pull first
 binman update --git ~/Projects/MyApp ./MyApp
 ```
 
 ### Doctor
 
 ```
-binman doctor           # shows BIN_DIR/APP_STORE, PATH, zip/tar availability
+binman doctor
 binman doctor --fix-path
+```
+
+### Backup & Restore
+
+```
+binman backup
+binman backup my-stash.zip
+binman restore binman_backup-20250101-120000.zip
+binman restore my-stash.tgz --force
+```
+
+### Rollback
+
+```
+binman rollback          # latest snapshot
+binman rollback <ID>     # specific snapshot
+```
+
+### Self-update
+
+```
+binman self-update
+binman --git ~/Projects/BinMan self-update
+```
+
+### Bundle export
+
+```
+binman bundle my-env.zip
+```
+
+### Test harness
+
+```
+binman test hello -- --help
+binman test resize -- -v
 ```
 
 ### New (scaffold)
@@ -111,22 +156,24 @@ binman doctor --fix-path
 binman new tidy.sh
 binman new resize.py
 binman new MediaTool --app --lang bash
-binman new SmartTool --app --lang python --dir ~/Projects/Tools
+binman new SmartTool --app --lang python --dir ~/Projects/Tools --venv
 ```
 
-Bash script scaffold:
+Scaffolded Bash script:
 
 ```
 #!/usr/bin/env bash
+# Description: Hello from script
 VERSION="0.1.0"
 set -Eeuo pipefail
 echo "Hello from <name> v$VERSION"
 ```
 
-Python script scaffold:
+Scaffolded Python script:
 
 ```
 #!/usr/bin/env python3
+# Description: Hello from script
 __version__ = "0.1.0"
 
 def main():
@@ -153,7 +200,7 @@ App scaffold layout:
 binman wizard
 ```
 
-Prompts for name, type (single/app), language (bash/python), directory, author/desc, installs optionally, and can init git via `gitprep` if available.
+Prompts for name, type (single/app), language, directory, author/desc, venv (for python apps), installs optionally, and can init git with `gitprep`.
 
 ### TUI
 
@@ -162,48 +209,18 @@ binman tui
 # or just: binman
 ```
 
-Menu includes Install, Uninstall, List, Doctor, New, Wizard, **Backup**, **Restore**.
+Menu includes Install, Uninstall, List, Doctor, New, Wizard, Backup, Restore, Self-update, Rollback, Bundle, Test, and System toggle.
 
 ---
 
-## Backup & Restore
+## Backup & Restore details
 
-Create safe snapshots of everything BinMan manages.
-
-### Backup
-
-- If `zip/unzip` exist → `.zip`  
-- Otherwise falls back to `.tar.gz`
-
-```
-# Timestamped file in CWD
-binman backup
-
-# Custom filename (extension auto-added if missing)
-binman --backup my-stash.zip
-binman backup my-stash.tgz
-```
-
-Backup contents:
-- `bin/` — your commands from `BIN_DIR`
-- `apps/` — your app directories from `APP_STORE`
-- `meta/info.txt` — metadata (timestamp, host, paths, BinMan version)
-
-### Restore
-
-Merges archive back into your current `BIN_DIR` and `APP_STORE`.  
-Skips existing files unless `--force` is provided.
-
-```
-# Standard restore (no overwrite)
-binman restore binman_backup-20250101-120000.zip
-
-# Force overwrite existing files
-binman --restore binman_backup-20250101-120000.zip --force
-
-# Alternate archive types supported
-binman restore my-stash.tgz
-```
+- **Backup** uses `.zip` if `zip/unzip` are available, otherwise `.tar.gz`.  
+- Contents:  
+  - `bin/` → commands from `BIN_DIR`  
+  - `apps/` → app directories from `APP_STORE`  
+  - `meta/info.txt` → metadata (timestamp, host, BinMan version, dirs)  
+- **Restore** merges into current dirs; skips existing unless `--force`.
 
 ---
 
@@ -216,32 +233,33 @@ binman update path/to/script-or-app
 rehash 2>/dev/null || hash -r 2>/dev/null || true
 ```
 
-- **Entrypoint rule for apps**: executable must be `bin/<appname>`.
-- **Symlink installs** for live-edit dev: pass `--link` during install.
+- Entrypoint rule for apps: must have `bin/<appname>`.  
+- Use `--link` for live-edit dev installs.  
 
 ---
 
 ## Troubleshooting
 
-- **Try these first:**
-  - Installed? → `binman -h`
-  - Not installed? → `./binman.sh -h`
+- Installed? → `binman -h`  
+- Not installed? → `./binman.sh -h`  
 
 Common issues:
-- **`command not found`** → ensure `~/.local/bin` on `PATH` + rehash.
-- **`permission denied`** → `chmod +x` before `install`.
-- **App won’t install** → must contain `bin/<name>`.
-- **Restore didn’t overwrite** → use `--force`.
-- **No `zip/unzip`** → `doctor` will warn; backup falls back to `.tar.gz`.
+- **`command not found`** → add `~/.local/bin` to PATH + rehash  
+- **`permission denied`** → `chmod +x` before install  
+- **app won’t install** → must contain `bin/<name>`  
+- **restore didn’t overwrite** → add `--force`  
+- **zip/unzip missing** → `doctor` warns, falls back to tar.gz  
 
 ---
 
 ## Roadmap
 
-- Smarter update metadata.
-- Bulk git-aware updates.
-- Optional Python venv support for app scaffolds.
-- (Maybe) `--system` target for `/usr/local` with sudo guards.
+- Smarter update metadata
+- Bulk git-aware updates
+- More bundle/sync flows across machines
+- Install hooks (pre/post)
+- Binlets (tiny inline scripts)
+- Extra UX candy
 
 ---
 
