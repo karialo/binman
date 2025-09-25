@@ -275,27 +275,79 @@ ui_kv(){ printf "%s%-10s%s %s\n" "$UI_DIM" "$1" "$UI_RESET" "$2"; }
 # --------------------------------------------------------------------------------------------------
 # App utilities (entry resolution + shim creation)
 # --------------------------------------------------------------------------------------------------
+
 _detect_entry(){
-  # ARG: appdir; OUT: echo "CMD|CWD|REQ" (REQ may be blank)
+  # ARG: appdir; OUT: "CMD|CWD|REQ" (REQ may be blank)
   local d="$1" lang="" req=""
   [[ -f "$d/requirements.txt" ]] && req="requirements.txt"
-  [[ -f "$d/pyproject.toml" || -f "$d/setup.cfg" || -f "$d/setup.py" ]] && lang="python"
-  [[ -f "$d/package.json" ]] && lang="node"
-  [[ -f "$d/Cargo.toml" ]] && lang="rust"
-  [[ -f "$d/go.mod" ]] && lang="go"
-  [[ -f "$d/Gemfile" ]] && lang="ruby"
-  [[ -f "$d/composer.json" ]] && lang="php"
 
-  # node/ts
+  # quick language hints (keep these cheap)
+  [[ -f "$d/pyproject.toml" || -f "$d/setup.cfg" || -f "$d/setup.py" ]] && lang="python"
+  [[ -f "$d/package.json"  ]] && lang="node"
+  [[ -f "$d/Cargo.toml"    ]] && lang="rust"
+  [[ -f "$d/go.mod" || -d "$d/cmd" ]] && lang="go"
+  if [[ -f "$d/Gemfile" ]]; then
+    lang="ruby"
+  elif compgen -G "$d"/*.gemspec >/dev/null 2>&1; then
+    lang="ruby"
+  fi
+  [[ -f "$d/composer.json" ]] && lang="php"
+  [[ -f "$d/deno.json" || -f "$d/deno.jsonc" ]] && lang="deno"
+
+  # ---------- helpers ----------
+  _norm_repo(){
+    local s="$1"
+    s="${s%-master}"; s="${s%-main}"; s="${s%-app}"; s="${s%-cli}"
+    s="${s,,}"; s="${s// /_}"; s="${s//-/_}"; s="${s//./_}"
+    printf "%s" "$s"
+  }
+  _has_shebang(){ head -n1 "$1" 2>/dev/null | grep -qE '^#!'; }
+
+  local base want want_hy
+  base="$(basename "$d")"
+  want="$(_norm_repo "$base")"
+  want_hy="${want//_/-}"
+
+  # ---------- node / ts ----------
   if [[ "$lang" == "node" && -f "$d/package.json" ]]; then
-    local bin start
-    bin="$(jq -r '.bin|objects|to_entries[0].value // empty' "$d/package.json" 2>/dev/null || true)"
-    start="$(jq -r '.scripts.start // empty' "$d/package.json" 2>/dev/null || true)"
-    if [[ -n "$bin"   ]]; then echo "node $bin||";   return 0; fi
-    if [[ -n "$start" ]]; then echo "npm run start||"; return 0; fi
+    # parse with python; print two lines to avoid nested here-doc tricks
+    local __node=() node_bin="" node_start=""
+    mapfile -t __node <<<"$(python3 - "$d" <<'PY'
+import json,sys,os
+p=os.path.join(sys.argv[1],'package.json')
+try:
+    d=json.load(open(p))
+    b=d.get('bin')
+    if isinstance(b,str): binpath=b
+    elif isinstance(b,dict) and b: binpath=next(iter(b.values()))
+    else: binpath=""
+    start=(d.get('scripts') or {}).get('start',"")
+    print((binpath or "").strip())
+    print((start or "").strip())
+except Exception:
+    print("")
+    print("")
+PY
+)"
+    node_bin="${__node[0]}"
+    node_start="${__node[1]}"
+    if [[ -n "$node_bin"   ]]; then echo "node $node_bin||";     return 0; fi
+    if [[ -n "$node_start" ]]; then echo "npm run start||";       return 0; fi
+    # bare TS repo (best-effort if user installed tsx)
+    [[ -f "$d/src/index.ts" ]] && { echo "tsx src/index.ts||"; return 0; }
   fi
 
-  # rust
+  # ---------- deno ----------
+  if [[ "$lang" == "deno" || -f "$d/deno.json" || -f "$d/deno.jsonc" ]]; then
+    if command -v deno >/dev/null 2>&1 && deno task --help >/dev/null 2>&1; then
+      echo "deno task start||"; return 0
+    fi
+    for f in "main.ts" "mod.ts" "src/main.ts" "main.js" "mod.js" "src/main.js"; do
+      [[ -f "$d/$f" ]] && { echo "deno run -A $f||"; return 0; }
+    done
+  fi
+
+  # ---------- rust ----------
   if [[ "$lang" == "rust" && -f "$d/Cargo.toml" ]]; then
     local bins
     bins=$(awk '/^\[\[bin\]\]/{f=1} f&&/^name *=/{gsub(/[ "\047]/,""); print $3}' "$d/Cargo.toml")
@@ -306,122 +358,207 @@ _detect_entry(){
     [[ -f "$d/src/main.rs" ]] && { echo "cargo run --release||"; return 0; }
   fi
 
-  # go (prefer cmd/<repo-name>/main.go; otherwise skip tool dirs)
-  if [[ "$lang" == "go" || -f "$d/go.mod" || -d "$d/cmd" ]]; then
+  # ---------- go ----------
+  if [[ "$lang" == "go" ]]; then
     local mains=()
     while IFS= read -r -d '' m; do mains+=("$m"); done \
       < <(find "$d/cmd" -mindepth 2 -maxdepth 2 -type f -name main.go -print0 2>/dev/null)
-
     if ((${#mains[@]})); then
-      local base want choose=""
-      base="$(basename "$d")"
-      want="${base%-main}"; want="${want%-app}"
-
-      # 1) exact match: cmd/<repo-name>/main.go
+      local choose=""
+      # 1) exact cmd/<repo>/main.go
       for m in "${mains[@]}"; do
         local dir; dir="$(basename "$(dirname "$m")")"
-        if [[ "$dir" == "$want" ]]; then choose="$dir"; break; fi
+        [[ "${dir,,}" == "$want" || "${dir,,}" == "$want_hy" ]] && { choose="$dir"; break; }
       done
-
-      # 2) otherwise, pick the first non-tool-ish command
+      # 2) first non-tool-ish dir
       if [[ -z "$choose" ]]; then
         for m in "${mains[@]}"; do
           local dir; dir="$(basename "$(dirname "$m")")"
-          [[ "$dir" =~ ^(i18n|tools?|internal|example|examples|demo|test|tests)$ ]] && continue
+          [[ "${dir,,}" =~ ^(i18n|tools?|internal|example|examples|demo|test|tests|integration(_|-)?tests?)$ ]] && continue
+          [[ "${dir,,}" == *test* ]] && continue
           choose="$dir"; break
         done
       fi
-
-      # 3) still nothing? fall back to the first one
+      # 3) fallback: first
       [[ -z "$choose" ]] && choose="$(basename "$(dirname "${mains[0]}")")"
-
       echo "go run ./cmd/$choose||"; return 0
     fi
-
-    # single-module main at repo root
     [[ -f "$d/main.go" ]] && { echo "go run .||"; return 0; }
   fi
 
-
-  # ruby
+  # ---------- ruby ----------
   if [[ "$lang" == "ruby" ]]; then
-    [[ -x "$d/bin/$(basename "$d")" ]] && { echo "$d/bin/$(basename "$d")||"; return 0; }
+    # only use bundler if it's installed; otherwise fall back to running directly
+    local rb_prefix=""
+    if [[ -f "$d/Gemfile" ]] && command -v bundle >/dev/null 2>&1; then
+      rb_prefix="bundle exec "
+    fi
+
+    # Prefer exe/<repo> (Ruby gem layout) then bin/<repo> (handle hyphen/underscore)
+    if [[ -x "$d/exe/$want"    ]]; then echo "${rb_prefix}./exe/$want||";    return 0; fi
+    if [[ -x "$d/exe/$want_hy" ]]; then echo "${rb_prefix}./exe/$want_hy||"; return 0; fi
+    if [[ -x "$d/bin/$want"    ]]; then echo "${rb_prefix}./bin/$want||";    return 0; fi
+    if [[ -x "$d/bin/$want_hy" ]]; then echo "${rb_prefix}./bin/$want_hy||"; return 0; fi
+
+    # Gem executables from *.gemspec (first listed)
+    local gemspec; gemspec=$(ls "$d"/*.gemspec 2>/dev/null | head -n1 || true)
+    if [[ -n "$gemspec" ]]; then
+      # crude parse handles: s.executables = ["colorls"]  / %w[colorls]
+      local exe
+      exe="$(grep -Eo 'executables\s*=\s*(\[.*\]|%w\[[^]]+\])' "$gemspec" \
+            | head -n1 \
+            | sed -E 's/.*\[(.*)\].*/\1/' \
+            | tr -d '"[:space:]' \
+            | cut -d, -f1)"
+      [[ -n "$exe" && -x "$d/exe/$exe" ]] && { echo "${rb_prefix}./exe/$exe||"; return 0; }
+      [[ -n "$exe" && -x "$d/bin/$exe" ]] && { echo "${rb_prefix}./bin/$exe||"; return 0; }
+    fi
+
+    # Loose ruby entry points
     [[ -f "$d/src/main.rb" ]] && { echo "ruby src/main.rb||"; return 0; }
     [[ -f "$d/main.rb"    ]] && { echo "ruby main.rb||";    return 0; }
   fi
 
-  # php
+  # ---------- php ----------
   if [[ "$lang" == "php" ]]; then
+    if [[ -f "$d/composer.json" ]]; then
+      local pbin
+      pbin="$(
+python3 - "$d" <<'PY'
+import json,sys,os
+p=os.path.join(sys.argv[1],'composer.json')
+try:
+  d=json.load(open(p))
+  b=d.get('bin')
+  if isinstance(b,str): print(b)
+  elif isinstance(b,list) and b: print(b[0])
+except Exception:
+  pass
+PY
+)"
+      [[ -n "$pbin" ]] && { echo "php $pbin||"; return 0; }
+    fi
     [[ -f "$d/public/index.php" ]] && { echo "php public/index.php||"; return 0; }
     [[ -f "$d/index.php"        ]] && { echo "php index.php||";        return 0; }
     [[ -f "$d/src/main.php"     ]] && { echo "php src/main.php||";     return 0; }
   fi
 
-  # ── python (pyproject → console scripts) ─────────────────────────────────────
+  # ---------- python ----------
   if [[ -f "$d/pyproject.toml" ]]; then
+    # poetry / PEP621 scripts → module
     local script
     script="$(
-      python3 - "$d" <<'PY' 2>/dev/null
+python3 - "$d" <<'PY'
 import sys, pathlib
-try:
-    import tomllib  # 3.11+
-except Exception:
-    tomllib = None
-
 pp = pathlib.Path(sys.argv[1])/'pyproject.toml'
-if tomllib:
-    try:
-        data = tomllib.loads(pp.read_text())
-        for path in (('tool','poetry','scripts'), ('project','scripts')):
-            o = data
-            for k in path:
-                if isinstance(o, dict) and k in o:
-                    o = o[k]
-                else:
-                    o = None; break
-            if isinstance(o, dict) and o:
-                print(next(iter(o.values())))
-                break
-    except Exception:
-        pass
+try:
+  import tomllib  # 3.11+
+  data = tomllib.loads(pp.read_text())
+except Exception:
+  data = {}
+def first_script(d):
+  for path in (('tool','poetry','scripts'), ('project','scripts')):
+    o = d
+    for k in path:
+      if isinstance(o, dict) and k in o: o = o[k]
+      else: o = None; break
+    if isinstance(o, dict) and o:
+      return next(iter(o.values()))
+  return ""
+print(first_script(data))
 PY
-    )"
+)"
     if [[ -n "$script" ]]; then
-      script="${script%%:*}"             # pkg:func → pkg
+      script="${script%%:*}"                     # pkg:func → pkg
       echo "python -m $script||$req"; return 0
     fi
   fi
 
-  # Common python fallbacks
-  local base; base="$(basename "$d")"
-  for f in "src/$base/__main__.py" "src/main.py" "src/start.py" "$base.py" "main.py" "start.py"; do
+  # setup.cfg console_scripts
+  if [[ -f "$d/setup.cfg" ]]; then
+    local cfg_script
+    cfg_script="$(
+python3 - "$d" <<'PY'
+import sys, configparser, pathlib, re
+p = pathlib.Path(sys.argv[1])/'setup.cfg'
+cp = configparser.ConfigParser()
+try:
+  cp.read(p)
+  val = cp.get('options.entry_points', 'console_scripts', fallback='')
+  m = re.search(r'=\s*([a-zA-Z0-9_.]+):', val)
+  if m: print(m.group(1))
+except Exception:
+  pass
+PY
+)"
+    if [[ -n "$cfg_script" ]]; then
+      echo "python -m $cfg_script||$req"; return 0
+    fi
+  fi
+
+  # Common python files (a few extra)
+  local base_lower="${base,,}"
+  for f in \
+    "src/$base/__main__.py" "src/${base_lower}/__main__.py" \
+    "$base/__main__.py" "${base_lower}/__main__.py" \
+    "src/main.py" "src/start.py" "src/app.py" "src/cli.py" \
+    "$base.py" "main.py" "start.py" "app.py" "cli.py"
+  do
     [[ -f "$d/$f" ]] && { echo "python3 $f||$req"; return 0; }
   done
 
-  # Extra python heuristics (to catch repos like FooBar-main with FooBar.py at root)
+  # Single root .py or root name match
   local py_files=()
-  while IFS= read -r -d '' f; do py_files+=("$(basename "$f")"); done < <(find "$d" -maxdepth 1 -type f -name '*.py' -print0 2>/dev/null)
+  while IFS= read -r -d '' f; do py_files+=("$(basename "$f")"); done \
+    < <(find "$d" -maxdepth 1 -type f -name '*.py' -print0 2>/dev/null)
   if (( ${#py_files[@]} == 1 )); then
     echo "python3 ${py_files[0]}||$req"; return 0
   fi
   if (( ${#py_files[@]} )); then
-    local stem="$base"
-    stem="${stem%-main}"; stem="${stem%-app}"
-    stem="${stem//[^A-Za-z0-9_]/}"      # strip non-word chars
-    shopt -s nocasematch
     for p in "${py_files[@]}"; do
-      local s="${p%.py}"
-      if [[ "$s" == "$stem" || "$s" == "${stem/-/_}" || "$s" == "${stem/_/-}" ]]; then
-        echo "python3 $p||$req"; shopt -u nocasematch; return 0
+      local stem="${p%.py}"; local norm="${stem,,}"; norm="${norm//-/_}"
+      if [[ "$norm" == "$want" || "$norm" == "$want_hy" ]]; then
+        echo "python3 $p||$req"; return 0
       fi
     done
-    shopt -u nocasematch
   fi
 
+  # ---------- generic bin/ & exe/ fallbacks ----------
+  if [[ -d "$d/exe" ]]; then
+    mapfile -t _exes < <(find "$d/exe" -maxdepth 1 -type f -perm -u+x -printf '%f\n' 2>/dev/null | sort)
+    if ((${#_exes[@]}==1)); then
+      local rb_prefix=""; if [[ -f "$d/Gemfile" ]] && command -v bundle >/dev/null 2>&1; then rb_prefix="bundle exec "; fi
+      echo "${rb_prefix}./exe/${_exes[0]}||"; return 0
+    fi
+    for b in "${_exes[@]}"; do
+      local bn="${b,,}"; local nb="${bn//-/_}"
+      if [[ "$bn" == "$want" || "$bn" == "$want_hy" || "$nb" == "$want" ]]; then
+        local rb_prefix=""; if [[ -f "$d/Gemfile" ]] && command -v bundle >/dev/null 2>&1; then rb_prefix="bundle exec "; fi
+        echo "${rb_prefix}./exe/$b||"; return 0
+      fi
+    done
+  fi
+
+  if [[ -d "$d/bin" ]]; then
+    mapfile -t _bins < <(find "$d/bin" -maxdepth 1 -type f -perm -u+x -printf '%f\n' 2>/dev/null | sort)
+    if ((${#_bins[@]}==1)); then
+      echo "./bin/${_bins[0]}||"; return 0
+    fi
+    for b in "${_bins[@]}"; do
+      local bn="${b,,}"; local nb="${bn//-/_}"
+      if [[ "$bn" == "$want" || "$bn" == "$want_hy" || "$nb" == "$want" ]]; then
+        echo "./bin/$b||"; return 0
+      fi
+    done
+    # last-ditch: single shebangbed script in bin/
+    local sheb=()
+    for b in "${_bins[@]}"; do _has_shebang "$d/bin/$b" && sheb+=("$b"); done
+    if ((${#sheb[@]}==1)); then echo "./bin/${sheb[0]}||"; return 0; fi
+  fi
+
+  # nothing compelling
   echo "||"
 }
-
-
 
 
 _app_entry(){ local appdir="$1"; local name; name=$(basename "$appdir"); echo "$appdir/bin/$name"; }

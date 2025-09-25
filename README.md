@@ -140,15 +140,74 @@ exec "$HOME/.local/share/binman/apps/<name>/bin/<name>" "$@"
 - `--manifest FILE` — bulk install from manifest  
 - `--quiet` — reduce chatter  
 
+### App entry / runtime helpers (for installing directories):
+
+- `--entry CMD` — custom entry command for an app dir (e.g. python3 src/main.py, go run ./cmd/tool, cargo run --release, node ./bin/cli.js, bundle exec ./exe/colorls)
+
+- `--workdir DIR` / `--cwd DIR` — cd into this subdir before running --entry
+
+- `--venv` — for Python apps: create/activate ./.venv and run inside it
+
+- `--req FILE` / `--requirements FILE` — requirements file name (default requirements.txt)
+
+- `--python BIN` — Python to bootstrap the venv (default python3)
+
+Heads-up: if you have fzf installed, the Uninstall menu supports multi-select.
+
 ### Install
 
 ```
+# Single files (extension dropped)
 binman install ./hello.sh
 binman install ./tools/resize.py
-binman install ./MyApp/                  # expects ./MyApp/bin/MyApp
-binman install https://host/script.sh    # remote file
-binman install --manifest tools.txt      # bulk install
+
+# URLs still work
+binman install https://host/script.sh
+
+# App directories
+# BinMan will try to auto-detect an entry:
+#   • Python: pyproject console-scripts → python -m pkg, or common files (src/<name>/__main__.py, main.py, …)
+#   • Node/TS: package.json {"bin": …} or "scripts.start"; otherwise tsx src/index.ts if present
+#   • Go: cmd/<app>/main.go (prefers repo name), else main.go → go run …
+#   • Rust: Cargo.toml (bin) → cargo run --release
+#   • Ruby: exe/<name> or bin/<name> (gems); Gemfile → uses bundler if available
+#   • PHP: composer.json "bin": [...]
+#   • Deno: deno task start or common main.ts/js
+binman install ./MyApp/
+
+# When auto-detect can’t guess, tell it explicitly:
+binman install ./RepoDir --entry 'python3 src/main.py'
+
+# Python app with a managed venv + requirements:
+binman install ./Harvester --entry 'python3 BjornWpaSecHarvester.py' --venv --req requirements.txt
+
+# Pick a different Python to seed the venv:
+binman install ./Tool --entry 'python3 -m tool' --venv --python /usr/bin/python3.11
+
+# Node examples
+binman install ./colorizer             # uses package.json "bin" or "scripts.start"
+binman install ./node-thing --entry 'node ./bin/cli.js'
+
+# Go example (multi-cmd repo)
+binman install ./lazygit-master        # chooses a sensible ./cmd/<app> if found
+binman install ./go-proj --entry 'go run ./cmd/proj'
+
+# Rust example
+binman install ./ripgrep --entry 'cargo run --release --bin rg'
+
+# Ruby (gem layout)
+binman install ./colorls-main          # exe/colorls (uses bundler if present)
+binman install ./some-gem --entry 'bundle exec ./exe/some-gem'   # force bundler
+
+# Deno
+binman install ./deno-app              # prefers `deno task start` if defined
+binman install ./deno-app --entry 'deno run -A main.ts'
+
+# Bulk
+binman install --manifest tools.txt
 ```
+
+Tip: for app installs, BinMan creates a tiny shim in your bin that cds into the app, then runs the detected or provided entry. With --venv, Python apps get a local .venv that’s created on first run and quietly pip install -r if a requirements file is present.
 
 ### Uninstall
 
