@@ -1,84 +1,89 @@
 #!/usr/bin/env bash
-# gitprep.sh — initialize the CURRENT directory as a clean git repo
+# gitprep — initialize the CURRENT directory as a clean git repo and auto-create GitHub remote
 # Author: K.A.R.I. for Daddy
-# Version: 1.1.0
+# Version: 1.2.0
 
 set -Eeuo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
-# defaults
+# ---- defaults ---------------------------------------------------------------
 BRANCH="main"
-REMOTE_URL=""
-DO_PUSH=0
-GH_CREATE=""
-GH_VISIBILITY="public"  # or "private"
-
-# new: smart auto-remote/create
-AUTO=0
-OWNER=""
-PROTO="ssh"             # ssh | https
+VISIBILITY="private"       # default safer; override with --public
+PROTO="ssh"                # ssh | https for origin URL
+PUSH=1                     # push by default
+USE_GH=1                   # always use gh to auto-create/verify
+OWNER=""                   # auto-detect from gh auth
+NAME=""                    # defaults to basename of CWD
 
 say(){ printf "%s\n" "$*"; }
 ok(){ printf "\e[32m%s\e[0m\n" "$*"; }
 warn(){ printf "\e[33m%s\e[0m\n" "$*"; }
-err(){ printf "\e[31m%s\e[0m\n" "$*" 1>&2; }
+err(){ printf "\e[31m%s\e[0m\n" "$*" 1>&2; exit 1; }
+exists(){ command -v "$1" >/dev/null 2>&1; }
 
 usage(){
   cat <<USAGE
 gitprep v${VERSION}
-Initialize the current directory as a git repo, add README + .gitignore, make the first commit,
-optionally set a remote, and (optionally) push.
+Initialize current directory as a git repo, seed README/.gitignore, commit, and
+**automatically create or wire a GitHub repo** with origin set and pushed.
 
 USAGE:
-  gitprep [--branch main] [--remote <git@...|https://...>] [--push]
-          [--gh <owner/repo>] [--private|--public]
-          [--auto] [--owner <github-username>] [--proto ssh|https]
+  gitprep [options]
 
 Options:
-  --branch NAME        Initial branch name (default: main)
-  --remote URL         Set 'origin' to URL (add or replace)
-  --push               Push to origin <branch> after prepping
-  --gh OWNER/REPO      Create remote with GitHub CLI (gh) and set origin
-  --private            Use private visibility when creating with --gh (default: public)
-  --public             Explicitly set public (default)
-  --auto               If gh is available, auto-detect owner/<cwd>, set origin if exists,
-                       otherwise create it on GitHub (respects --private/--public)
-  --owner NAME         Override detected GitHub owner/login used by --auto
-  --proto ssh|https    Remote URL protocol for --auto (default: ssh)
+  --branch NAME        Initial branch (default: main)
+  --public             Make the GitHub repo public (default: private)
+  --private            Make the GitHub repo private
+  --proto ssh|https    Origin protocol (default: ssh)
+  --owner NAME         GitHub owner/org (default: your gh login)
+  --name  NAME         Repository name (default: basename of CWD)
+  --no-push            Prepare + create repo, but don't push
+  --no-gh              Don't touch GitHub (local repo only)
   -h, --help           Show this help
 
 Examples:
   gitprep
-  gitprep --remote git@github.com:you/cool-tool.git --push
-  gitprep --gh you/cool-tool --private --push
-  gitprep --auto --push            # smart: set or create origin for <owner>/<cwd>
-  gitprep --auto --owner karialo --proto https --private --push
+  gitprep --public
+  gitprep --owner karialo --name TestTool --proto https
+  gitprep --no-push      # create remote and set origin, skip first push
+  gitprep --no-gh        # local-only init (no remote)
 USAGE
 }
 
-# parse args
+# ---- args -------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --branch) BRANCH="${2:-}"; shift 2 ;;
-    --remote) REMOTE_URL="${2:-}"; shift 2 ;;
-    --push) DO_PUSH=1; shift ;;
-    --gh) GH_CREATE="${2:-}"; shift 2 ;;
-    --private) GH_VISIBILITY="private"; shift ;;
-    --public) GH_VISIBILITY="public"; shift ;;
-    --auto) AUTO=1; shift ;;
-    --owner) OWNER="${2:-}"; shift 2 ;;
+    --public) VISIBILITY="public"; shift ;;
+    --private) VISIBILITY="private"; shift ;;
     --proto) PROTO="${2:-ssh}"; shift 2 ;;
+    --owner) OWNER="${2:-}"; shift 2 ;;
+    --name)  NAME="${2:-}"; shift 2 ;;
+    --no-push) PUSH=0; shift ;;
+    --no-gh) USE_GH=0; shift ;;
     -h|--help) usage; exit 0 ;;
-    *) err "Unknown option: $1"; usage; exit 2 ;;
+    *) err "Unknown option: $1" ;;
   esac
 done
 
-command -v git >/dev/null 2>&1 || { err "git is required"; exit 1; }
+# ---- prereqs ----------------------------------------------------------------
+exists git || err "git is required"
+if [[ $USE_GH -eq 1 ]]; then
+  exists gh || err "'gh' CLI not found. Install GitHub CLI or run with --no-gh."
+  gh auth status >/dev/null 2>&1 || err "'gh' not authenticated. Run: gh auth login --web --ssh"
+fi
 
+# ---- repo name/owner --------------------------------------------------------
 CWD_NAME="$(basename "$PWD")"
+REPO_NAME="${NAME:-$CWD_NAME}"
 
-# --- init repo if needed ---
+if [[ $USE_GH -eq 1 && -z "$OWNER" ]]; then
+  OWNER="$(gh api user --jq .login 2>/dev/null || true)"
+  [[ -z "$OWNER" ]] && err "Could not determine GitHub owner. Use --owner NAME."
+fi
+
+# ---- init repo / branch -----------------------------------------------------
 if [[ ! -d .git ]]; then
   if git init -b "$BRANCH" >/dev/null 2>&1; then
     ok "Initialized git repo on branch '$BRANCH'"
@@ -88,33 +93,30 @@ if [[ ! -d .git ]]; then
     ok "Initialized git repo (legacy mode), target branch '$BRANCH'"
   fi
 else
-  warn "Already a git repo: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
   CURB="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "$BRANCH")"
-  if [[ "$CURB" = "master" && "$BRANCH" != "master" ]]; then
-    git branch -M "$BRANCH" || true
-    ok "Renamed branch 'master' → '$BRANCH'"
+  if [[ "$CURB" != "$BRANCH" ]]; then
+    # create/switch without nuking history
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+      git checkout "$BRANCH" >/dev/null 2>&1 || true
+    else
+      git checkout -b "$BRANCH" >/dev/null 2>&1 || true
+    fi
   fi
+  ok "Repo present (branch: $(git rev-parse --abbrev-ref HEAD))"
 fi
 
-# --- seed README if missing ---
+# ---- seed files -------------------------------------------------------------
 if [[ ! -f README.md ]]; then
   cat > README.md <<EOF
-# ${CWD_NAME}
+# ${REPO_NAME}
 
-Initialized with \`gitprep\` — ${BRANCH} branch.
-
-## Quick start
-
-- Edit files
-- Commit changes
-- (Optional) set a remote and push
+Initialized with \`gitprep\` — branch \`${BRANCH}\`.
 EOF
   ok "Created README.md"
 else
   warn "README.md exists (leaving as-is)"
 fi
 
-# --- seed .gitignore if missing ---
 if [[ ! -f .gitignore ]]; then
   cat > .gitignore <<'EOF'
 # OS / editors
@@ -150,21 +152,21 @@ else
   warn ".gitignore exists (leaving as-is)"
 fi
 
-# --- stage & commit ---
+# ---- commit snapshot / initial ---------------------------------------------
 git add -A
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
   if ! git diff --cached --quiet; then
-    git commit -m "chore: snapshot $(date -Iseconds)" >/dev/null
+    git commit -m "chore: snapshot ($(date -Iseconds))" >/dev/null
     ok "Committed snapshot"
   else
     warn "No changes to commit"
   fi
 else
-  git commit -m "init: ${CWD_NAME} (gitprep v${VERSION})" >/dev/null
+  git commit -m "init: ${REPO_NAME} (gitprep v${VERSION})" >/dev/null
   ok "Created initial commit"
 fi
 
-# --- helper: set origin URL ---
+# ---- helpers ----------------------------------------------------------------
 set_origin() {
   local url="$1"
   if git remote get-url origin >/dev/null 2>&1; then
@@ -176,83 +178,53 @@ set_origin() {
   fi
 }
 
-# --- configure remote origin (URL or gh create or auto) ---
-if [[ -n "$GH_CREATE" ]]; then
-  if command -v gh >/dev/null 2>&1; then
-    VISFLAG="--public"; [[ "$GH_VISIBILITY" = "private" ]] && VISFLAG="--private"
-    gh repo create "$GH_CREATE" "$VISFLAG" --source . --push >/dev/null 2>&1 || {
-      err "Failed to create GitHub repo via gh (check auth?)."
-      exit 1
-    }
-    ok "Created GitHub repo: $GH_CREATE (and pushed)"
-    exit 0
-  else
-    err "'gh' CLI not found; install GitHub CLI or use --remote"
-    exit 1
-  fi
-fi
+canonical_ssh_url() {
+  gh repo view "$1" --json sshUrl -q .sshUrl 2>/dev/null || true
+}
+canonical_https_url() {
+  gh repo view "$1" --json url -q .url 2>/dev/null || true
+}
 
-if [[ $AUTO -eq 1 && -z "$REMOTE_URL" ]]; then
-  if command -v gh >/dev/null 2>&1; then
-    # Detect owner/login when not provided
-    if [[ -z "$OWNER" ]]; then
-      OWNER="$(gh api user -q .login 2>/dev/null || true)"
-    fi
-    if [[ -z "$OWNER" ]]; then
-      warn "Could not determine GitHub owner (gh auth?). Falling back to manual."
+# ---- remote creation / wiring ----------------------------------------------
+if [[ $USE_GH -eq 1 ]]; then
+  SLUG="${OWNER}/${REPO_NAME}"
+  # Does it already exist?
+  if gh repo view "$SLUG" >/dev/null 2>&1; then
+    ok "Found existing GitHub repo: $SLUG"
+    if [[ "$PROTO" == "https" ]]; then
+      URL="$(canonical_https_url "$SLUG")"; [[ -n "$URL" ]] || URL="https://github.com/${SLUG}.git"
     else
-      REPO_SLUG="${OWNER}/${CWD_NAME}"
-      # Does the repo already exist?
-      if gh repo view "$REPO_SLUG" >/dev/null 2>&1; then
-        # Set origin based on protocol preference
-        if [[ "$PROTO" == "https" ]]; then
-          REMOTE_URL="https://github.com/${REPO_SLUG}.git"
-        else
-          REMOTE_URL="git@github.com:${REPO_SLUG}.git"
-        fi
-        ok "Found existing repo ${REPO_SLUG}"
-      else
-        # Create the repo
-        VISFLAG="--public"; [[ "$GH_VISIBILITY" = "private" ]] && VISFLAG="--private"
-        if [[ $DO_PUSH -eq 1 ]]; then
-          gh repo create "$REPO_SLUG" $VISFLAG --source . --push >/dev/null 2>&1 || {
-            err "Failed to create GitHub repo via gh (check auth?)."
-            exit 1
-          }
-          ok "Created GitHub repo: ${REPO_SLUG} (and pushed)"
-          exit 0
-        else
-          gh repo create "$REPO_SLUG" $VISFLAG --source . >/dev/null 2>&1 || {
-            err "Failed to create GitHub repo via gh (check auth?)."
-            exit 1
-          }
-          ok "Created GitHub repo: ${REPO_SLUG}"
-          # set origin URL now so next steps show the push hint
-          if [[ "$PROTO" == "https" ]]; then
-            REMOTE_URL="https://github.com/${REPO_SLUG}.git"
-          else
-            REMOTE_URL="git@github.com:${REPO_SLUG}.git"
-          fi
-        fi
-      fi
+      URL="$(canonical_ssh_url "$SLUG")"; [[ -n "$URL" ]] || URL="git@github.com:${SLUG}.git"
     fi
+    set_origin "$URL"
   else
-    warn "--auto requested but 'gh' CLI not found; skipping auto."
+    ok "Creating GitHub repo: $SLUG (${VISIBILITY})"
+    # Use current branch; set origin and push in one go
+    if gh repo create "$SLUG" --"$VISIBILITY" --source . --remote origin ${PUSH:+--push} -y >/dev/null 2>&1; then
+      # Ensure origin is the canonical URL format we want
+      if [[ "$PROTO" == "https" ]]; then
+        URL="$(canonical_https_url "$SLUG")"; [[ -n "$URL" ]] || URL="https://github.com/${SLUG}.git"
+      else
+        URL="$(canonical_ssh_url "$SLUG")"; [[ -n "$URL" ]] || URL="git@github.com:${SLUG}.git"
+      fi
+      set_origin "$URL"
+      ok "GitHub repo created${PUSH:+ and pushed} → $SLUG"
+    else
+      err "Failed to create GitHub repo via gh. Check auth/permissions or if the name is taken."
+    fi
   fi
+else
+  warn "--no-gh set: skipping remote creation."
 fi
 
-if [[ -n "$REMOTE_URL" ]]; then
-  set_origin "$REMOTE_URL"
-fi
-
-# --- push (optional) ---
-if [[ $DO_PUSH -eq 1 ]]; then
+# ---- push (if not pushed already) ------------------------------------------
+if [[ $PUSH -eq 1 ]]; then
   if git remote get-url origin >/dev/null 2>&1; then
-    git push -u origin "$BRANCH"
-    ok "Pushed to origin/$BRANCH"
+    # If gh already pushed, this will be a no-op fast-forward
+    git push -u origin "$BRANCH" >/dev/null 2>&1 || err "Push failed. Check SSH/HTTPS auth."
+    ok "Pushed $BRANCH → origin"
   else
-    err "No remote 'origin' set. Use --remote <URL> or --gh <owner/repo> or --auto."
-    exit 1
+    warn "No origin set; skipping push."
   fi
 else
   say ""
@@ -260,8 +232,7 @@ else
   if git remote get-url origin >/dev/null 2>&1; then
     say "  • Push now: git push -u origin ${BRANCH}"
   else
-    say "  • Set remote: git remote add origin <git@... or https://...>"
-    say "  • Then push: git push -u origin ${BRANCH}"
-    say "  • Or rerun: gitprep --auto --push   # uses gh to set/create origin"
+    say "  • Set remote: git remote add origin git@github.com:${OWNER:-<owner>}/${REPO_NAME}.git"
+    say "  • Then push:  git push -u origin ${BRANCH}"
   fi
 fi
