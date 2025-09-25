@@ -718,14 +718,14 @@ new_cmd(){
   _entry(){ echo "$(_appdir)/bin/$cmdname"; }
 
   case "$lang" in
-    bash|sh|shell)    lang="bash" ;;
-    py|python3)       lang="python" ;;
-    js|node|javascript) lang="node" ;;
-    ts|typescript)    lang="typescript" ;;
-    go|golang)        lang="go" ;;
-    rs|rust)          lang="rust" ;;
-    rb|ruby)          lang="ruby" ;;
-    php)              lang="php" ;;
+    bash|sh|shell)        lang="bash" ;;
+    py|python3)           lang="python" ;;
+    js|node|javascript)   lang="node" ;;
+    ts|typescript)        lang="typescript" ;;
+    go|golang)            lang="go" ;;
+    rs|rust)              lang="rust" ;;
+    rb|ruby)              lang="ruby" ;;
+    php)                  lang="php" ;;
     *) : ;;
   esac
 
@@ -777,8 +777,13 @@ BASH
         ;;
 
       node)
-        # Node app: bin script (node shebang) + src/index.js + package.json hint
-        _wr "$appdir/src/index.js" "export function main(){ console.log('__APPNAME__ v0.1.0 — hello (node)'); }\nif (import.meta.url === \`file://\${process.argv[1]}\`) main();"
+        # Node app: bin script + src/index.js + package.json
+        cat > "$appdir/src/index.js" <<'JS'
+export function main() {
+  console.log("__APPNAME__ v0.1.0 — hello (node)");
+}
+if (import.meta.url === `file://${process.argv[1]}`) main();
+JS
         sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/index.js"
         cat > "$(_entry)" <<'JS'
 #!/usr/bin/env node
@@ -806,7 +811,6 @@ export function main(): void {
 if (import.meta.url === `file://${process.argv[1]}`) main();
 TS
         sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/index.ts"
-        # launcher prefers tsx, falls back to ts-node, otherwise helpful message
         cat > "$(_entry)" <<'BASH'
 #!/usr/bin/env bash
 # Description: __APPNAME__ (TypeScript runtime launcher)
@@ -904,7 +908,9 @@ BASH
         ;;
 
       ruby)
-        _wr "$appdir/src/main.rb" "puts '__APPNAME__ v0.1.0 — hello (ruby)'\n"
+        cat > "$appdir/src/main.rb" <<'RB'
+puts "__APPNAME__ v0.1.0 — hello (ruby)"
+RB
         sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/main.rb"
         cat > "$(_entry)" <<'RB'
 #!/usr/bin/env ruby
@@ -915,7 +921,10 @@ RB
         ;;
 
       php)
-        _wr "$appdir/src/main.php" "<?php\nprintf(\"__APPNAME__ v0.1.0 — hello (php)\\n\");\n"
+        cat > "$appdir/src/main.php" <<'PHP'
+<?php
+printf("__APPNAME__ v0.1.0 — hello (php)\n");
+PHP
         sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/main.php"
         cat > "$(_entry)" <<'PHP'
 #!/usr/bin/env php
@@ -983,7 +992,7 @@ const version = "0.1.0";
 console.log(`Hello from __SCRIPTNAME__ v${version} (typescript)`);
 TS
         sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/$name"
-        # Tiny launcher alongside it so it's runnable immediately
+        # Tiny launcher so TS runs immediately
         cat > "$target_dir/${cmdname}" <<'BASH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -1004,7 +1013,6 @@ import "fmt"
 func main(){ fmt.Println("Hello from __SCRIPTNAME__ v0.1.0 (go)") }
 GO
         sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/$name"
-        # build helper
         cat > "$target_dir/${cmdname}" <<'BASH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -1019,7 +1027,6 @@ BASH
         ;;
 
       rust)
-        # single-file rust via cargo quick project
         local rdir="$target_dir/${cmdname}_rs"
         _mk "$rdir/src"
         echo -e "[package]\nname=\"$cmdname\"\nversion=\"0.1.0\"\nedition=\"2021\"" > "$rdir/Cargo.toml"
