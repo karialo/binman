@@ -216,11 +216,17 @@ binman test resize -- -v
 
 ### New (scaffold)
 
+BinMan can conjure projects in multiple languages:
+
 ```
 binman new tidy.sh
 binman new resize.py
-binman new MediaTool --app --lang bash
-binman new SmartTool --app --lang python --dir ~/Projects/Tools --venv
+binman new MyGoTool --app --lang go
+binman new MyRustyApp --app --lang rust
+binman new MyWebby --app --lang node
+binman new MyGem --app --lang ruby
+binman new MyPhpThing --app --lang php
+binman new SmartTool --app --lang python --venv
 ```
 
 Scaffolded Bash script:
