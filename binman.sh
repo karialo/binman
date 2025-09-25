@@ -41,6 +41,15 @@ SYSTEM_MODE=0      # target system dirs
 MANIFEST_FILE=""   # bulk install manifest
 QUIET=0            # less noisy
 
+ENTRY_CMD=""      # custom entry command for apps
+ENTRY_CWD=""      # optional subdir to cd into before running entry
+
+ENTRY_CMD=""        # --entry "<command to exec inside appdir>"
+ENTRY_CWD=""        # --workdir "<subdir inside appdir>" (optional)
+VENV_MODE=0         # --venv : create/activate app-local .venv for entry
+REQ_FILE=""         # --req FILE : requirements file name (default: requirements.txt)
+BOOT_PY="python3"   # --python BIN : bootstrap interpreter to create venv
+
 # --------------------------------------------------------------------------------------------------
 # Small helpers (consistent messages, detection, paths)
 # --------------------------------------------------------------------------------------------------
@@ -266,6 +275,155 @@ ui_kv(){ printf "%s%-10s%s %s\n" "$UI_DIM" "$1" "$UI_RESET" "$2"; }
 # --------------------------------------------------------------------------------------------------
 # App utilities (entry resolution + shim creation)
 # --------------------------------------------------------------------------------------------------
+_detect_entry(){
+  # ARG: appdir; OUT: echo "CMD|CWD|REQ" (REQ may be blank)
+  local d="$1" lang="" req=""
+  [[ -f "$d/requirements.txt" ]] && req="requirements.txt"
+  [[ -f "$d/pyproject.toml" || -f "$d/setup.cfg" || -f "$d/setup.py" ]] && lang="python"
+  [[ -f "$d/package.json" ]] && lang="node"
+  [[ -f "$d/Cargo.toml" ]] && lang="rust"
+  [[ -f "$d/go.mod" ]] && lang="go"
+  [[ -f "$d/Gemfile" ]] && lang="ruby"
+  [[ -f "$d/composer.json" ]] && lang="php"
+
+  # node/ts
+  if [[ "$lang" == "node" && -f "$d/package.json" ]]; then
+    local bin start
+    bin="$(jq -r '.bin|objects|to_entries[0].value // empty' "$d/package.json" 2>/dev/null || true)"
+    start="$(jq -r '.scripts.start // empty' "$d/package.json" 2>/dev/null || true)"
+    if [[ -n "$bin"   ]]; then echo "node $bin||";   return 0; fi
+    if [[ -n "$start" ]]; then echo "npm run start||"; return 0; fi
+  fi
+
+  # rust
+  if [[ "$lang" == "rust" && -f "$d/Cargo.toml" ]]; then
+    local bins
+    bins=$(awk '/^\[\[bin\]\]/{f=1} f&&/^name *=/{gsub(/[ "\047]/,""); print $3}' "$d/Cargo.toml")
+    if [[ -n "$bins" ]]; then
+      local first; first="$(printf "%s\n" "$bins" | head -n1)"
+      echo "cargo run --release --bin $first||"; return 0
+    fi
+    [[ -f "$d/src/main.rs" ]] && { echo "cargo run --release||"; return 0; }
+  fi
+
+  # go (prefer cmd/<repo-name>/main.go; otherwise skip tool dirs)
+  if [[ "$lang" == "go" || -f "$d/go.mod" || -d "$d/cmd" ]]; then
+    local mains=()
+    while IFS= read -r -d '' m; do mains+=("$m"); done \
+      < <(find "$d/cmd" -mindepth 2 -maxdepth 2 -type f -name main.go -print0 2>/dev/null)
+
+    if ((${#mains[@]})); then
+      local base want choose=""
+      base="$(basename "$d")"
+      want="${base%-main}"; want="${want%-app}"
+
+      # 1) exact match: cmd/<repo-name>/main.go
+      for m in "${mains[@]}"; do
+        local dir; dir="$(basename "$(dirname "$m")")"
+        if [[ "$dir" == "$want" ]]; then choose="$dir"; break; fi
+      done
+
+      # 2) otherwise, pick the first non-tool-ish command
+      if [[ -z "$choose" ]]; then
+        for m in "${mains[@]}"; do
+          local dir; dir="$(basename "$(dirname "$m")")"
+          [[ "$dir" =~ ^(i18n|tools?|internal|example|examples|demo|test|tests)$ ]] && continue
+          choose="$dir"; break
+        done
+      fi
+
+      # 3) still nothing? fall back to the first one
+      [[ -z "$choose" ]] && choose="$(basename "$(dirname "${mains[0]}")")"
+
+      echo "go run ./cmd/$choose||"; return 0
+    fi
+
+    # single-module main at repo root
+    [[ -f "$d/main.go" ]] && { echo "go run .||"; return 0; }
+  fi
+
+
+  # ruby
+  if [[ "$lang" == "ruby" ]]; then
+    [[ -x "$d/bin/$(basename "$d")" ]] && { echo "$d/bin/$(basename "$d")||"; return 0; }
+    [[ -f "$d/src/main.rb" ]] && { echo "ruby src/main.rb||"; return 0; }
+    [[ -f "$d/main.rb"    ]] && { echo "ruby main.rb||";    return 0; }
+  fi
+
+  # php
+  if [[ "$lang" == "php" ]]; then
+    [[ -f "$d/public/index.php" ]] && { echo "php public/index.php||"; return 0; }
+    [[ -f "$d/index.php"        ]] && { echo "php index.php||";        return 0; }
+    [[ -f "$d/src/main.php"     ]] && { echo "php src/main.php||";     return 0; }
+  fi
+
+  # ── python (pyproject → console scripts) ─────────────────────────────────────
+  if [[ -f "$d/pyproject.toml" ]]; then
+    local script
+    script="$(
+      python3 - "$d" <<'PY' 2>/dev/null
+import sys, pathlib
+try:
+    import tomllib  # 3.11+
+except Exception:
+    tomllib = None
+
+pp = pathlib.Path(sys.argv[1])/'pyproject.toml'
+if tomllib:
+    try:
+        data = tomllib.loads(pp.read_text())
+        for path in (('tool','poetry','scripts'), ('project','scripts')):
+            o = data
+            for k in path:
+                if isinstance(o, dict) and k in o:
+                    o = o[k]
+                else:
+                    o = None; break
+            if isinstance(o, dict) and o:
+                print(next(iter(o.values())))
+                break
+    except Exception:
+        pass
+PY
+    )"
+    if [[ -n "$script" ]]; then
+      script="${script%%:*}"             # pkg:func → pkg
+      echo "python -m $script||$req"; return 0
+    fi
+  fi
+
+  # Common python fallbacks
+  local base; base="$(basename "$d")"
+  for f in "src/$base/__main__.py" "src/main.py" "src/start.py" "$base.py" "main.py" "start.py"; do
+    [[ -f "$d/$f" ]] && { echo "python3 $f||$req"; return 0; }
+  done
+
+  # Extra python heuristics (to catch repos like FooBar-main with FooBar.py at root)
+  local py_files=()
+  while IFS= read -r -d '' f; do py_files+=("$(basename "$f")"); done < <(find "$d" -maxdepth 1 -type f -name '*.py' -print0 2>/dev/null)
+  if (( ${#py_files[@]} == 1 )); then
+    echo "python3 ${py_files[0]}||$req"; return 0
+  fi
+  if (( ${#py_files[@]} )); then
+    local stem="$base"
+    stem="${stem%-main}"; stem="${stem%-app}"
+    stem="${stem//[^A-Za-z0-9_]/}"      # strip non-word chars
+    shopt -s nocasematch
+    for p in "${py_files[@]}"; do
+      local s="${p%.py}"
+      if [[ "$s" == "$stem" || "$s" == "${stem/-/_}" || "$s" == "${stem/_/-}" ]]; then
+        echo "python3 $p||$req"; shopt -u nocasematch; return 0
+      fi
+    done
+    shopt -u nocasematch
+  fi
+
+  echo "||"
+}
+
+
+
+
 _app_entry(){ local appdir="$1"; local name; name=$(basename "$appdir"); echo "$appdir/bin/$name"; }
 _make_shim(){
   local name="$1" entry="$2" shim="$BIN_DIR/$name"
@@ -277,6 +435,174 @@ _make_shim_system(){
   printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"
   chmod +x "$shim"
 }
+
+# --- user shim: custom entry (no venv) ---------------------------------------
+_make_shim_cmd(){
+  local name="$1" appdir="$2" cmd="$3" cwd="${4:-}" shim="$BIN_DIR/$name"
+  local QAPP QCMD QCWD
+  QAPP=$(printf %q "$appdir")
+  QCMD=$(printf %q "$cmd")
+  QCWD=$(printf %q "$cwd")
+
+  cat > "$shim" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+APPDIR=$QAPP
+CWD=$QCWD
+CMD_RAW=$QCMD
+
+# cd into working dir if provided
+if [[ -n "\$CWD" && -d "\$APPDIR/\$CWD" ]]; then
+  cd "\$APPDIR/\$CWD"
+else
+  cd "\$APPDIR"
+fi
+
+# Reconstruct command preserving quoted segments
+declare -a __ARR=()
+eval "__ARR=( \$CMD_RAW )"
+exec "\${__ARR[@]}" "\$@"
+EOF
+  chmod +x "$shim"
+}
+
+# --- system shim: custom entry (no venv) -------------------------------------
+_make_shim_cmd_system(){
+  local name="$1" appdir="$2" cmd="$3" cwd="${4:-}" shim="$SYSTEM_BIN/$name"
+  local QAPP QCMD QCWD
+  QAPP=$(printf %q "$appdir")
+  QCMD=$(printf %q "$cmd")
+  QCWD=$(printf %q "$cwd")
+
+  cat > "$shim" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+APPDIR=$QAPP
+CWD=$QCWD
+CMD_RAW=$QCMD
+
+if [[ -n "\$CWD" && -d "\$APPDIR/\$CWD" ]]; then
+  cd "\$APPDIR/\$CWD"
+else
+  cd "\$APPDIR"
+fi
+
+declare -a __ARR=()
+eval "__ARR=( \$CMD_RAW )"
+exec "\${__ARR[@]}" "\$@"
+EOF
+  chmod +x "$shim"
+}
+
+# --- user shim: custom entry with Python venv --------------------------------
+_make_shim_cmd_venv(){
+  # name, appdir, cmd, cwd, reqfile, boot_python
+  local name="$1" appdir="$2" cmd="$3" cwd="${4:-}" req="${5:-}" boot_py="${6:-python3}"
+  local shim="$BIN_DIR/$name"
+  local QAPP QCMD QCWD QREQ QBOOT
+  QAPP=$(printf %q "$appdir")
+  QCMD=$(printf %q "$cmd")
+  QCWD=$(printf %q "$cwd")
+  QREQ=$(printf %q "$req")
+  QBOOT=$(printf %q "$boot_py")
+
+  cat > "$shim" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+APPDIR=$QAPP
+CWD=$QCWD
+CMD_RAW=$QCMD
+REQ=$QREQ
+BOOT_PY=$QBOOT
+
+VENV="\$APPDIR/.venv"
+
+# create venv if missing
+if [[ ! -x "\$VENV/bin/python" ]]; then
+  "\${BOOT_PY:-python3}" -m venv "\$VENV"
+fi
+
+# activate venv
+# shellcheck disable=SC1091
+source "\$VENV/bin/activate"
+
+# install requirements (quiet; best effort)
+if [[ -n "\$REQ" && -f "\$APPDIR/\$REQ" ]]; then
+  pip install -q -r "\$APPDIR/\$REQ" || true
+elif [[ -f "\$APPDIR/requirements.txt" ]]; then
+  pip install -q -r "\$APPDIR/requirements.txt" || true
+fi
+
+# cd into working dir if provided
+if [[ -n "\$CWD" && -d "\$APPDIR/\$CWD" ]]; then
+  cd "\$APPDIR/\$CWD"
+else
+  cd "\$APPDIR"
+fi
+
+# if the entry begins with python/python3, swap in venv python
+declare -a __ARR=()
+eval "__ARR=( \$CMD_RAW )"
+if [[ "\${__ARR[0]}" == python || "\${__ARR[0]}" == python3 || "\${__ARR[0]##*/}" == python || "\${__ARR[0]##*/}" == python3 ]]; then
+  __ARR[0]="\$VENV/bin/python"
+fi
+
+exec "\${__ARR[@]}" "\$@"
+EOF
+  chmod +x "$shim"
+}
+
+# --- system shim: custom entry with Python venv ------------------------------
+_make_shim_cmd_venv_system(){
+  local name="$1" appdir="$2" cmd="$3" cwd="${4:-}" req="${5:-}" boot_py="${6:-python3}"
+  local shim="$SYSTEM_BIN/$name"
+  local QAPP QCMD QCWD QREQ QBOOT
+  QAPP=$(printf %q "$appdir")
+  QCMD=$(printf %q "$cmd")
+  QCWD=$(printf %q "$cwd")
+  QREQ=$(printf %q "$req")
+  QBOOT=$(printf %q "$boot_py")
+
+  cat > "$shim" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+APPDIR=$QAPP
+CWD=$QCWD
+CMD_RAW=$QCMD
+REQ=$QREQ
+BOOT_PY=$QBOOT
+
+VENV="\$APPDIR/.venv"
+
+if [[ ! -x "\$VENV/bin/python" ]]; then
+  "\${BOOT_PY:-python3}" -m venv "\$VENV"
+fi
+# shellcheck disable=SC1091
+source "\$VENV/bin/activate"
+
+if [[ -n "\$REQ" && -f "\$APPDIR/\$REQ" ]]; then
+  pip install -q -r "\$APPDIR/\$REQ" || true
+elif [[ -f "\$APPDIR/requirements.txt" ]]; then
+  pip install -q -r "\$APPDIR/requirements.txt" || true
+fi
+
+if [[ -n "\$CWD" && -d "\$APPDIR/\$CWD" ]]; then
+  cd "\$APPDIR/\$CWD"
+else
+  cd "\$APPDIR"
+fi
+
+declare -a __ARR=()
+eval "__ARR=( \$CMD_RAW )"
+if [[ "\${__ARR[0]}" == python || "\${__ARR[0]}" == python3 || "\${__ARR[0]##*/}" == python || "\${__ARR[0]##*/}" == python3 ]]; then
+  __ARR[0]="\$VENV/bin/python"
+fi
+
+exec "\${__ARR[@]}" "\$@"
+EOF
+  chmod +x "$shim"
+}
+
 
 # --------------------------------------------------------------------------------------------------
 # Prompt helpers (TTY-safe; we always read/write via /dev/tty inside wizard/TUI)
@@ -318,22 +644,95 @@ _install_app(){
   ensure_apps; ensure_bin
   local src="$1" name dest
   name=$(basename "$src"); dest="$APP_STORE/$name"
-  [[ -x "$src/bin/$name" ]] || { err "App '$name' missing bin/$name"; return 2; }
+
   rm -rf "$dest"
   [[ "$COPY_MODE" == "link" ]] && ln -s "$src" "$dest" || cp -a "$src" "$dest"
-  _make_shim "$name" "$(_app_entry "$dest")"
-  ok "App installed: $name → $dest (v$(script_version "$dest"))"
+
+  # Explicit --entry wins
+  if [[ -n "$ENTRY_CMD" ]]; then
+    if (( VENV_MODE )); then
+      _make_shim_cmd_venv "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD" "$REQ_FILE" "$BOOT_PY"
+      ok "App installed: $name → $dest (entry: $ENTRY_CMD; venv on)"
+    else
+      _make_shim_cmd "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD"
+      ok "App installed: $name → $dest (custom entry)"
+    fi
+    return 0
+  fi
+
+  # Conventional layout?
+  if [[ -x "$dest/bin/$name" ]]; then
+    _make_shim "$name" "$(_app_entry "$dest")"
+    ok "App installed: $name → $dest (v$(script_version "$dest"))"
+    return 0
+  fi
+
+  # Try auto-detect
+  local triplet; triplet="$(_detect_entry "$dest")"
+  local cmd="${triplet%%|*}"; triplet="${triplet#*|}"
+  local cwd="${triplet%%|*}"; local req="${triplet#*|}"
+
+  if [[ -n "$cmd" ]]; then
+    if (( VENV_MODE )) || [[ "$cmd" == python* || "$cmd" == */python* ]]; then
+      _make_shim_cmd_venv "$name" "$dest" "$cmd" "$cwd" "${REQ_FILE:-$req}" "$BOOT_PY"
+      ok "App installed: $name → $dest (entry: $cmd; venv on)"
+    else
+      _make_shim_cmd "$name" "$dest" "$cmd" "$cwd"
+      ok "App installed: $name → $dest (entry: $cmd)"
+    fi
+    return 0
+  fi
+
+  err "App '$name' missing bin/$name and no entry could be detected. Try: --entry 'python3 path/to/main.py' [--venv --req requirements.txt]"
+  return 2
 }
+
 _install_app_system(){
   ensure_system_write; ensure_system_dirs
   local src="$1" name dest
   name=$(basename "$src"); dest="$SYSTEM_APPS/$name"
-  [[ -x "$src/bin/$name" ]] || { err "App '$name' missing bin/$name"; return 2; }
+
   rm -rf "$dest"
   [[ "$COPY_MODE" == "link" ]] && ln -s "$src" "$dest" || cp -a "$src" "$dest"
-  _make_shim_system "$name" "$(_app_entry "$dest")"
-  ok "App installed (system): $name → $dest"
+
+  if [[ -n "$ENTRY_CMD" ]]; then
+    if (( VENV_MODE )); then
+      _make_shim_cmd_venv_system "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD" "$REQ_FILE" "$BOOT_PY"
+      ok "App installed (system): $name → $dest (entry: $ENTRY_CMD; venv on)"
+    else
+      _make_shim_cmd_system "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD"
+      ok "App installed (system): $name → $dest (custom entry)"
+    fi
+    return 0
+  fi
+
+  if [[ -x "$dest/bin/$name" ]]; then
+    _make_shim_system "$name" "$(_app_entry "$dest")"
+    ok "App installed (system): $name → $dest (v$(script_version "$dest"))"
+    return 0
+  fi
+
+  local triplet; triplet="$(_detect_entry "$dest")"
+  local cmd="${triplet%%|*}"; triplet="${triplet#*|}"
+  local cwd="${triplet%%|*}"; local req="${triplet#*|}"
+
+  if [[ -n "$cmd" ]]; then
+    if (( VENV_MODE )) || [[ "$cmd" == python* || "$cmd" == */python* ]]; then
+      _make_shim_cmd_venv_system "$name" "$dest" "$cmd" "$cwd" "${REQ_FILE:-$req}" "$BOOT_PY"
+      ok "App installed (system): $name → $dest (entry: $cmd; venv on)"
+    else
+      _make_shim_cmd_system "$name" "$dest" "$cmd" "$cwd"
+      ok "App installed (system): $name → $dest (entry: $cmd)"
+    fi
+    return 0
+  fi
+
+  err "App '$name' missing bin/$name and no entry could be detected. Try: --entry 'python3 path/to/main.py' [--venv --req requirements.txt]"
+  return 2
 }
+
+
+
 _uninstall_app(){
   local name="$1" dest="$APP_STORE/$name" shim="$BIN_DIR/$name"
   [[ -e "$shim" ]] && rm -f "$shim" && ok "Removed shim: $shim"
@@ -1361,6 +1760,11 @@ parse_common_opts(){
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --from) FROM_DIR="$2"; shift 2;;
+      --entry) ENTRY_CMD="$2"; shift 2;;
+      --workdir|--cwd) ENTRY_CWD="$2"; shift 2;;
+      --venv) VENV_MODE=1; shift;;
+      --req|--requirements) REQ_FILE="$2"; shift 2;;
+      --python) BOOT_PY="$2"; shift 2;;
       --link) COPY_MODE="link"; shift;;
       --force) FORCE=1; shift;;
       --git) GIT_DIR="$2"; shift 2;;
