@@ -693,9 +693,20 @@ op_install_manifest(){
 new_cmd(){
   local name="$1"; shift || true
   local lang="bash" make_app=0 target_dir="$PWD" with_venv=0
-  [[ "$name" == *".py" ]] && lang="python"
-  [[ "$name" == *".sh" ]] && lang="bash"
   local cmdname="${name%.*}"
+
+  # infer language from filename extension (can be overridden by --lang later)
+  case "${name,,}" in
+    *.sh)   lang="bash" ;;
+    *.py)   lang="python" ;;
+    *.js)   lang="node" ;;
+    *.ts)   lang="typescript" ;;
+    *.go)   lang="go" ;;
+    *.rs)   lang="rust" ;;
+    *.rb)   lang="ruby" ;;
+    *.php)  lang="php" ;;
+    *)      : ;;  # no extension → leave default (bash) unless --lang provided
+  esac
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
