@@ -600,25 +600,34 @@ op_restore(){
 # SELF-UPDATE — pull repo and reinstall the binman shim
 # --------------------------------------------------------------------------------------------------
 op_self_update(){
-  local script_path repo root
-  script_path="$(realpath_f "$0" || echo "$0")"
-  root="$(dirname "$script_path")"
-  repo="$root"
-  if [[ -d "$repo/.git" ]]; then
-    ( cd "$repo" && git pull --rebase --autostash )
-    ok "Repo updated."
-  elif [[ -n "$GIT_DIR" && -d "$GIT_DIR/.git" ]]; then
-    ( cd "$GIT_DIR" && git pull --rebase --autostash )
-    repo="$GIT_DIR"
-    ok "Repo updated (GIT_DIR)."
+  # Atomically replace the running binman from your canonical raw URL.
+  local url="https://raw.githubusercontent.com/karialo/binman/refs/heads/main/binman.sh"
+  local self tmp
+  # resolve current executable path (fallback to $0)
+  if self="$(python3 - <<'PY' "$0"
+import os,sys
+p=sys.argv[1]
+print(os.path.realpath(p))
+PY
+)"; then :; else self="$0"; fi
+  [[ -n "$self" && -w "$(dirname "$self")" ]] || { err "Cannot write to $(dirname "$self")"; return 2; }
+
+  tmp="$(mktemp "${self}.new.XXXXXX")"
+  if exists curl; then
+    if ! curl -fsSL "$url" -o "$tmp"; then rm -f "$tmp"; err "Download failed."; return 2; fi
+  elif exists wget; then
+    if ! wget -q "$url" -O "$tmp"; then rm -f "$tmp"; err "Download failed."; return 2; fi
   else
-    err "Cannot find git repo for self-update. Use --git DIR."
-    return 2
+    err "Need curl or wget for self-update"; return 2
   fi
-  local self="$repo/binman.sh"
-  [[ -f "$self" ]] || { err "binman.sh not found in repo root"; return 2; }
-  FORCE=1 op_install "$self"
-  ok "Self-update complete."
+
+  chmod +x "$tmp"
+  # quick sanity: script contains main case table and version string
+  if ! grep -q "case \"\\$ACTION\"" "$tmp"; then rm -f "$tmp"; err "Downloaded file doesn't look like binman.sh"; return 2; fi
+
+  # swap-in atomically
+  mv -f "$tmp" "$self"
+  ok "Self-update complete → $(basename "$self")"
 }
 
 # --------------------------------------------------------------------------------------------------
@@ -680,6 +689,7 @@ op_install_manifest(){
 #   • python app with --venv creates: .venv + src/<name>/{__init__,__main__}.py + bin/<name>
 #   • launcher auto-activates venv, installs requirements.txt quietly if present, sets PYTHONPATH=src
 # --------------------------------------------------------------------------------------------------
+
 new_cmd(){
   local name="$1"; shift || true
   local lang="bash" make_app=0 target_dir="$PWD" with_venv=0
@@ -690,118 +700,372 @@ new_cmd(){
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --app) make_app=1; shift;;
-      --lang) lang="$2"; shift 2;;
+      --lang) lang="${2,,}"; shift 2;;
       --dir) target_dir="$2"; shift 2;;
       --venv) with_venv=1; shift;;
       *) shift;;
     esac
   done
 
+  mkdir -p "$target_dir"
+
+  # --- helpers --------------------------------------------------------------
+  _mk(){ mkdir -p "$@"; }
+  _wr(){ printf "%s" "$2" > "$1"; }
+  _wre(){ printf "%s\n" "$2" >> "$1"; }
+  _exec(){ chmod +x "$1"; }
+  _appdir(){ echo "$target_dir/$cmdname"; }
+  _entry(){ echo "$(_appdir)/bin/$cmdname"; }
+
+  case "$lang" in
+    bash|sh|shell)    lang="bash" ;;
+    py|python3)       lang="python" ;;
+    js|node|javascript) lang="node" ;;
+    ts|typescript)    lang="typescript" ;;
+    go|golang)        lang="go" ;;
+    rs|rust)          lang="rust" ;;
+    rb|ruby)          lang="ruby" ;;
+    php)              lang="php" ;;
+    *) : ;;
+  esac
+
   if [[ $make_app -eq 1 ]]; then
-    local appdir="$target_dir/$cmdname"
-    mkdir -p "$appdir/bin" "$appdir/src"
+    # =========================
+    #         APP MODE
+    # =========================
+    local appdir="$(_appdir)"
+    _mk "$appdir/bin" "$appdir/src"
     echo "0.1.0" > "$appdir/VERSION"
 
-    if [[ "$lang" == "bash" ]]; then
-      cat > "$appdir/bin/$cmdname" <<'BASH'
+    case "$lang" in
+      bash)
+        cat > "$(_entry)" <<'BASH'
 #!/usr/bin/env bash
-# Description: Hello from app
+# Description: __APPNAME__ (bash app)
 VERSION="0.1.0"
 set -Eeuo pipefail
-echo "Hello from __APPNAME__ v$VERSION"
+echo "__APPNAME__ v${VERSION} — hello (bash)"
 BASH
-      sed -i "s/__APPNAME__/$cmdname/g" "$appdir/bin/$cmdname"
-      chmod +x "$appdir/bin/$cmdname"
-    else
-      if [[ $with_venv -eq 1 ]]; then
-        python3 -m venv "$appdir/.venv"
-        mkdir -p "$appdir/src/$cmdname"
-        cat > "$appdir/src/$cmdname/__init__.py" <<'PY'
-__version__ = "0.1.0"
-PY
+        sed -i "s/__APPNAME__/$cmdname/g" "$(_entry)"; _exec "$(_entry)"
+        ;;
+
+      python)
+        if [[ $with_venv -eq 1 ]]; then python3 -m venv "$appdir/.venv"; fi
+        _mk "$appdir/src/$cmdname"
+        _wr "$appdir/src/$cmdname/__init__.py" '__version__="0.1.0"'
         cat > "$appdir/src/$cmdname/__main__.py" <<'PY'
 from . import __version__
 def main():
-    print(f"Hello from __APPNAME__ v{__version__} (venv)")
+    print(f"__APPNAME__ v{__version__} — hello (python)")
 if __name__ == "__main__":
     main()
 PY
         sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/$cmdname/__main__.py"
-        cat > "$appdir/requirements.txt" <<'REQ'
-# Add your dependencies here, one per line, e.g.:
-# click>=8.1
-REQ
-        cat > "$appdir/bin/$cmdname" <<'BASH'
+        _wr "$appdir/requirements.txt" "# click>=8.1"
+        cat > "$(_entry)" <<'BASH'
 #!/usr/bin/env bash
-# Description: __APPNAME__ (venv launcher)
+# Description: __APPNAME__ (python venv launcher)
 set -Eeuo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Ensure venv exists (idempotent)
-if [[ ! -x "$HERE/.venv/bin/python" ]]; then
-  python3 -m venv "$HERE/.venv"
-fi
-# shellcheck source=/dev/null
-source "$HERE/.venv/bin/activate"
-# Auto-install requirements if present (quiet; non-fatal)
-if [[ -f "$HERE/requirements.txt" ]]; then
-  "$HERE/.venv/bin/pip" install -r "$HERE/requirements.txt" >/dev/null 2>&1 || true
-fi
-# Make package under src/ importable
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+if [[ ! -x "$HERE/.venv/bin/python" ]]; then python3 -m venv "$HERE/.venv" >/dev/null 2>&1 || true; fi
+[[ -f "$HERE/.venv/bin/activate" ]] && source "$HERE/.venv/bin/activate"
+if [[ -f "$HERE/requirements.txt" ]]; then "$HERE/.venv/bin/pip" install -q -r "$HERE/requirements.txt" || true; fi
 export PYTHONPATH="$HERE/src${PYTHONPATH:+:$PYTHONPATH}"
-# Run the package as a module
 exec python -m __APPNAME__ "$@"
 BASH
-        sed -i "s/__APPNAME__/$cmdname/g" "$appdir/bin/$cmdname"
-        chmod +x "$appdir/bin/$cmdname"
-      else
-        cat > "$appdir/bin/$cmdname" <<'PY'
-#!/usr/bin/env python3
-# Description: Hello from app
-__version__ = "0.1.0"
-def main():
-    print(f"Hello from __APPNAME__ v{__version__}")
-    return 0
-if __name__ == "__main__":
-    import sys
-    sys.exit(main())
-PY
-        sed -i "s/__APPNAME__/$cmdname/g" "$appdir/bin/$cmdname"
-        chmod +x "$appdir/bin/$cmdname"
-      fi
-    fi
+        sed -i "s/__APPNAME__/$cmdname/g" "$(_entry)"; _exec "$(_entry)"
+        ;;
+
+      node)
+        # Node app: bin script (node shebang) + src/index.js + package.json hint
+        _wr "$appdir/src/index.js" "export function main(){ console.log('__APPNAME__ v0.1.0 — hello (node)'); }\nif (import.meta.url === \`file://\${process.argv[1]}\`) main();"
+        sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/index.js"
+        cat > "$(_entry)" <<'JS'
+#!/usr/bin/env node
+import { main } from "../src/index.js"; main();
+JS
+        _exec "$(_entry)"
+        cat > "$appdir/package.json" <<EOF
+{
+  "name": "$cmdname",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "$cmdname": "./bin/$cmdname" },
+  "scripts": { "start": "node ./bin/$cmdname" },
+  "dependencies": {}
+}
+EOF
+        ;;
+
+      typescript)
+        _mk "$appdir/src"
+        cat > "$appdir/src/index.ts" <<'TS'
+export function main(): void {
+  console.log("__APPNAME__ v0.1.0 — hello (typescript)");
+}
+if (import.meta.url === `file://${process.argv[1]}`) main();
+TS
+        sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/index.ts"
+        # launcher prefers tsx, falls back to ts-node, otherwise helpful message
+        cat > "$(_entry)" <<'BASH'
+#!/usr/bin/env bash
+# Description: __APPNAME__ (TypeScript runtime launcher)
+set -Eeuo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+if command -v tsx >/dev/null 2>&1; then
+  exec tsx "$HERE/src/index.ts" "$@"
+elif command -v node >/dev/null 2>&1 && node -e "require.resolve('ts-node/register')" >/dev/null 2>&1 2>/dev/null; then
+  exec node -r ts-node/register "$HERE/src/index.ts" "$@"
+else
+  echo "TypeScript runtime missing. Try: npm i -D tsx  (or: npm i -D ts-node typescript)" >&2
+  exit 1
+fi
+BASH
+        sed -i "s/__APPNAME__/$cmdname/g" "$(_entry)"; _exec "$(_entry)"
+        cat > "$appdir/package.json" <<EOF
+{
+  "name": "$cmdname",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "$cmdname": "./bin/$cmdname" },
+  "scripts": { "start": "./bin/$cmdname" },
+  "devDependencies": {}
+}
+EOF
+        _wr "$appdir/tsconfig.json" '{"compilerOptions":{"target":"ES2020","module":"ESNext","moduleResolution":"Bundler","esModuleInterop":true},"include":["src"]}'
+        ;;
+
+      go)
+        _mk "$appdir/cmd/$cmdname"
+        cat > "$appdir/cmd/$cmdname/main.go" <<'GO'
+package main
+import (
+  "flag"
+  "fmt"
+)
+var version = "0.1.0"
+func main() {
+  flag.Parse()
+  fmt.Printf("__APPNAME__ v%v — hello (go)\n", version)
+}
+GO
+        sed -i "s/__APPNAME__/$cmdname/g" "$appdir/cmd/$cmdname/main.go"
+        ( cd "$appdir" && go mod init "$cmdname" >/dev/null 2>&1 || true )
+        cat > "$(_entry)" <<'BASH'
+#!/usr/bin/env bash
+# Description: __APPNAME__ (go launcher)
+set -Eeuo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+BIN="$HERE/.bin/__APPNAME__"
+if [[ -x "$BIN" ]]; then exec "$BIN" "$@"; fi
+if command -v go >/dev/null 2>&1; then
+  mkdir -p "$HERE/.bin"
+  (cd "$HERE" && go build -o "$BIN" "./cmd/__APPNAME__") && exec "$BIN" "$@"
+fi
+echo "Go toolchain not found. Install Go or prebuild $BIN" >&2
+exit 1
+BASH
+        sed -i "s/__APPNAME__/$cmdname/g" "$(_entry)"; _exec "$(_entry)"
+        ;;
+
+      rust)
+        _mk "$appdir"
+        cat > "$appdir/Cargo.toml" <<EOF
+[package]
+name = "$cmdname"
+version = "0.1.0"
+edition = "2021"
+[[bin]]
+name = "$cmdname"
+path = "src/main.rs"
+[dependencies]
+EOF
+        _mk "$appdir/src"
+        cat > "$appdir/src/main.rs" <<'RS'
+fn main() {
+    println!("__APPNAME__ v0.1.0 — hello (rust)");
+}
+RS
+        sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/main.rs"
+        cat > "$(_entry)" <<'BASH'
+#!/usr/bin/env bash
+# Description: __APPNAME__ (rust launcher)
+set -Eeuo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+BIN="$HERE/target/release/__APPNAME__"
+if [[ -x "$BIN" ]]; then exec "$BIN" "$@"; fi
+if command -v cargo >/dev/null 2>&1; then
+  (cd "$HERE" && cargo build --quiet --release) && exec "$BIN" "$@"
+fi
+echo "Rust toolchain not found. Install cargo or prebuild $BIN" >&2
+exit 1
+BASH
+        sed -i "s/__APPNAME__/$cmdname/g" "$(_entry)"; _exec "$(_entry)"
+        ;;
+
+      ruby)
+        _wr "$appdir/src/main.rb" "puts '__APPNAME__ v0.1.0 — hello (ruby)'\n"
+        sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/main.rb"
+        cat > "$(_entry)" <<'RB'
+#!/usr/bin/env ruby
+# Description: __APPNAME__ (ruby app)
+require_relative "../src/main"
+RB
+        sed -i "s/__APPNAME__/$cmdname/g" "$(_entry)"; _exec "$(_entry)"
+        ;;
+
+      php)
+        _wr "$appdir/src/main.php" "<?php\nprintf(\"__APPNAME__ v0.1.0 — hello (php)\\n\");\n"
+        sed -i "s/__APPNAME__/$cmdname/g" "$appdir/src/main.php"
+        cat > "$(_entry)" <<'PHP'
+#!/usr/bin/env php
+<?php require __DIR__ . "/../src/main.php";
+PHP
+        _exec "$(_entry)"
+        ;;
+
+      *)
+        echo "Unknown --lang '$lang'. Supported: bash, python, node, typescript, go, rust, ruby, php" >&2
+        return 2
+        ;;
+    esac
+
     ok "App scaffolded: $appdir"
+
   else
-    mkdir -p "$target_dir"
-    if [[ "$lang" == "bash" ]]; then
-      [[ "$name" != *.sh ]] && name="${name}.sh"
-      cat > "$target_dir/$name" <<'BASH'
+    # =========================
+    #       SINGLE FILE
+    # =========================
+    case "$lang" in
+      bash)
+        [[ "$name" != *.sh ]] && name="${name}.sh"
+        cat > "$target_dir/$name" <<'BASH'
 #!/usr/bin/env bash
 # Description: Hello from script
 VERSION="0.1.0"
 set -Eeuo pipefail
-echo "Hello from __SCRIPTNAME__ v$VERSION"
+echo "Hello from __SCRIPTNAME__ v$VERSION (bash)"
 BASH
-      sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/$name"
-      chmod +x "$target_dir/$name"
-    else
-      [[ "$name" != *.py ]] && name="${name}.py"
-      cat > "$target_dir/$name" <<'PY'
+        sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/$name"; _exec "$target_dir/$name"
+        ;;
+
+      python)
+        [[ "$name" != *.py ]] && name="${name}.py"
+        cat > "$target_dir/$name" <<'PY'
 #!/usr/bin/env python3
 # Description: Hello from script
 __version__ = "0.1.0"
 def main():
-    print(f"Hello from __SCRIPTNAME__ v{__version__}")
+    print(f"Hello from __SCRIPTNAME__ v{__version__} (python)")
     return 0
 if __name__ == "__main__":
-    import sys
-    sys.exit(main())
+    import sys; sys.exit(main())
 PY
-      sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/$name"
-      chmod +x "$target_dir/$name"
-    fi
+        sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/$name"; _exec "$target_dir/$name"
+        ;;
+
+      node)
+        [[ "$name" != *.js ]] && name="${name}.js"
+        cat > "$target_dir/$name" <<'JS'
+#!/usr/bin/env node
+// Description: Hello from script
+const version = "0.1.0";
+console.log(`Hello from __SCRIPTNAME__ v${version} (node)`);
+JS
+        sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/$name"; _exec "$target_dir/$name"
+        ;;
+
+      typescript)
+        [[ "$name" != *.ts ]] && name="${name}.ts"
+        cat > "$target_dir/$name" <<'TS'
+// Description: Hello from TS script
+const version = "0.1.0";
+console.log(`Hello from __SCRIPTNAME__ v${version} (typescript)`);
+TS
+        sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/$name"
+        # Tiny launcher alongside it so it's runnable immediately
+        cat > "$target_dir/${cmdname}" <<'BASH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TS="$SELF/__SCRIPTNAME__.ts"
+if command -v tsx >/dev/null 2>&1; then exec tsx "$TS" "$@"; fi
+if node -e "require.resolve('ts-node/register')" >/dev/null 2>&1 2>/dev/null; then exec node -r ts-node/register "$TS" "$@"; fi
+echo "TS runtime missing. Try: npm i -g tsx   (or: npm i -g ts-node typescript)" >&2; exit 1
+BASH
+        sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/${cmdname}"; _exec "$target_dir/${cmdname}"
+        ;;
+
+      go)
+        [[ "$name" != *.go ]] && name="${name}.go"
+        cat > "$target_dir/$name" <<'GO'
+package main
+import "fmt"
+func main(){ fmt.Println("Hello from __SCRIPTNAME__ v0.1.0 (go)") }
+GO
+        sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/$name"
+        # build helper
+        cat > "$target_dir/${cmdname}" <<'BASH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="$SELF/__SCRIPTNAME__.go"
+OUT="$SELF/__SCRIPTNAME__.bin"
+if [[ -x "$OUT" ]]; then exec "$OUT" "$@"; fi
+if command -v go >/dev/null 2>&1; then go build -o "$OUT" "$SRC" && exec "$OUT" "$@"; fi
+echo "Go not found." >&2; exit 1
+BASH
+        sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/${cmdname}"; _exec "$target_dir/${cmdname}"
+        ;;
+
+      rust)
+        # single-file rust via cargo quick project
+        local rdir="$target_dir/${cmdname}_rs"
+        _mk "$rdir/src"
+        echo -e "[package]\nname=\"$cmdname\"\nversion=\"0.1.0\"\nedition=\"2021\"" > "$rdir/Cargo.toml"
+        echo 'fn main(){ println!("Hello from __SCRIPTNAME__ v0.1.0 (rust)"); }' > "$rdir/src/main.rs"
+        sed -i "s/__SCRIPTNAME__/$cmdname/g" "$rdir/src/main.rs"
+        cat > "$target_dir/${cmdname}" <<'BASH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/__SCRIPTNAME___rs"
+BIN="$ROOT/target/release/__SCRIPTNAME__"
+if [[ -x "$BIN" ]]; then exec "$BIN" "$@"; fi
+if command -v cargo >/dev/null 2>&1; then (cd "$ROOT" && cargo build --quiet --release) && exec "$BIN" "$@"; fi
+echo "Rust not found." >&2; exit 1
+BASH
+        sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/${cmdname}"; _exec "$target_dir/${cmdname}"
+        ;;
+
+      ruby)
+        [[ "$name" != *.rb ]] && name="${name}.rb"
+        cat > "$target_dir/$name" <<'RB'
+#!/usr/bin/env ruby
+# Description: Hello from script
+puts "Hello from __SCRIPTNAME__ v0.1.0 (ruby)"
+RB
+        sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/$name"; _exec "$target_dir/$name"
+        ;;
+
+      php)
+        [[ "$name" != *.php ]] && name="${name}.php"
+        cat > "$target_dir/$name" <<'PHP'
+#!/usr/bin/env php
+<?php echo "Hello from __SCRIPTNAME__ v0.1.0 (php)\n";
+PHP
+        sed -i "s/__SCRIPTNAME__/$cmdname/g" "$target_dir/$name"; _exec "$target_dir/$name"
+        ;;
+
+      *)
+        echo "Unknown --lang '$lang'. Supported: bash, python, node, typescript, go, rust, ruby, php" >&2
+        return 2
+        ;;
+    esac
+
     ok "Script scaffolded: $target_dir/$name"
   fi
 }
+
 
 # --------------------------------------------------------------------------------------------------
 # Wizard — interactive project scaffolder + optional install + optional git prep
@@ -824,7 +1088,22 @@ new_wizard(){
   local name kind lang target_dir desc author
   name="$(ask "Project name (no spaces)" "MyTool")"
   kind="$(ask_choice "Type" "single/app" "app")"; [[ "${kind,,}" =~ ^s ]] && kind="single" || kind="app"
-  lang="$(ask_choice "Language" "bash/python" "bash")"; [[ "${lang,,}" =~ ^p ]] && lang="python" || lang="bash"
+
+  # Expanded language set
+  lang="$(ask_choice "Language" "bash/python/node/typescript/go/rust/ruby/php" "bash")"
+
+  # normalize aliases
+  case "${lang,,}" in
+    sh|shell)      lang="bash" ;;
+    py|python3)    lang="python" ;;
+    js|node|javascript) lang="node" ;;
+    ts)            lang="typescript" ;;
+    go|golang)     lang="go" ;;
+    rs)            lang="rust" ;;
+    rb)            lang="ruby" ;;
+    *)             lang="${lang,,}" ;;
+  esac
+
   target_dir="$(ask "Create in directory" "$PWD")"; mkdir -p "$target_dir"
   desc="$(ask "Short description" "A neat little tool")"
   author="$(ask "Author" "${USER}")"
@@ -853,9 +1132,20 @@ new_wizard(){
   # == Generate ===============================================================
   local filename path
   if [[ "$kind" == "single" ]]; then
-    filename="$name"
-    [[ "$lang" == "bash"   && "$filename" != *.sh ]] && filename="${filename}.sh"
-    [[ "$lang" == "python" && "$filename" != *.py ]] && filename="${filename}.py"
+    # choose extension by language if the user didn't provide one
+    case "$lang" in
+      bash)       [[ "$name" != *.sh  ]] && filename="${name}.sh"  || filename="$name" ;;
+      python)     [[ "$name" != *.py  ]] && filename="${name}.py"  || filename="$name" ;;
+      node)       [[ "$name" != *.js  ]] && filename="${name}.js"  || filename="$name" ;;
+      typescript) [[ "$name" != *.ts  ]] && filename="${name}.ts"  || filename="$name" ;;
+      go)         [[ "$name" != *.go  ]] && filename="${name}.go"  || filename="$name" ;;
+      rust)       # single-file rust scaffold uses a helper launcher; leave bare name
+                  filename="$name" ;;
+      ruby)       [[ "$name" != *.rb  ]] && filename="${name}.rb"  || filename="$name" ;;
+      php)        [[ "$name" != *.php ]] && filename="${name}.php" || filename="$name" ;;
+      *)          filename="$name" ;;
+    esac
+
     new_cmd "$filename" --lang "$lang" --dir "$target_dir"
     path="${target_dir}/${filename}"
 
@@ -909,112 +1199,93 @@ EOF
   fi
   COPY_MODE="$saved_mode"
 
- # == Git / GitHub (SSH, gh-driven create if available) =====================
- echo; printf "%s==> Git%s\n" "$UI_GREEN" "$UI_RESET"
- if ask_yesno "Initialize a git repo here?" "y"; then
-   # Where to run git commands
-   local projdir; [[ "$kind" == "app" ]] && projdir="$path" || projdir="$target_dir"
+  # == Git / GitHub ===========================================================
+  echo; printf "%s==> Git%s\n" "$UI_GREEN" "$UI_RESET"
+  if ask_yesno "Initialize a git repo here?" "y"; then
+    local projdir; [[ "$kind" == "app" ]] && projdir="$path" || projdir="$target_dir"
+    local gp_branch; gp_branch="$(ask "Default branch name" "main")"
 
-   # Branch name
-   local gp_branch; gp_branch="$(ask "Default branch name" "main")"
+    (
+      cd "$projdir" || { err "Failed to cd $projdir"; return 1; }
 
-   (
-     cd "$projdir" || { err "Failed to cd $projdir"; return 1; }
+      if exists gitprep; then
+        gitprep --branch "$gp_branch" || true
+      else
+        if git init -b "$gp_branch" >/dev/null 2>&1; then :; else
+          git init >/dev/null 2>&1
+          git symbolic-ref HEAD "refs/heads/$gp_branch" >/dev/null 2>&1 || true
+        fi
+        [[ -f README.md ]] || printf "# %s\n\nInitialized with BinMan wizard.\n" "$name" > README.md
+        [[ -f .gitignore ]] || printf ".venv/\n.DS_Store\nnode_modules/\n__pycache__/\n" > .gitignore
+        git add -A >/dev/null 2>&1
+        if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+          git commit -m "init: ${name} (BinMan wizard)" >/dev/null 2>&1 || true
+        else
+          if ! git diff --cached --quiet >/dev/null 2>&1; then
+            git commit -m "chore: snapshot (BinMan wizard)" >/dev/null 2>&1 || true
+          fi
+        fi
+      fi
 
-     # init via gitprep if available (preferred)
-     if exists gitprep; then
-       gitprep --branch "$gp_branch" || true
-     else
-       if git init -b "$gp_branch" >/dev/null 2>&1; then :; else
-         git init >/dev/null 2>&1
-         git symbolic-ref HEAD "refs/heads/$gp_branch" >/dev/null 2>&1 || true
-       fi
-       [[ -f README.md ]] || printf "# %s\n\nInitialized with BinMan wizard.\n" "$name" > README.md
-       [[ -f .gitignore ]] || printf ".venv/\n.DS_Store\nnode_modules/\n__pycache__/\n" > .gitignore
-       git add -A >/dev/null 2>&1
-       if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
-         git commit -m "init: ${name} (BinMan wizard)" >/dev/null 2>&1 || true
-       else
-         if ! git diff --cached --quiet >/dev/null 2>&1; then
-           git commit -m "chore: snapshot (BinMan wizard)" >/dev/null 2>&1 || true
-         fi
-       fi
-     fi
+      if ask_yesno "Set up a GitHub remote (SSH) now?" "y"; then
+        local gh_user gh_repo gh_vis ssh_url created_ok push_rc
+        gh_user="$USER"
+        if exists gh; then
+          local gh_user_guess
+          gh_user_guess="$(gh api user --jq '.login' 2>/dev/null || true)"
+          [[ -n "$gh_user_guess" ]] && gh_user="$gh_user_guess"
+        fi
 
-     # Offer to wire/create a GitHub repo
-     if ask_yesno "Set up a GitHub remote (SSH) now?" "y"; then
-       local gh_user gh_repo gh_vis ssh_url created_ok push_rc
-       # Prefer gh-detected login, fall back to $USER
-       gh_user="$USER"
-       if exists gh; then
-         local gh_user_guess
-         gh_user_guess="$(gh api user --jq '.login' 2>/dev/null || true)"
-         [[ -n "$gh_user_guess" ]] && gh_user="$gh_user_guess"
-       fi
+        gh_user="$(ask "GitHub username" "$gh_user")"
+        gh_repo="$(ask "Repository name" "$(basename "$projdir")")"
+        gh_vis="$(ask_choice "Visibility" "public/private" "private")"
+        [[ "${gh_vis,,}" == "private" ]] && gh_vis="private" || gh_vis="public"
 
-       gh_user="$(ask "GitHub username" "$gh_user")"
-       gh_repo="$(ask "Repository name" "$(basename "$projdir")")"
-       gh_vis="$(ask_choice "Visibility" "public/private" "private")"
-       [[ "${gh_vis,,}" == "private" ]] && gh_vis="private" || gh_vis="public"
+        ssh_url="git@github.com:${gh_user}/${gh_repo}.git"
+        created_ok=0
 
-       ssh_url="git@github.com:${gh_user}/${gh_repo}.git"
-       created_ok=0
+        if exists gh && ask_yesno "Create ${gh_user}/${gh_repo} on GitHub with 'gh' now?" "y"; then
+          if gh repo create "${gh_user}/${gh_repo}" --"${gh_vis}" --source=. --remote=origin --push -y >/dev/null 2>&1; then
+            local real_ssh
+            real_ssh="$(gh repo view "${gh_user}/${gh_repo}" --json sshUrl -q .sshUrl 2>/dev/null || true)"
+            [[ -n "$real_ssh" ]] && git remote set-url origin "$real_ssh" >/dev/null 2>&1 || true
+            ok "Created and pushed → ${gh_user}/${gh_repo}"
+            created_ok=1
+          else
+            warn "gh repo create failed (auth/permissions/name may be the issue). Falling back to manual wiring."
+          fi
+        fi
 
-       if exists gh && ask_yesno "Create ${gh_user}/${gh_repo} on GitHub with 'gh' now?" "y"; then
-         # Create + set origin + push current branch
-         if gh repo create "${gh_user}/${gh_repo}" --"${gh_vis}" \
-              --source=. --remote=origin --push -y >/dev/null 2>&1; then
-           # Double-check it truly exists and capture the official SSH URL
-           local real_ssh
-           real_ssh="$(gh repo view "${gh_user}/${gh_repo}" --json sshUrl -q .sshUrl 2>/dev/null || true)"
-           if [[ -n "$real_ssh" ]]; then
-             git remote set-url origin "$real_ssh" >/dev/null 2>&1 || true
-           fi
-           ok "Created and pushed → ${gh_user}/${gh_repo}"
-           created_ok=1
-         else
-           warn "gh repo create failed (auth/permissions/name may be the issue). Falling back to manual wiring."
-         fi
-       fi
+        if [[ $created_ok -ne 1 ]]; then
+          git remote remove origin >/dev/null 2>&1 || true
+          git remote add origin "$ssh_url" >/dev/null 2>&1 || true
+          ok "Added origin → $ssh_url"
+          say "Attempting to push…"
+          git push -u origin "$gp_branch" >/dev/null 2>&1
+          push_rc=$?
+          if [[ $push_rc -eq 0 ]]; then
+            ok "Pushed to origin/$gp_branch"
+          else
+            warn "Push failed (exit $push_rc). Common reasons:"
+            warn "  • Repo not created yet • SSH key not linked • No access rights"
+            echo
+            say "Next steps:"
+            say "  gh repo create ${gh_user}/${gh_repo} --${gh_vis} --source . --remote=origin --push -y"
+            say "  (or create on web, then: git push -u origin ${gp_branch})"
+            echo
+          fi
+        fi
+      else
+        echo
+        say "Next steps:"
+        say "  • Set remote: git remote add origin git@github.com:<user>/<repo>.git"
+        say "  • Then push:  git push -u origin ${gp_branch}"
+        echo
+      fi
+    )
 
-       if [[ $created_ok -ne 1 ]]; then
-         # Manual wiring + first push attempt
-         git remote remove origin >/dev/null 2>&1 || true
-         git remote add origin "$ssh_url" >/dev/null 2>&1 || true
-         ok "Added origin → $ssh_url"
-
-         say "Attempting to push (will show failures if repo doesn't exist or auth missing)..."
-         git push -u origin "$gp_branch" >/dev/null 2>&1
-         push_rc=$?
-         if [[ $push_rc -eq 0 ]]; then
-           ok "Pushed to origin/$gp_branch"
-         else
-           warn "Push failed (exit $push_rc). Common reasons:"
-           warn "  • Repository not created on GitHub yet"
-           warn "  • SSH key not linked to your GitHub or access rights missing"
-           echo
-           say "Next steps (pick one):"
-           say "  1) Create the repo on GitHub named '${gh_repo}' under '${gh_user}', then:"
-           say "       git push -u origin ${gp_branch}"
-           say "  2) Use GitHub CLI (now that it's installed & authed):"
-           say "       gh repo create ${gh_user}/${gh_repo} --${gh_vis} --source . --remote=origin --push -y"
-           say "  3) Prefer HTTPS? (not recommended here):"
-           say "       git remote set-url origin https://github.com/${gh_user}/${gh_repo}.git"
-           say "       git push -u origin ${gp_branch}"
-           echo
-         fi
-       fi
-     else
-       echo
-       say "Next steps:"
-       say "  • Set remote: git remote add origin git@github.com:<user>/<repo>.git"
-       say "  • Then push:  git push -u origin ${gp_branch}"
-       echo
-     fi
-   )
-
-   ok "Git repository initialized."
- fi
+    ok "Git repository initialized."
+  fi
 
   echo
   ok "Wizard complete. Happy hacking, ${author}! ✨"
@@ -1145,7 +1416,29 @@ binman_tui(){
 
       3) op_list; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
       4) op_doctor; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      5) printf "Name: "; read -r n; new_cmd "$n"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+      5)
+        ui_init; prompt_init
+        printf "Name: "; read -r n
+        # type: single/app
+        printf "Type (single/app) [single]: "; read -r k; k="${k:-single}"
+        # language prompt
+        printf "Language (bash/python/node/typescript/go/rust/ruby/php) [bash]: "; read -r l; l="${l:-bash}"
+
+        # optional: python venv if app+python
+        venv_flag=()
+        if [[ "${k,,}" == app* && "${l,,}" == python ]]; then
+          printf "Create Python venv (.venv)? [Y/n]: "; read -r yn
+          [[ -z "$yn" || "${yn,,}" == y* ]] && venv_flag=(--venv)
+        fi
+
+        flags=()
+        [[ "${k,,}" == app* ]] && flags+=(--app)
+        flags+=(--lang "${l,,}")
+
+        new_cmd "$n" "${flags[@]}" "${venv_flag[@]}"
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+        ;;
+
       6) new_wizard; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
       7) printf "Output file [blank=auto]: "; read -r f; op_backup "${f}"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
       8) printf "Archive to restore: "; read -r f; op_restore "$f"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
