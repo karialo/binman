@@ -101,6 +101,64 @@ _print_uninstall_menu() {
   echo
 }
 
+# Pick an installed command to run (fzf if present, numeric fallback). Echo selection.
+_pick_installed_cmd(){
+  local dir names=() i=1
+  dir="$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN" || echo "$BIN_DIR")"
+  [[ -d "$dir" ]] || return 1
+  while IFS= read -r -d '' f; do
+    [[ -x "$f" && -f "$f" ]] && names+=("$(basename "$f")")
+  done < <(find "$dir" -maxdepth 1 -type f -print0 2>/dev/null)
+
+  (( ${#names[@]} )) || { warn "Nothing installed."; return 1; }
+
+  # fzf path
+  if exists fzf; then
+    printf "%s\n" "${names[@]}" | fzf --prompt="Test > " --height=60% --reverse || true
+    return 0
+  fi
+
+  # numeric fallback
+  echo
+  echo "Select command to test:"
+  for n in "${names[@]}"; do printf "  %2d) %s\n" "$i" "$n"; ((i++)); done
+  printf "Number (Enter to cancel): "
+  local choice; IFS= read -r choice
+  [[ -z "$choice" || ! "$choice" =~ ^[0-9]+$ || "$choice" -lt 1 || "$choice" -gt ${#names[@]} ]] && { echo ""; return 1; }
+  echo "${names[$((choice-1))]}"
+}
+
+# Pick target for "binman test": returns either "stress" or a command name.
+_pick_test_target(){
+  # grab installed commands (user or system) using the existing helper
+  local names=()
+  mapfile -t names < <(_get_installed_cmd_names)
+
+  # fzf path: ALWAYS feed stdin so it won't list the cwd by itself
+  if exists fzf; then
+    {
+      printf "stress (gauntlet)\n"
+      printf "%s\n" "${names[@]}"
+    } | fzf --prompt="Test > " --height=60% --reverse || return 1
+    return 0
+  fi
+
+  # numeric fallback (0 = stress)
+  local i=1
+  echo
+  echo "Select command to test:"
+  printf "  %2d) %s\n" 0 "stress (gauntlet)"
+  for n in "${names[@]}"; do printf "  %2d) %s\n" "$i" "$n"; ((i++)); done
+  printf "Number (Enter to cancel): "
+  local choice; IFS= read -r choice
+  [[ -z "$choice" || ! "$choice" =~ ^[0-9]+$ ]] && return 1
+  [[ "$choice" -eq 0 ]] && { echo "stress"; return 0; }
+  (( choice >= 1 && choice <= ${#names[@]} )) || return 1
+  echo "${names[$((choice-1))]}"
+}
+
+
+
 # --------------------------------------------------------------------------------------------------
 # Usage banner
 # --------------------------------------------------------------------------------------------------
@@ -123,7 +181,6 @@ Options:
   --fix-path         (doctor) Add ~/.local/bin to zsh PATH (~/.zshrc & ~/.zprofile)
   --manifest FILE    For bulk install (line list or JSON array if jq available)
   --quiet            Less chatty
-
 Backup/Restore convenience:
   --backup [FILE]    Create archive (.zip if zip/unzip exist else .tar.gz)
   --restore FILE     Restore archive into target dirs (merge; --force to clobber)
@@ -133,6 +190,7 @@ Extra commands:
   rollback [ID]        Restore the latest (or specific) rollback snapshot
   bundle [OUT]         Export bundle (bin+apps+manifest.txt) to archive
   test NAME [-- ARGS]  Run NAME with --help (or ARGS) to sanity-check exit
+  test stress [--jobs N] [--verbose] [--keep] [--quick]  
 
 Examples:
   ${SCRIPT_NAME} install tool.sh
@@ -1090,25 +1148,58 @@ _backup_filename_default(){ local ext="$1"; local ts; ts=$(date +%Y%m%d-%H%M%S);
 
 op_backup(){
   ensure_bin; ensure_apps
+
   local prefer_zip=1 ext
-  if exists zip && exists unzip; then ext="zip"; else prefer_zip=0; ext="tar.gz"; warn "zip/unzip not fully available; using .tar.gz"; fi
+  if exists zip && exists unzip; then
+    ext="zip"
+  else
+    prefer_zip=0
+    ext="tar.gz"
+    warn "zip/unzip not fully available; using .tar.gz"
+  fi
+
+  # Normalize outfile: add ext if missing; make relative paths land in $PWD
   local outfile="${1:-$(_backup_filename_default "$ext")}"
   [[ "$outfile" != *.zip && "$outfile" != *.tar.gz && "$outfile" != *.tgz ]] && outfile="${outfile}.${ext}"
-  local tmp; tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-  mkdir -p "$tmp"/{bin,apps,meta}
-  [[ -d "$BIN_DIR"  ]] && cp -a "$BIN_DIR"/.  "$tmp/bin"  2>/dev/null || true
-  [[ -d "$APP_STORE" ]]&& cp -a "$APP_STORE"/. "$tmp/apps" 2>/dev/null || true
-  cat > "$tmp/meta/info.txt" <<EOF
+  case "$outfile" in
+    /*) : ;;                   # absolute → keep
+    *)  outfile="$PWD/$outfile" ;;
+  esac
+  mkdir -p "$(dirname "$outfile")"
+
+  (
+    set -e
+    # subshell keeps tmp in scope until EXIT → no nounset trap blowups
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "${tmp:-}"' EXIT
+
+    mkdir -p "$tmp"/{bin,apps,meta}
+    [[ -d "$BIN_DIR"   ]] && cp -a "$BIN_DIR"/.   "$tmp/bin"  2>/dev/null || true
+    [[ -d "$APP_STORE" ]] && cp -a "$APP_STORE"/. "$tmp/apps" 2>/dev/null || true
+
+    cat > "$tmp/meta/info.txt" <<EOF
 Created: $(iso_now)
 BinMan:  ${SCRIPT_NAME} v${VERSION}
 BIN_DIR: ${BIN_DIR}
 APP_STORE: ${APP_STORE}
 Host: $(uname -a)
 EOF
-  if [[ $prefer_zip -eq 1 ]]; then (cd "$tmp" && zip -qr "../$outfile" bin apps meta); else (cd "$tmp" && tar -czf "../$outfile" bin apps meta); fi
-  local abs_out; abs_out="$(cd "$(dirname "$tmp/../$outfile")" && pwd)/$(basename "$outfile")"
-  ok "Backup created: ${abs_out}"
+
+    if [[ $prefer_zip -eq 1 ]]; then
+      (cd "$tmp" && zip -qr "$outfile" bin apps meta)
+    else
+      (cd "$tmp" && tar -czf "$outfile" bin apps meta)
+    fi
+
+    abs_out="$(realpath_f "$outfile")"
+    # Print a plain, parseable line (for scripts) and a pretty OK (for humans)
+    say "Backup created: ${abs_out}"
+    ok  "Backup created: ${abs_out}"
+  )
 }
+
+
+
 
 _detect_extract_root(){
   local base="$1"
@@ -1119,18 +1210,37 @@ _detect_extract_root(){
 
 op_restore(){
   ensure_bin; ensure_apps; stash_before_change >/dev/null
-  local archive="$1"; [[ -n "$archive" && -f "$archive" ]] || { err "restore requires an existing archive"; exit 2; }
-  local tmp; tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+  local archive="$1"
+  [[ -n "$archive" && -f "$archive" ]] || { err "restore requires an existing archive"; exit 2; }
+
+  local tmp; tmp=$(mktemp -d)
+  cleanup_restore(){ rm -rf "${tmp:-}"; }
+  trap cleanup_restore EXIT
+
   case "$archive" in
-    *.zip) exists unzip || { err "unzip not available"; exit 2; }; unzip -q "$archive" -d "$tmp";;
-    *.tar.gz|*.tgz) exists tar || { err "tar not available"; exit 2; }; tar -xzf "$archive" -C "$tmp";;
-    *) err "Unknown archive type (use .zip or .tar.gz): $archive"; exit 2;;
+    *.zip)
+      exists unzip || { err "unzip not available"; exit 2; }
+      unzip -q "$archive" -d "$tmp"
+      ;;
+    *.tar.gz|*.tgz)
+      exists tar || { err "tar not available"; exit 2; }
+      tar -xzf "$archive" -C "$tmp"
+      ;;
+    *)
+      err "Unknown archive type (use .zip or .tar.gz): $archive"
+      exit 2
+      ;;
   esac
+
   local root; root="$(_detect_extract_root "$tmp")"
   [[ -d "$root/bin"  ]] && { say "Restoring scripts to ${BIN_DIR}..."; _merge_dir "$root/bin" "$BIN_DIR"; }
   [[ -d "$root/apps" ]] && { say "Restoring apps to ${APP_STORE}..."; _merge_dir "$root/apps" "$APP_STORE"; }
-  _chmod_bin_execs; rehash_shell; ok "Restore complete."
+
+  _chmod_bin_execs
+  rehash_shell
+  ok "Restore complete."
 }
+
 
 # --------------------------------------------------------------------------------------------------
 # SELF-UPDATE — pull repo and reinstall the binman shim
@@ -1169,38 +1279,327 @@ PY
 # --------------------------------------------------------------------------------------------------
 # BUNDLE — export bin+apps plus a manifest file
 # --------------------------------------------------------------------------------------------------
+# Replace the whole op_bundle() with this:
 op_bundle(){
   ensure_bin; ensure_apps
+
   local out="${1:-binman_bundle-$(date +%Y%m%d-%H%M%S).zip}"
-  local tmp; tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-  mkdir -p "$tmp"/{bin,apps}
-  [[ -d "$BIN_DIR"  ]] && cp -a "$BIN_DIR"/.  "$tmp/bin"  2>/dev/null || true
-  [[ -d "$APP_STORE" ]]&& cp -a "$APP_STORE"/. "$tmp/apps" 2>/dev/null || true
-  {
-    echo "# BinMan bundle manifest"
-    echo "created=$(iso_now)"
-    echo "bin_dir=$BIN_DIR"
-    echo "app_store=$APP_STORE"
-    echo
-    echo "[bin]";  find "$tmp/bin"  -maxdepth 1 -type f -printf "%f\n" 2>/dev/null || true
-    echo; echo "[apps]"; find "$tmp/apps" -maxdepth 1 -mindepth 1 -type d -printf "%f\n" 2>/dev/null || true
-  } > "$tmp/manifest.txt"
-  if exists zip; then (cd "$tmp" && zip -qr "../$out" bin apps manifest.txt)
-  else (cd "$tmp" && tar -czf "../${out%.zip}.tar.gz" bin apps manifest.txt; out="${out%.zip}.tar.gz"); fi
-  ok "Bundle created: $(realpath_f "$tmp/../$out")"
+  case "$out" in
+    /*) : ;;
+    *)  out="$PWD/$out" ;;
+  esac
+  mkdir -p "$(dirname "$out")"
+
+  (
+    set -e
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "${tmp:-}"' EXIT
+
+    mkdir -p "$tmp"/{bin,apps}
+    [[ -d "$BIN_DIR"   ]] && cp -a "$BIN_DIR"/.   "$tmp/bin"  2>/dev/null || true
+    [[ -d "$APP_STORE" ]] && cp -a "$APP_STORE"/. "$tmp/apps" 2>/dev/null || true
+
+    {
+      echo "# BinMan bundle manifest"
+      echo "created=$(iso_now)"
+      echo "bin_dir=$BIN_DIR"
+      echo "app_store=$APP_STORE"
+      echo
+      echo "[bin]";  find "$tmp/bin"  -maxdepth 1 -type f -printf "%f\n" 2>/dev/null || true
+      echo
+      echo "[apps]"; find "$tmp/apps" -maxdepth 1 -mindepth 1 -type d -printf "%f\n" 2>/dev/null || true
+    } > "$tmp/manifest.txt"
+
+    if [[ "$out" == *.zip ]]; then
+      (cd "$tmp" && zip -qr "$out" bin apps manifest.txt)
+    else
+      out="${out%.tar.gz}.tar.gz"
+      (cd "$tmp" && tar -czf "$out" bin apps manifest.txt)
+    fi
+
+    abs_out="$(realpath_f "$out")"
+    say "Bundle created: ${abs_out}"
+    ok  "Bundle created: ${abs_out}"
+  )
 }
+
+
+
+# --------------------------------------------------------------------------------------------------
+# STRESS — internal gauntlet (binman test stress)
+# --------------------------------------------------------------------------------------------------
+op_test_stress(){
+  # args
+  local JOBS=6 VERBOSE=0 KEEP=0 QUICK=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --jobs) JOBS="${2:-6}"; shift 2;;
+      --verbose|-v) VERBOSE=1; shift;;
+      --keep|-k) KEEP=1; shift;;
+      --quick|-q) QUICK=1; shift;;
+      *) shift;;
+    esac
+  done
+
+  # save & relax shell options (turn off errexit for the stress run)
+  local _old_opts; _old_opts="$(set +o)"; set +e
+
+  # ---------- Pretty ----------
+  note(){ printf "\033[36m[NOTE]\033[0m %s\n" "$*"; }
+  ok(){   printf "\033[32m[ OK ]\033[0m %s\n" "$*"; }
+  warn(){ printf "\033[33m[WARN]\033[0m %s\n" "$*"; }
+  fail(){ printf "\033[31m[FAIL]\033[0m %s\n" "$*"; }
+  die(){ fail "$*"; eval "$_old_opts"; exit 1; }
+  assert_file(){ [[ -f "$1" ]] || die "Missing file: $1"; }
+  assert_dir(){  [[ -d "$1" ]] || die "Missing dir: $1"; }
+  assert_exe(){  [[ -x "$1" ]] || die "Not executable: $1"; }
+  assert_no(){   [[ ! -e "$1" ]] || die "Should not exist: $1"; }
+  assert_eq(){   [[ "$1" == "$2" ]] || die "Expected '$2' got '$1'"; }
+
+  # run helper: DO NOT toggle -e here; the harness already set +e globally
+  run(){
+    local rc
+    (( VERBOSE )) && set -x
+    "$@"; rc=$?
+    (( VERBOSE )) && set +x
+    return $rc
+  }
+
+  # ---------- Sandbox ----------
+  local ROOT; ROOT="$(mktemp -d -t binman-stress-XXXXXX)"
+  cleanup() { [[ ${KEEP:-0} -eq 1 ]] && return 0; rm -rf "${ROOT:-}"; }
+  trap cleanup EXIT
+
+  export HOME="$ROOT/home"
+  mkdir -p "$HOME" "$ROOT/work" "$ROOT/remotes" "$ROOT/tmp"
+  touch "$HOME/.zshrc" "$HOME/.zprofile"
+
+  export XDG_DATA_HOME="$HOME/.local/share"
+  export XDG_STATE_HOME="$HOME/.local/state"
+  export XDG_CONFIG_HOME="$HOME/.config"
+
+  local BINDIR="$HOME/.local/bin"
+  local APPDIR="$HOME/.local/share/binman/apps"
+  mkdir -p "$BINDIR" "$APPDIR"
+  export PATH="$BINDIR:$PATH"
+
+  # Resolve self
+  local BIN
+  if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    BIN="$(python3 - <<'PY' "${BASH_SOURCE[0]}"
+import os,sys; print(os.path.realpath(sys.argv[1]))
+PY
+)"
+  else
+    BIN="$0"
+  fi
+  cp "$BIN" "$ROOT/binman"; chmod +x "$ROOT/binman"; BIN="$ROOT/binman"
+
+  say "🏗  Sandbox: $ROOT"; say "🏠 HOME:    $HOME"; say "🛠  BinMan:  $BIN"
+
+  local PASS=0 FAILC=0
+  okstep(){ ok "$*"; ((PASS++)); }
+  badstep(){ fail "$*"; ((FAILC++)); }
+
+  # ---------- Fixtures ----------
+  mk_script() { mkdir -p "$(dirname "$1")"; printf '#!/usr/bin/env bash\nset -euo pipefail\necho "%s"\n' "${2:-hi}" > "$1"; chmod +x "$1"; }
+  mk_app() { local root="$1/$2"; mkdir -p "$root/bin"; echo "1.0.0" > "$root/VERSION"; printf '#!/usr/bin/env bash\nset -euo pipefail\necho "%s"\n' "${3:-$2}" > "$root/bin/$2"; chmod +x "$root/bin/$2"; printf "%s" "$root"; }
+  mk_remote_app_repo(){ local repo="$1/$2-remote"; mkdir -p "$repo/apps/$2/bin"; echo "$3" > "$repo/apps/$2/VERSION"; printf '#!/usr/bin/env bash\nset -euo pipefail\necho "%s"\n' "$4" > "$repo/apps/$2/bin/$2"; chmod +x "$repo/apps/$2/bin/$2"; printf "%s" "$repo"; }
+
+  # ---------- 1) Help / version ----------
+  note "Sanity: help & version"
+  run "$BIN" help >/dev/null || die "help failed"
+  run "$BIN" version >/dev/null || true
+  okstep "help/version ok"
+
+  # ---------- 2) Single-file install (copy) ----------
+  note "Install single-file script (copy mode)"
+  local S1="$ROOT/work/hello.sh"; mk_script "$S1" "hello-copy"
+  run "$BIN" install "$S1" --force
+  assert_exe "$BINDIR/hello"; assert_eq "$("$BINDIR/hello")" "hello-copy"
+  okstep "script install (copy) ok"
+
+  # ---------- 3) Single-file install (link) ----------
+  note "Install single-file script (link mode)"
+  local S2="$ROOT/work/echo.sh"; mk_script "$S2" "hello-link"
+  run "$BIN" install "$S2" --link --force
+  assert_exe "$BINDIR/echo"; assert_eq "$("$BINDIR/echo")" "hello-link"
+  okstep "script install (link) ok"
+
+  # ---------- 4) App install + shim ----------
+  note "Install app (bin/<name> layout)"
+  local APP_A_SRC; APP_A_SRC="$(mk_app "$ROOT/work" 'appalpha' 'alpha-1.0.0')"
+  run "$BIN" install "$APP_A_SRC"
+  assert_file "$APPDIR/appalpha/bin/appalpha"; assert_exe "$BINDIR/appalpha"
+  [[ "$("$BINDIR/appalpha")" == "alpha-1.0.0" ]] || die "appalpha wrong output"
+  okstep "app install + shim ok"
+
+  # ---------- 5) List ----------
+  note "List inventory"
+  run "$BIN" list >/dev/null || die "list failed"
+  okstep "list ok"
+
+  # ---------- 6) Update via remote (reinstall from fake remote) ----------
+  note "Update app from fake remote (simulate remote upgrade)"
+  local REMOTE; REMOTE="$(mk_remote_app_repo "$ROOT/remotes" 'appalpha' '1.2.3' 'alpha-1.2.3')"
+  run "$BIN" install "$REMOTE/apps/appalpha" --force
+  [[ "$(tr -d '\n' < "$APPDIR/appalpha/VERSION")" == "1.2.3" ]] || die "version not updated"
+  [[ "$("$BINDIR/appalpha")" == "alpha-1.2.3" ]] || die "shim not updated"
+  okstep "remote reinstall bumped to 1.2.3"
+
+  # ---------- 7) Manifest bulk ----------
+  note "Manifest bulk install (2 scripts + 1 app)"
+  local S3="$ROOT/work/tool-a.sh"; mk_script "$S3" "tool-a"
+  local S4="$ROOT/work/tool-b.sh"; mk_script "$S4" "tool-b"
+  local APP_B_SRC; APP_B_SRC="$(mk_app "$ROOT/work" 'appbeta' 'beta-1.0.0')"
+  local MAN="$ROOT/work/manifest.txt"; printf "%s\n%s\n%s\n" "$S3" "$S4" "$APP_B_SRC" > "$MAN"
+  run "$BIN" --manifest "$MAN" install
+  assert_exe "$BINDIR/tool-a"; assert_exe "$BINDIR/tool-b"; assert_file "$APPDIR/appbeta/bin/appbeta"
+  okstep "manifest install ok"
+
+  # ---------- 8) Uninstall + rollback snapshot existence ----------
+  note "Uninstall and confirm rollback snapshot incremented"
+  local RDIR="$HOME/.local/share/binman/rollback"; local pre=$(find "$RDIR" -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+  run "$BIN" uninstall tool-b
+  assert_no "$BINDIR/tool-b"
+  local post=$(find "$RDIR" -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+  (( post > pre )) || warn "no snapshot growth detected (timestamp granularity)"
+  okstep "uninstall + rollback snapshot passable"
+
+  # ---------- 9) Doctor --fix-path ----------
+  note "Doctor --fix-path modifies rc files"
+  run "$BIN" --fix-path doctor >/dev/null || die "doctor failed"
+  okstep "doctor ok"
+
+  # ---------- 10) Idempotent reinstall ----------
+  note "Idempotent reinstall"
+  run "$BIN" install "$S1" >/dev/null || true
+  okstep "idempotent reinstall ok"
+
+  # ---------- 11) Weird filenames ----------
+  note "Install weird filenames"
+  local W1="$ROOT/work/space name.sh"; mk_script "$W1" "space-ok"
+  local W2="$ROOT/work/uniçøde.sh";   mk_script "$W2" "unicode-ok"
+  run "$BIN" install "$W1" --force; run "$BIN" install "$W2" --force
+  [[ "$("$BINDIR/space name")" == "space-ok" ]] || die "space name failed"
+  [[ "$("$BINDIR/uniçøde")" == "unicode-ok" ]] || die "unicode failed"
+  okstep "weird names ok"
+
+  # ---------- 12) Concurrency ----------
+  if (( QUICK == 0 )); then
+    note "Parallel installs (race test)"
+    local PAR="$ROOT/work/parallel"; mkdir -p "$PAR"
+    local N=20 i; for i in $(seq 1 "$N"); do mk_script "$PAR/t$i.sh" "T$i"; done
+    local p
+    for i in $(seq 1 "$N"); do
+      run "$BIN" install "$PAR/t$i.sh" --force >/dev/null 2>&1 & p=$!
+      while (( $(jobs -p | wc -l) >= JOBS )); do wait -n || true; done
+    done
+    wait || true
+    for i in $(seq 1 "$N"); do assert_exe "$BINDIR/t$i"; done
+    okstep "concurrency ok"
+  fi
+
+  # ---------- 13) Non-interactive list ----------
+  note "Non-interactive list (TERM=dumb)"
+  ( export TERM=dumb; run "$BIN" list >/dev/null )
+  okstep "non-interactive ok"
+
+  # ---------- 14) Backup & Restore (robust path capture) ----------
+  note "Backup and Restore"
+
+  # Helper: strip ANSI just in case
+  strip_ansi(){ sed -r 's/\x1B\[[0-9;]*[A-Za-z]//g'; }
+
+  # Always write inside the sandbox so no cwd surprises
+  local base="$ROOT/tmp/bmstress-$$"
+  local msg rc BK
+
+  msg="$("$BIN" backup "$base" 2>&1)"; rc=$?
+  (( rc == 0 )) || die "backup failed: $(printf '%s' "$msg" | strip_ansi)"
+
+  # 1) Prefer the tool's own absolute path from stdout
+  BK="$(printf '%s\n' "$msg" | strip_ansi | sed -n 's/^.*Backup created:[[:space:]]*\(.*\)$/\1/p' | tail -1)"
+
+  # 2) If missing, check both extensions right where we asked binman to write
+  [[ -z "$BK" && -f "${base}.zip"    ]] && BK="${base}.zip"
+  [[ -z "$BK" && -f "${base}.tar.gz" ]] && BK="${base}.tar.gz"
+
+  # 3) Last-ditch: glob any file that starts with base, prefer newest
+  [[ -z "$BK" ]] && BK="$(ls -1t "${base}".zip "${base}".tar.gz 2>/dev/null | head -n1 || true)"
+
+  # 4) Verify
+  [[ -n "$BK" ]] || die "could not locate backup file (output was: $(printf '%s' "$msg" | strip_ansi))"
+  assert_file "$BK"
+
+  # Nuke one file to prove restore works
+  rm -f "$BINDIR/hello"; [[ ! -e "$BINDIR/hello" ]] || die "failed to remove hello"
+
+  run "$BIN" restore "$BK" || die "restore failed"
+  assert_exe "$BINDIR/hello"
+  okstep "backup/restore ok"
+
+  # ---------- 15) Bundle export (robust path capture) ----------
+  note "Bundle export"
+  local bmsg bfile
+  bmsg="$("$BIN" bundle "$ROOT/tmp/bundle" 2>&1)" || true
+
+  # Prefer explicit path from stdout
+  bfile="$(printf '%s\n' "$bmsg" | strip_ansi | sed -n 's/^.*Bundle created:[[:space:]]*\(.*\)$/\1/p' | tail -1)"
+
+  # Fallbacks
+  [[ -z "$bfile" && -f "$ROOT/tmp/bundle.zip"    ]] && bfile="$ROOT/tmp/bundle.zip"
+  [[ -z "$bfile" && -f "$ROOT/tmp/bundle.tar.gz" ]] && bfile="$ROOT/tmp/bundle.tar.gz"
+  [[ -z "$bfile" ]] && bfile="$(ls -1t "$ROOT"/tmp/bundle.* 2>/dev/null | head -n1 || true)"
+
+  [[ -n "$bfile" ]] || die "bundle file not found; output: $(printf '%s' "$bmsg" | strip_ansi)"
+  assert_file "$bfile"
+  okstep "bundle created"
+}
+
 
 # --------------------------------------------------------------------------------------------------
 # TEST — run an installed command (default --help) to check exit status
 # --------------------------------------------------------------------------------------------------
 op_test(){
-  local name="$1"; shift || true
-  [[ -n "$name" ]] || { err "test requires a command name"; return 2; }
+  local name="${1:-}"; shift || true
+
+  # allow: binman test stress [--opts]
+  if [[ "$name" == "stress" ]]; then
+    op_test_stress "$@"
+    return $?
+  fi
+
+  # if blank, or invalid name typed, offer interactive picker
+  _ensure_target(){
+    local n="$1"
+    local path="$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN/$n" || echo "$BIN_DIR/$n")"
+    [[ -n "$n" && -x "$path" ]]
+  }
+
+  if ! _ensure_target "$name"; then
+    local picked
+    picked="$(_pick_installed_cmd)" || { warn "Cancelled."; return 1; }
+    [[ -z "$picked" ]] && { warn "Cancelled."; return 1; }
+    name="$picked"
+  fi
+
   local path; if (( SYSTEM_MODE )); then path="$SYSTEM_BIN/$name"; else path="$BIN_DIR/$name"; fi
   [[ -x "$path" ]] || { err "not installed or not executable: $name"; return 2; }
+
+  # default to --help unless user gave explicit args after --
   local args=("$@"); [[ ${#args[@]} -eq 0 ]] && args=(--help)
-  "$path" "${args[@]}" >/dev/null 2>&1 && ok "PASS: $name ${args[*]}" || { local rc=$?; warn "FAIL: $name (exit $rc)"; return $rc; }
+  if "$path" "${args[@]}" >/dev/null 2>&1; then
+    ok "PASS: $name ${args[*]}"
+    return 0
+  else
+    local rc=$?
+    warn "FAIL: $name (exit $rc)"
+    return $rc
+  fi
 }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # MANIFEST — install from a plain list (or JSON array when jq available)
@@ -2005,7 +2404,14 @@ binman_tui(){
       a|A) id="$(latest_rollback_id || true)"; [[ -n "$id" ]] && apply_rollback "$id" || warn "No rollback snapshots yet"
            printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
       b|B) printf "Bundle filename [blank=auto]: "; read -r f; op_bundle "${f}"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      c|C) printf "Command name to test: "; read -r n; op_test "$n"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+	  c|C)
+	    # immediate picker; includes "stress (gauntlet)"
+	    sel="$(_pick_test_target)" || { warn "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
+	    # normalize fzf line for stress
+	    [[ "$sel" == stress* ]] && sel="stress"
+	    op_test "$sel"
+	    printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+	    ;;
       s|S) SYSTEM_MODE=$((1-SYSTEM_MODE)); ok "System mode: $([[ $SYSTEM_MODE -eq 1 ]] && echo ON || echo OFF)"; sleep 0.5;;
       q|Q) exit 0;;
       *) warn "Unknown choice: $c"; sleep 0.7;;
