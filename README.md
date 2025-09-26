@@ -1,90 +1,75 @@
-## BinMan (Binary Manager)
+# BinMan (Binary Manager)
 
 Because your ~/Downloads folder is not a filing system, champ.
 
-Let’s be honest: your scripts are everywhere. Some live in ~/Desktop, some in ~/Downloads, one’s rotting in ~/Documents/old_stuff/maybe_useful/ and the crown jewel—final2_REALfinal.sh—is hiding on a random USB stick you lost in 2019.
+Let’s be honest: your scripts are everywhere. Some live in ~/Desktop, some in ~/Downloads, one’s rotting in ~/Documents/old_stuff/maybe_useful/, and the crown jewel—final2_REALfinal.sh—is hiding on a random USB stick you lost in 2019.
 
 When you do find them, you rename one to “script.sh” because you’re a visionary, then overwrite it by accident two weeks later. Genius.
 
-# BinMan fixes that.
+## BinMan fixes that.
 
-Install your scripts or apps (even multi-file monsters) straight into ~/.local/bin or your system bin. Suddenly you can run them anywhere—no more “cd into directory, chmod +x, ./script.sh” like a caveman summoning fire.
+Install your scripts or apps (even multi-file monsters) straight into `~/.local/bin` or your system bin. Suddenly you can run them anywhere—no more “cd into directory, chmod +x, ./script.sh” like a caveman summoning fire.
 
-Update them when you tweak your masterpiece. BinMan is version aware, so it swaps the old for the new like a well-trained butler.
+Update them when you tweak your masterpiece. BinMan is version-aware, so it swaps the old for the new like a well-trained butler.
 
-Uninstall when you realize your brilliant script was actually a crime against humanity, or straight up tried to sudo rm -rf /* your box. 
+Uninstall when you realize your brilliant script was actually a crime against humanity, or straight up tried to `sudo rm -rf /*` your box.
 
-Install from URL. Found some spicy script on GitHub? Just copy the raw link and:
-```binman install --url https://raw.githubusercontent.com/someguy/wifi-slap/main/wifi-slap.sh```
-Boom. It’s in your bin. Anywhere on your system. Ready to slap WiFi.
+### Install from URL
+
+Found some spicy script on GitHub? Just copy the raw link and:
+
+```
+binman install https://raw.githubusercontent.com/someguy/wifi-slap/main/wifi-slap.sh
+```
+
+Boom. It’s in your bin. Anywhere on your system. Ready to slap Wi-Fi.
 
 List what you’ve got installed, because you definitely forgot.
 
-Backup & Restore. Zip your entire bin, yeet it onto a USB, upload it to cloud, carve it into a stone tablet. Restore later like a necromancer performing dark rites.
+**Backup & Restore.** Zip your entire bin, yeet it onto a USB, upload it to cloud, carve it into a stone tablet. Restore later like a necromancer performing dark rites.
 
-Doctor: checks if everything’s working or if you’ve somehow replaced bash with Minesweeper.
+**Doctor:** checks if everything’s working or if you’ve somehow replaced bash with Minesweeper.
 
+### Comes with friends
 
-But wait—BinMan ships with friends. Example: gitprep.sh.
+Example: `gitprep.sh`.
 
 GitPrep is like repo-in-a-can. Run it in any directory and it’ll:
 
-Initialize git
-
-Add a README and .gitignore
-
-Make the first commit
-
-Hook up a remote if you want
-
+- Initialize git  
+- Add a README and .gitignore  
+- Make the first commit  
+- Hook up a remote if you want
 
 One command, and your random folder full of horrors is a legit repo. No excuses now.
 
-DIY mode: BinMan has a wizard to generate your own apps. You can spin up a project with metadata, versioning, README, optional Python venv, and git baked in. It’s like scaffolding, but less construction site and more “hello, here’s your new pet goblin.”
+DIY mode: BinMan has a **wizard** and **scaffolder** to generate your own apps. You can spin up a project with metadata, versioning, README, optional Python venv, and git baked in. It’s like scaffolding, but less construction site and more “hello, here’s your new pet goblin.”
 
-Examples of chaos you can install:
+And when you break something? BinMan lets you **roll back**. Yep, it tracks snapshots before changes. Undo your mistakes like a time traveler with slightly better hair.
 
-Coffeebuzz.sh – screams if your cup is empty.
-```binman install coffeebuzz.sh```
-
-Shrekify.py – renames every file to Shrek quotes.
-```binman install --url https://raw.githubusercontent.com/you/shrekify/main/shrekify.py```
-
-Wifi-slap.sh – pings your router into submission.
-```binman install wifi-slap.sh```
-
-Panicbutton.sh – hides your browser tabs and blasts Never Gonna Give You Up at full volume.
-```binman install panicbutton.sh```
-
-Minecraft-tunnel.lua – controls your turtle army like a cyber overlord.
-```binman install minecraft-tunnel.lua```
-
-
-And when you break something? BinMan lets you roll back. Yep, it actually tracks versions. That’s right—you can undo your mistakes like a time traveler with slightly better hair.
-
-BinMan is not just a tool. It’s not just a package manager. It’s a lifestyle choice. It’s the line between order and chaos, between ~/Downloads and digital nirvana.
+BinMan is not just a tool. It’s not just a package manager. It’s a lifestyle choice. It’s the line between order and chaos, between `~/Downloads` and digital nirvana.
 
 So… do you keep pretending your system is “organized enough,” or do you let BinMan drag your scripts out of the mud and into the bin.
 
-DO IT! DO IT NOW!!
+**DO IT! DO IT NOW!!**
 
 ---
 
 ## Features
 
-- **Install**: files, apps, or even remote URLs → into `~/.local/bin` or `~/.local/share/binman/apps`.
+- **Install**: files, app directories, or remote URLs → `~/.local/bin` and `~/.local/share/binman/apps`.
 - **Uninstall**: remove a single command or a whole app (shim + store dir).
 - **List**: show installed commands & apps with version and docstring (from top comment).
-- **Update**: force-reinstall from file/dir, optionally with a `--git` pull first.
+- **Update**: force-reinstall from file/dir; optionally `--git` pull first.
 - **Backup/Restore**: snapshot + restore everything, `.zip` or `.tar.gz`.
 - **Rollback**: auto-snapshots before changes; roll back to previous state.
-- **Self-update**: pull the BinMan repo and reinstall itself.
+- **Self-update**: fetches the project’s raw script and atomically swaps itself.
 - **Bundle export**: pack bin+apps+manifest for sync/migration.
 - **Manifest install**: bulk installs from text or JSON (with `jq`).
-- **Generator**: `binman new` scaffolds scripts/apps (bash/python), with optional venv.
-- **Wizard**: interactive generator (with README + gitprep support).
-- **TUI**: run `binman` with no args → full menu of operations.
+- **Generator / Wizard**: `binman new` + `binman wizard` scaffold scripts/apps across multiple languages (bash/python/node/typescript/deno/go/rust/ruby/php). Python apps can auto-manage a `.venv`.
+- **TUI**: `binman` with no args → full menu (fzf pickers for uninstall/test if available).
 - **System mode**: `--system` installs to `/usr/local/*` (requires perms).
+- **Stress test**: `binman test stress` runs an internal gauntlet to sanity-check behaviors.
 
 Version in this README: **v1.6.4**
 
@@ -140,19 +125,16 @@ exec "$HOME/.local/share/binman/apps/<name>/bin/<name>" "$@"
 - `--manifest FILE` — bulk install from manifest  
 - `--quiet` — reduce chatter  
 
-### App entry / runtime helpers (for installing directories):
+### App entry / runtime helpers (for installing directories)
 
-- `--entry CMD` — custom entry command for an app dir (e.g. python3 src/main.py, go run ./cmd/tool, cargo run --release, node ./bin/cli.js, bundle exec ./exe/colorls)
+- `--entry CMD` — custom entry command for an app dir  
+  (e.g. `python3 src/main.py`, `go run ./cmd/tool`, `cargo run --release`, `node ./bin/cli.js`, `bundle exec ./exe/colorls`)  
+- `--workdir DIR` / `--cwd DIR` — `cd` into this subdir before running `--entry`  
+- `--venv` — for Python apps: create/activate `./.venv` and run inside it  
+- `--req FILE` / `--requirements FILE` — requirements file name (default `requirements.txt`)  
+- `--python BIN` — Python to bootstrap the venv (default `python3`)  
 
-- `--workdir DIR` / `--cwd DIR` — cd into this subdir before running --entry
-
-- `--venv` — for Python apps: create/activate ./.venv and run inside it
-
-- `--req FILE` / `--requirements FILE` — requirements file name (default requirements.txt)
-
-- `--python BIN` — Python to bootstrap the venv (default python3)
-
-Heads-up: if you have fzf installed, the Uninstall menu supports multi-select.
+Heads-up: if you have `fzf` installed, the **Uninstall** and **Test** menus support selection in the TUI.
 
 ### Install
 
@@ -168,18 +150,18 @@ binman install https://host/script.sh
 # BinMan will try to auto-detect an entry:
 #   • Python: pyproject console-scripts → python -m pkg, or common files (src/<name>/__main__.py, main.py, …)
 #   • Node/TS: package.json {"bin": …} or "scripts.start"; otherwise tsx src/index.ts if present
+#   • Deno: deno task start or common main.ts/js
 #   • Go: cmd/<app>/main.go (prefers repo name), else main.go → go run …
 #   • Rust: Cargo.toml (bin) → cargo run --release
 #   • Ruby: exe/<name> or bin/<name> (gems); Gemfile → uses bundler if available
 #   • PHP: composer.json "bin": [...]
-#   • Deno: deno task start or common main.ts/js
 binman install ./MyApp/
 
 # When auto-detect can’t guess, tell it explicitly:
 binman install ./RepoDir --entry 'python3 src/main.py'
 
 # Python app with a managed venv + requirements:
-binman install ./Harvester --entry 'python3 BjornWpaSecHarvester.py' --venv --req requirements.txt
+binman install ./Harvester --entry 'python3 tool.py' --venv --req requirements.txt
 
 # Pick a different Python to seed the venv:
 binman install ./Tool --entry 'python3 -m tool' --venv --python /usr/bin/python3.11
@@ -197,7 +179,7 @@ binman install ./ripgrep --entry 'cargo run --release --bin rg'
 
 # Ruby (gem layout)
 binman install ./colorls-main          # exe/colorls (uses bundler if present)
-binman install ./some-gem --entry 'bundle exec ./exe/some-gem'   # force bundler
+binman install ./some-gem --entry 'bundle exec ./exe/some-gem'
 
 # Deno
 binman install ./deno-app              # prefers `deno task start` if defined
@@ -207,7 +189,7 @@ binman install ./deno-app --entry 'deno run -A main.ts'
 binman install --manifest tools.txt
 ```
 
-Tip: for app installs, BinMan creates a tiny shim in your bin that cds into the app, then runs the detected or provided entry. With --venv, Python apps get a local .venv that’s created on first run and quietly pip install -r if a requirements file is present.
+Tip: for app installs, BinMan creates a tiny shim in your bin that `cd`s into the app, then runs the detected or provided entry. With `--venv`, Python apps get a local `.venv` that’s created on first run and quietly `pip install -r` if a requirements file is present.
 
 ### Uninstall
 
@@ -257,6 +239,7 @@ binman rollback <ID>     # specific snapshot
 
 ```
 binman self-update
+# optionally run with a repo dir you want pulled first:
 binman --git ~/Projects/BinMan self-update
 ```
 
@@ -271,9 +254,10 @@ binman bundle my-env.zip
 ```
 binman test hello -- --help
 binman test resize -- -v
+binman test stress --verbose
 ```
 
-### New (scaffold)
+### New (scaffold) & Wizard
 
 BinMan can conjure projects in multiple languages:
 
@@ -288,32 +272,6 @@ binman new MyPhpThing --app --lang php
 binman new SmartTool --app --lang python --venv
 ```
 
-Scaffolded Bash script:
-
-```
-#!/usr/bin/env bash
-# Description: Hello from script
-VERSION="0.1.0"
-set -Eeuo pipefail
-echo "Hello from <name> v$VERSION"
-```
-
-Scaffolded Python script:
-
-```
-#!/usr/bin/env python3
-# Description: Hello from script
-__version__ = "0.1.0"
-
-def main():
-    print(f"Hello from <name> v{__version__}")
-    return 0
-
-if __name__ == "__main__":
-    import sys
-    sys.exit(main())
-```
-
 App scaffold layout:
 
 ```
@@ -323,13 +281,13 @@ App scaffold layout:
 └─ VERSION
 ```
 
-### Wizard (interactive)
+**Wizard (interactive):**
 
 ```
 binman wizard
 ```
 
-Prompts for name, type (single/app), language, directory, author/desc, venv (for python apps), installs optionally, and can init git with `gitprep`.
+Prompts for name, type (single/app), language, directory, author/desc, venv (for Python apps), optional install, and can init git with `gitprep`.
 
 ### TUI
 
@@ -338,7 +296,7 @@ binman tui
 # or just: binman
 ```
 
-Menu includes Install, Uninstall, List, Doctor, New, Wizard, Backup, Restore, Self-update, Rollback, Bundle, Test, and System toggle.
+Menu includes **Install, Uninstall, List, Doctor, Wizard, Backup, Restore, Self-Update, Rollback, Bundle, Test**, and a **System mode** toggle. With `fzf`, **Uninstall** and **Test** show interactive pickers.
 
 ---
 
@@ -353,16 +311,21 @@ Menu includes Install, Uninstall, List, Doctor, New, Wizard, Backup, Restore, Se
 
 ---
 
+## Examples
+
+A ready-made `Examples/` folder is included to show typical single-file and app layouts for Bash, Node, Deno/TS, Go, Rust, Ruby, PHP, and Python. Install any of them to see how shims, versions, and entry detection work.
+
+---
+
 ## Dev workflow tips
 
 - **Edit + Update**
-
 ```
 binman update path/to/script-or-app
 rehash 2>/dev/null || hash -r 2>/dev/null || true
 ```
 
-- Entrypoint rule for apps: must have `bin/<appname>`.  
+- Entrypoint rule for apps: ideally have `bin/<appname>`.  
 - Use `--link` for live-edit dev installs.  
 
 ---
@@ -375,7 +338,7 @@ rehash 2>/dev/null || hash -r 2>/dev/null || true
 Common issues:
 - **`command not found`** → add `~/.local/bin` to PATH + rehash  
 - **`permission denied`** → `chmod +x` before install  
-- **app won’t install** → must contain `bin/<name>`  
+- **app won’t install** → provide `bin/<name>` or use `--entry`  
 - **restore didn’t overwrite** → add `--force`  
 - **zip/unzip missing** → `doctor` warns, falls back to tar.gz  
 
@@ -383,12 +346,11 @@ Common issues:
 
 ## Roadmap
 
-- Smarter update metadata
-- Bulk git-aware updates
-- More bundle/sync flows across machines
-- Install hooks (pre/post)
-- Binlets (tiny inline scripts)
-- Extra UX candy
+- Smarter update metadata  
+- More bundle/sync flows across machines  
+- Install hooks (pre/post)  
+- Binlets (tiny inline scripts)  
+- Extra UX candy  
 
 ---
 

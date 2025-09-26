@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Description: BashApp (bash app)
+VERSION="0.1.0"
+set -Eeuo pipefail
+echo "BashApp v${VERSION} — hello (bash)"

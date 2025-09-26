@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Description: RustApp (rust launcher)
+set -Eeuo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+BIN="$HERE/target/release/RustApp"
+if [[ -x "$BIN" ]]; then exec "$BIN" "$@"; fi
+if command -v cargo >/dev/null 2>&1; then
+  (cd "$HERE" && cargo build --quiet --release) && exec "$BIN" "$@"
+fi
+echo "Rust toolchain not found. Install cargo or prebuild $BIN" >&2
+exit 1

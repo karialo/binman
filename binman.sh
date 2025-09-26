@@ -50,6 +50,8 @@ VENV_MODE=0         # --venv : create/activate app-local .venv for entry
 REQ_FILE=""         # --req FILE : requirements file name (default: requirements.txt)
 BOOT_PY="python3"   # --python BIN : bootstrap interpreter to create venv
 
+
+
 # --------------------------------------------------------------------------------------------------
 # Small helpers (consistent messages, detection, paths)
 # --------------------------------------------------------------------------------------------------
@@ -157,6 +159,92 @@ _pick_test_target(){
   echo "${names[$((choice-1))]}"
 }
 
+_fzf(){ 
+	command -v fzf >/dev/null 2>&1; 
+	}
+
+_tui_pick_install_target(){
+  # Lists files/dirs from CWD for Install. Return selection on stdout.
+  local items=() idx=1 sel
+  while IFS= read -r -d '' f; do items+=("$f"); done < <(find . -maxdepth 1 -mindepth 1 -print0 | sort -z)
+  # pretty label
+  _label(){ local p="${1#./}"; [[ -d "$1" ]] && printf "dir  %s\n" "$p" || printf "file %s\n" "$p"; }
+
+  if _fzf; then
+    sel="$(printf "%s\n" "${items[@]}" \
+      | sed 's#^\./##' \
+      | while read -r p; do [[ -d "$p" ]] && echo "dir  $p" || echo "file $p"; done \
+      | fzf --prompt="Install > " --height=60% --reverse --expect=enter --ansi \
+      | tail -n +2 | sed 's/^.... //')"
+    [[ -n "$sel" ]] && printf "%s\n" "$sel"
+    return
+  fi
+
+  # Fallback: numeric list
+  echo "Choose what to install (or enter a custom path/URL):"
+  for f in "${items[@]}"; do printf "  %2d) %s\n" "$idx" "$(_label "$f")"; idx=$((idx+1)); done
+  printf "  c) custom path/URL\n> "
+  read -r ans
+  if [[ "$ans" =~ ^[0-9]+$ ]] && (( ans>=1 && ans<idx )); then
+    printf "%s\n" "${items[ans-1]#./}"
+  elif [[ "${ans,,}" == c* || -n "$ans" ]]; then
+    printf "%s\n" "$ans"
+  fi
+}
+
+_tui_pick_archive(){
+  # Pick a .zip or .tar.gz from CWD (or enter path)
+  local files=() idx=1 sel
+  while IFS= read -r -d '' f; do files+=("${f#./}"); done < <(find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.tgz' \) -print0 | sort -z)
+  if _fzf; then
+    sel="$(printf "%s\n" "${files[@]}" | fzf --prompt="Restore > " --height=60% --reverse)"
+    [[ -n "$sel" ]] && printf "%s\n" "$sel"
+    return
+  fi
+  echo "Choose an archive to restore (or enter a path):"
+  for f in "${files[@]}"; do printf "  %2d) %s\n" "$idx" "$f"; idx=$((idx+1)); done
+  printf "> "
+  read -r ans
+  if [[ "$ans" =~ ^[0-9]+$ ]] && (( ans>=1 && ans<idx )); then
+    printf "%s\n" "${files[ans-1]}"
+  else
+    printf "%s\n" "$ans"
+  fi
+}
+
+_tui_pick_cmd_or_app_multi(){
+  # Multi-select installed commands/apps. Prints lines like:
+  #   cmd name
+  #   app name
+  local cmd=() app=() rows=()
+  mapfile -t cmd < <(_get_installed_cmd_names)
+  mapfile -t app < <(_get_installed_app_names)
+  for c in "${cmd[@]}"; do rows+=("cmd  $c"); done
+  for a in "${app[@]}"; do rows+=("app  $a"); done
+
+  if _fzf; then
+    printf "%s\n" "${rows[@]}" | fzf --multi --prompt="Select (TAB=multi, Enter=done) > " --height=60% --reverse
+    return
+  fi
+
+  # Fallback: numeric multi (space separated)
+  local idx=1
+  echo "Select one or more (space-separated numbers), or 'a' for ALL, or Enter to cancel:"
+  for r in "${rows[@]}"; do printf "  %2d) %s\n" "$idx" "$r"; idx=$((idx+1)); done
+  printf "> "
+  local pick; read -r pick
+  [[ -z "$pick" ]] && return 0
+  if [[ "${pick,,}" == a ]]; then
+    printf "%s\n" "${rows[@]}"
+    return 0
+  fi
+  for n in $pick; do
+    if [[ "$n" =~ ^[0-9]+$ ]] && (( n>=1 && n<idx )); then
+      printf "%s\n" "${rows[n-1]}"
+    fi
+  done
+}
+
 
 
 # --------------------------------------------------------------------------------------------------
@@ -202,6 +290,8 @@ Examples:
 USAGE
 }
 
+
+
 # --------------------------------------------------------------------------------------------------
 # Shell rehash for zsh/bash (after installs/uninstalls)
 # --------------------------------------------------------------------------------------------------
@@ -209,6 +299,8 @@ rehash_shell(){
   if [ -n "${ZSH_VERSION:-}" ]; then hash -r || true; rehash || true; fi
   if [ -n "${BASH_VERSION:-}" ]; then hash -r || true; fi
 }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # Path / dir helpers
@@ -218,6 +310,8 @@ ensure_dir(){ mkdir -p "$1"; }
 ensure_bin(){ ensure_dir "$BIN_DIR"; }
 ensure_apps(){ ensure_dir "$APP_STORE"; }
 ensure_system_dirs(){ ensure_dir "$SYSTEM_BIN"; ensure_dir "$SYSTEM_APPS"; }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # Rollback snapshots (pre-change backups of bin/ & apps/)
@@ -251,6 +345,8 @@ apply_rollback(){
   ok "Rollback applied: $id"
 }
 
+
+
 # --------------------------------------------------------------------------------------------------
 # Script/app metadata extraction (version, description)
 # --------------------------------------------------------------------------------------------------
@@ -281,6 +377,8 @@ script_desc(){
     | sed -E 's/^# *//; s/^Description: *//'
 }
 
+
+
 # --------------------------------------------------------------------------------------------------
 # Build list of install targets (files) based on args or --from
 # --------------------------------------------------------------------------------------------------
@@ -297,6 +395,8 @@ list_targets(){
   printf '%s\n' "${arr[@]}"
 }
 
+
+
 # --------------------------------------------------------------------------------------------------
 # Pretty TUI helpers (colors, separations, kv rendering)
 # --------------------------------------------------------------------------------------------------
@@ -310,7 +410,9 @@ ui_init(){
   UI_WIDTH=${COLUMNS:-80}
 }
 
-ui_hr(){ printf "%s\n" "$(printf '─%.0s' $(seq 1 "${1:-$UI_WIDTH}"))"; }
+ui_hr(){ 
+	printf "%s\n" "$(printf '─%.0s' $(seq 1 "${1:-$UI_WIDTH}"))"; 
+	}
 
 shorten_path() {
   local p="${1-}" max="${2:-$((UI_WIDTH-10))}"
@@ -328,12 +430,15 @@ shorten_path() {
   fi
 }
 
-ui_kv(){ printf "%s%-10s%s %s\n" "$UI_DIM" "$1" "$UI_RESET" "$2"; }
+ui_kv(){
+	printf "%s%-10s%s %s\n" "$UI_DIM" "$1" "$UI_RESET" "$2"; 
+	}
+
+
 
 # --------------------------------------------------------------------------------------------------
 # App utilities (entry resolution + shim creation)
 # --------------------------------------------------------------------------------------------------
-
 _detect_entry(){
   # ARG: appdir; OUT: "CMD|CWD|REQ" (REQ may be blank)
   local d="$1" lang="" req=""
@@ -618,13 +723,16 @@ PY
   echo "||"
 }
 
-
-_app_entry(){ local appdir="$1"; local name; name=$(basename "$appdir"); echo "$appdir/bin/$name"; }
+_app_entry(){
+	local appdir="$1"; local name; name=$(basename "$appdir"); echo "$appdir/bin/$name"; 
+}
+	
 _make_shim(){
   local name="$1" entry="$2" shim="$BIN_DIR/$name"
   printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"
   chmod +x "$shim"
 }
+
 _make_shim_system(){
   local name="$1" entry="$2" shim="$SYSTEM_BIN/$name"
   printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"
@@ -799,11 +907,13 @@ EOF
 }
 
 
+
 # --------------------------------------------------------------------------------------------------
 # Prompt helpers (TTY-safe; we always read/write via /dev/tty inside wizard/TUI)
 # --------------------------------------------------------------------------------------------------
 prompt_init(){ : "${UI_RESET:=}"; : "${UI_BOLD:=}"; : "${UI_DIM:=}"; : "${UI_CYAN:=}"; : "${UI_GREEN:=}"; : "${UI_YELLOW:=}"; }
 prompt_kv(){ printf "  %s%-14s%s %s\n" "$UI_BOLD" "$1:" "$UI_RESET" "$2"; }
+
 ask(){
   local q="$1" def="$2" out
   if [[ -n "$def" ]]; then
@@ -815,6 +925,7 @@ ask(){
   [[ -z "$out" ]] && out="$def"
   printf "%s\n" "$out"
 }
+
 ask_choice(){
   local label="$1" opts="$2" def="$3" out
   printf "  %s?%s %s %s(%s)%s %s[%s]%s: " \
@@ -823,6 +934,7 @@ ask_choice(){
   [[ -z "$out" ]] && out="$def"
   printf "%s\n" "$out"
 }
+
 ask_yesno(){
   local q="$1" def="${2:-n}" out hint="[y/N]"
   [[ "${def,,}" == "y" ]] && hint="[Y/n]"
@@ -831,6 +943,8 @@ ask_yesno(){
   [[ -z "$out" ]] && out="$def"
   [[ "${out,,}" =~ ^y ]]
 }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # App install/uninstall (user and system variants)
@@ -926,19 +1040,20 @@ _install_app_system(){
   return 2
 }
 
-
-
 _uninstall_app(){
   local name="$1" dest="$APP_STORE/$name" shim="$BIN_DIR/$name"
   [[ -e "$shim" ]] && rm -f "$shim" && ok "Removed shim: $shim"
   [[ -e "$dest" ]] && rm -rf "$dest" && ok "Removed app: $dest"
 }
+
 _uninstall_app_system(){
   ensure_system_write
   local name="$1" dest="$SYSTEM_APPS/$name" shim="$SYSTEM_BIN/$name"
   [[ -e "$shim" ]] && rm -f "$shim" && ok "Removed shim: $shim"
   [[ -e "$dest" ]] && rm -rf "$dest" && ok "Removed app: $dest"
 }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # Remote file fetch (curl/wget)
@@ -954,6 +1069,8 @@ fetch_remote(){
   else err "Need curl or wget for remote installs"; return 2; fi
   echo "$out"
 }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # Merge/copy helpers
@@ -975,12 +1092,15 @@ _merge_dir(){
     cp -a "$p" "$dst"
   done
 }
+
 _chmod_bin_execs(){
   # Re-assert executable bit on files in BIN_DIR (after restore).
   if [[ -d "$BIN_DIR" ]]; then
     find "$BIN_DIR" -maxdepth 1 -type f -exec chmod +x {} \; 2>/dev/null || true
   fi
 }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # INSTALL — core installer for scripts and apps (atomic for single files)
@@ -1064,6 +1184,8 @@ op_install(){
   say "$count item(s) installed."
 }
 
+
+
 # --------------------------------------------------------------------------------------------------
 # UNINSTALL — remove scripts or apps (user/system)
 # --------------------------------------------------------------------------------------------------
@@ -1084,6 +1206,8 @@ op_uninstall(){
   rehash_shell
   say "$count item(s) removed."
 }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # LIST — show installed scripts/apps with versions and descriptions
@@ -1111,6 +1235,8 @@ op_list(){
   done
 }
 
+
+
 # --------------------------------------------------------------------------------------------------
 # DOCTOR — environment checks (+ optional PATH patch)
 # --------------------------------------------------------------------------------------------------
@@ -1132,6 +1258,8 @@ op_doctor(){
   fi
 }
 
+
+
 # --------------------------------------------------------------------------------------------------
 # UPDATE — reinstall with overwrite (optionally pull a git dir first)
 # --------------------------------------------------------------------------------------------------
@@ -1141,10 +1269,52 @@ op_update(){
   [[ ${#targets[@]} -gt 0 ]] && { FORCE=1; stash_before_change >/dev/null; op_install "${targets[@]}"; } || warn "Nothing to reinstall"
 }
 
+
+
 # --------------------------------------------------------------------------------------------------
 # BACKUP & RESTORE — archive management (zip preferred; tar.gz fallback)
 # --------------------------------------------------------------------------------------------------
 _backup_filename_default(){ local ext="$1"; local ts; ts=$(date +%Y%m%d-%H%M%S); echo "binman_backup-${ts}.${ext}"; }
+
+# ----- Backup subset (build a temp tree and reuse op_backup archiver) --------
+op_backup_subset(){
+  # ARGS: output filename (optional) + selected rows on stdin ("cmd  name" / "app  name")
+  # Example use:
+  #   _tui_pick_cmd_or_app_multi | op_backup_subset "mybundle.zip"
+  local outfile="${1:-}"
+  shift || true
+
+  local tmp sel
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "${tmp:-}"' EXIT
+  mkdir -p "$tmp"/{bin,apps}
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local kind name
+    kind="$(awk '{print $1}' <<<"$line")"
+    name="$(awk '{print $2}' <<<"$line")"
+    if [[ "$kind" == "cmd" && -x "$BIN_DIR/$name" ]]; then
+      cp -a "$BIN_DIR/$name" "$tmp/bin/$name" 2>/dev/null || true
+    elif [[ "$kind" == "app" && -e "$APP_STORE/$name" ]]; then
+      cp -a "$APP_STORE/$name" "$tmp/apps/$name" 2>/dev/null || true
+    fi
+  done
+
+  # If nothing selected, do nothing
+  if ! compgen -G "$tmp/bin/*" >/dev/null && ! compgen -G "$tmp/apps/*" >/dev/null; then
+    warn "Nothing selected; backup skipped."
+    return 0
+  fi
+
+  # Temporarily point BIN/APPS to temp, then call op_backup (so it writes manifest/metadata)
+  local old_bin="$BIN_DIR" old_apps="$APP_STORE"
+  BIN_DIR="$tmp/bin"; APP_STORE="$tmp/apps"
+  op_backup "$outfile"
+  local rc=$?
+  BIN_DIR="$old_bin"; APP_STORE="$old_apps"
+  return $rc
+}
 
 op_backup(){
   ensure_bin; ensure_apps
@@ -1198,9 +1368,6 @@ EOF
   )
 }
 
-
-
-
 _detect_extract_root(){
   local base="$1"
   if [[ -d "$base/bin" || -d "$base/apps" ]]; then echo "$base"; return 0; fi
@@ -1242,39 +1409,39 @@ op_restore(){
 }
 
 
+
 # --------------------------------------------------------------------------------------------------
 # SELF-UPDATE — pull repo and reinstall the binman shim
 # --------------------------------------------------------------------------------------------------
 op_self_update(){
-  # Atomically replace the running binman from your canonical raw URL.
+  # Always fetch our canonical raw script, then reinstall via `binman update <tmp>`
   local url="https://raw.githubusercontent.com/karialo/binman/refs/heads/main/binman.sh"
-  local self tmp
-  # resolve current executable path (fallback to $0)
-  if self="$(python3 - <<'PY' "$0"
-import os,sys
-p=sys.argv[1]
-print(os.path.realpath(p))
-PY
-)"; then :; else self="$0"; fi
-  [[ -n "$self" && -w "$(dirname "$self")" ]] || { err "Cannot write to $(dirname "$self")"; return 2; }
+  local tmp
+  tmp="$(mktemp -t binman.update.XXXXXX.sh)"
 
-  tmp="$(mktemp "${self}.new.XXXXXX")"
   if exists curl; then
-    if ! curl -fsSL "$url" -o "$tmp"; then rm -f "$tmp"; err "Download failed."; return 2; fi
+    curl -fsSL "$url" -o "$tmp" || { rm -f "$tmp"; err "Download failed."; return 2; }
   elif exists wget; then
-    if ! wget -q "$url" -O "$tmp"; then rm -f "$tmp"; err "Download failed."; return 2; fi
+    wget -q "$url" -O "$tmp" || { rm -f "$tmp"; err "Download failed."; return 2; }
   else
     err "Need curl or wget for self-update"; return 2
   fi
 
   chmod +x "$tmp"
-  # quick sanity: script contains main case table and version string
-  if ! grep -q "case \"\\$ACTION\"" "$tmp"; then rm -f "$tmp"; err "Downloaded file doesn't look like binman.sh"; return 2; fi
 
-  # swap-in atomically
-  mv -f "$tmp" "$self"
-  ok "Self-update complete → $(basename "$self")"
+  # Sanity: look for literal case-switch on ACTION without expanding ACTION
+  if ! grep -q 'case "\$ACTION"' "$tmp"; then
+    rm -f "$tmp"
+    err "Fetched file doesn't look like binman.sh"
+    return 2
+  fi
+
+  # Reinstall ourselves through the normal update path
+  "$0" update "$tmp"
+  ok "Self-update complete."
 }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # BUNDLE — export bin+apps plus a manifest file
@@ -1558,6 +1725,7 @@ PY
 }
 
 
+
 # --------------------------------------------------------------------------------------------------
 # TEST — run an installed command (default --help) to check exit status
 # --------------------------------------------------------------------------------------------------
@@ -1624,7 +1792,6 @@ op_install_manifest(){
 #   • python app with --venv creates: .venv + src/<name>/{__init__,__main__}.py + bin/<name>
 #   • launcher auto-activates venv, installs requirements.txt quietly if present, sets PYTHONPATH=src
 # --------------------------------------------------------------------------------------------------
-
 new_cmd(){
   local name="$1"; shift || true
   local lang="bash" make_app=0 target_dir="$PWD" with_venv=0
@@ -2019,7 +2186,6 @@ PHP
   fi
 }
 
-
 # --------------------------------------------------------------------------------------------------
 # Wizard — interactive project scaffolder + optional install + optional git prep
 #   • Reuses ask/ask_choice/ask_yesno which write to /dev/tty (no stdin capture weirdness)
@@ -2028,7 +2194,6 @@ PHP
 #       - We print exactly what to run for SSH or HTTPS, and recommend SSH.
 #       - If the user enters a remote URL, we just wire it; otherwise we leave instructions.
 # --------------------------------------------------------------------------------------------------
-
 new_wizard(){
   ui_init; prompt_init
   tput clear 2>/dev/null || clear
@@ -2266,7 +2431,7 @@ EOF
   printf "  %sv%s%s\n\n" "$UI_DIM" "$VERSION" "$UI_RESET"
 
   local home_path apps_path sys_path
-  home_path="$(shorten_path "$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN" || echo "$BIN_DIR")" 60)"
+  home_path="$(shorten_path "$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN"  || echo "$BIN_DIR")" 60)"
   apps_path="$(shorten_path "$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_APPS" || echo "$APP_STORE")" 60)"
   sys_path="$(shorten_path "$SYSTEM_BIN" 60)"
 
@@ -2274,12 +2439,15 @@ EOF
   ui_kv "Apps:"  "$apps_path"
   ui_kv "System:" "$sys_path"
   ui_hr
-  printf "%s1)%s Install   %s2)%s Uninstall   %s3)%s List   %s4)%s Doctor   %s5)%s New   %s6)%s Wizard\n" \
+  printf "%s1)%s Install   %s2)%s Uninstall   %s3)%s List   %s4)%s Doctor   %s5)%s Wizard\n" \
+    "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET"
+    
+  printf "%s6)%s Backup    %s7)%s Restore     %s8)%s Self-Update   %sa)%s Rollback   %sb)%s Bundle   %sc)%s Test\n" \
     "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET"
-  printf "%s7)%s Backup    %s8)%s Restore     %s9)%s Self-Update   %sa)%s Rollback   %sb)%s Bundle   %sc)%s Test\n" \
-    "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET"
+
   printf "%ss)%s Toggle System Mode %s(currently: %s)%s    %sq)%s Quit\n" \
     "$UI_CYAN" "$UI_RESET" "$UI_DIM" "$([[ $SYSTEM_MODE -eq 1 ]] && echo "ON" || echo "OFF")" "$UI_RESET" "$UI_CYAN" "$UI_RESET"
+    
   ui_hr
 }
 
@@ -2287,6 +2455,8 @@ EOF
 ensure_system_write(){
   [[ -w "$SYSTEM_BIN" && -w "$SYSTEM_APPS" ]] || warn "Need write access to ${SYSTEM_BIN} and ${SYSTEM_APPS}. Try: sudo $SCRIPT_NAME --system <cmd> ..."
 }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # Option parser (top-level flags). Special-cases --backup/--restore to run immediately.
@@ -2319,6 +2489,8 @@ parse_common_opts(){
   return 1
 }
 
+
+
 # --------------------------------------------------------------------------------------------------
 # TUI loop
 # --------------------------------------------------------------------------------------------------
@@ -2327,97 +2499,168 @@ binman_tui(){
     print_banner
     printf "%sChoice:%s " "$UI_BOLD" "$UI_RESET"
     IFS= read -r c
+
     case "$c" in
-      1) printf "File/dir/URL (or --manifest FILE): "; read -r f
-         if [[ "$f" =~ ^--manifest[[:space:]]+ ]]; then op_install_manifest "${f#--manifest }"; else op_install "$f"; fi
-         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      2)
-        # Uninstall: show options, allow multi-select via fzf when available
+      1)  # Install — fzf picker over CWD (files + dirs); fall back to prompt
         if exists fzf; then
-          # Build combined list: prefix types for clarity; strip when passing to op_uninstall
+          # Build tagged choices from the user's *current* working dir
+          mapfile -t items < <(
+            for d in .* *; do
+              [[ -e "$d" ]] || continue
+              [[ "$d" == "." || "$d" == ".." ]] && continue
+              if [[ -d "$d" ]]; then printf "[DIR]  %s/\n" "$d"; else printf "[FILE] %s\n" "$d"; fi
+            done
+          )
+          sel="$(printf '%s\n' "${items[@]}" | fzf --multi --prompt="Install > " --height=60% --reverse || true)"
+          [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
+
+          # Convert selections into absolute paths
+          targets=()
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            path="${line#*[[:space:]]}"    # strip tag
+            path="${path%/}"               # drop trailing slash for dirs
+            targets+=("$PWD/$path")
+          done <<< "$sel"
+
+          if (( ${#targets[@]} == 1 )) && [[ "${targets[0]}" =~ \.(txt|list|json)$ ]]; then
+            op_install_manifest "${targets[0]}"
+          else
+            op_install "${targets[@]}"
+          fi
+        else
+          printf "File/dir/URL (or --manifest FILE): "
+          read -r f || { continue; }
+          [[ -z "$f" ]] && { echo "Cancelled."; continue; }
+          if [[ "$f" =~ ^--manifest[[:space:]]+ ]]; then op_install_manifest "${f#--manifest }"; else op_install "$f"; fi
+        fi
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+        ;;
+
+      2)  # Uninstall — (unchanged; your fzf/multi workflow already in place)
+        if exists fzf; then
           mapfile -t _cmds < <(_get_installed_cmd_names)
           mapfile -t _apps < <(_get_installed_app_names)
-
           if ((${#_cmds[@]}==0 && ${#_apps[@]}==0)); then
-            warn "Nothing to uninstall."
-            printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
-            continue
+            warn "Nothing to uninstall."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue
           fi
-
           _choices=()
           for c in "${_cmds[@]}"; do _choices+=("cmd  $c"); done
           for a in "${_apps[@]}"; do _choices+=("app  $a"); done
-
-          sel="$(printf "%s\n" "${_choices[@]}" | fzf --multi --prompt="Uninstall > " --height=60% --reverse || true)"
-          if [[ -n "$sel" ]]; then
-            names="$(echo "$sel" | awk '{print $2}' | tr '\n' ' ')"
-            # shellcheck disable=SC2086
-            op_uninstall $names
-          else
-            echo "Cancelled."
-          fi
+          sel="$(printf '%s\n' "${_choices[@]}" | fzf --multi --prompt="Uninstall > " --height=60% --reverse || true)"
+          [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
+          names="$(echo "$sel" | awk '{print $2}' | tr '\n' ' ')"
+          # shellcheck disable=SC2086
+          op_uninstall $names
         else
-          # No fzf: print a compact list, then ask
           _print_uninstall_menu
           printf "Name (space-separated for multiple, Enter to cancel): "
           IFS= read -r names
-          if [[ -n "$names" ]]; then
-            # shellcheck disable=SC2086
-            op_uninstall $names
+          [[ -z "$names" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
+          # shellcheck disable=SC2086
+          op_uninstall $names
+        fi
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+        ;;
+
+      3) op_list;    printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+      4) op_doctor;  printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+      5) new_wizard; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+
+      6)  # Backup — pick ALL or a subset of cmds/apps
+        if exists fzf; then
+          mapfile -t _cmds < <(_get_installed_cmd_names)
+          mapfile -t _apps < <(_get_installed_app_names)
+          choices=("ALL (everything)")
+          for c in "${_cmds[@]}"; do choices+=("cmd  $c"); done
+          for a in "${_apps[@]}"; do choices+=("app  $a"); done
+
+          sel="$(printf '%s\n' "${choices[@]}" | fzf --multi --prompt="Backup > " --height=60% --reverse || true)"
+          [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
+
+          if grep -qx "ALL (everything)" <<< "$sel"; then
+            op_backup
           else
-            echo "Cancelled."
+            tmp="$(mktemp -d)"; trap 'rm -rf "${tmp:-}"' RETURN
+            mkdir -p "$tmp/bin" "$tmp/apps"
+            while IFS= read -r line; do
+              typ="${line%%[[:space:]]*}"; name="${line##*  }"
+              if [[ "$typ" == "cmd"  && -f "$BIN_DIR/$name"        ]]; then cp -a "$BIN_DIR/$name"        "$tmp/bin/";  fi
+              if [[ "$typ" == "app"  && -e "$APP_STORE/$name"      ]]; then cp -a "$APP_STORE/$name"      "$tmp/apps/"; fi
+            done <<< "$sel"
+
+            out="binman_backup-$(date +%Y%m%d-%H%M%S).zip"
+            if exists zip && exists unzip; then
+              (cd "$tmp" && zip -qr "$PWD/$out" bin apps)
+            else
+              out="${out%.zip}.tar.gz"
+              (cd "$tmp" && tar -czf "$PWD/$out" bin apps)
+            fi
+            ok "Backup created: $(realpath_f "$PWD/$out")"
           fi
+        else
+          op_backup
         fi
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
 
-
-      3) op_list; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      4) op_doctor; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      5)
-        ui_init; prompt_init
-        printf "Name: "; read -r n
-        # type: single/app
-        printf "Type (single/app) [single]: "; read -r k; k="${k:-single}"
-        # language prompt
-        printf "Language (bash/python/node/typescript/go/rust/ruby/php) [bash]: "; read -r l; l="${l:-bash}"
-
-        # optional: python venv if app+python
-        venv_flag=()
-        if [[ "${k,,}" == app* && "${l,,}" == python ]]; then
-          printf "Create Python venv (.venv)? [Y/n]: "; read -r yn
-          [[ -z "$yn" || "${yn,,}" == y* ]] && venv_flag=(--venv)
+      7)  # Restore — choose an archive in CWD or type a path
+        if exists fzf; then
+          mapfile -t cands < <(ls -1 *.zip *.tar.gz 2>/dev/null || true)
+          cands=("Type a path…" "${cands[@]}")
+          sel="$(printf '%s\n' "${cands[@]}" | fzf --prompt="Restore > " --height=60% --reverse || true)"
+          [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
+          if [[ "$sel" == "Type a path…" ]]; then
+            printf "Archive path: "; read -r f; [[ -z "$f" ]] && echo "Cancelled." || op_restore "$f"
+          else
+            op_restore "$sel"
+          fi
+        else
+          printf "Archive to restore: "; read -r f; [[ -n "$f" ]] && op_restore "$f" || echo "Cancelled."
         fi
-
-        flags=()
-        [[ "${k,,}" == app* ]] && flags+=(--app)
-        flags+=(--lang "${l,,}")
-
-        new_cmd "$n" "${flags[@]}" "${venv_flag[@]}"
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
 
-      6) new_wizard; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      7) printf "Output file [blank=auto]: "; read -r f; op_backup "${f}"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      8) printf "Archive to restore: "; read -r f; op_restore "$f"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      9) op_self_update; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      a|A) id="$(latest_rollback_id || true)"; [[ -n "$id" ]] && apply_rollback "$id" || warn "No rollback snapshots yet"
-           printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+      8)  # Self-Update — fetch from GitHub raw then reinstall via update
+        op_self_update
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+        ;;
+
+      a|A)  # Rollback — choose snapshot (or latest when no fzf)
+        if exists fzf && [[ -d "$ROLLBACK_ROOT" ]]; then
+          mapfile -t snaps < <(cd "$ROLLBACK_ROOT" && ls -1 | sort -r)
+          [[ ${#snaps[@]} -eq 0 ]] && { warn "No rollback snapshots yet"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
+          sel="$(printf '%s\n' "${snaps[@]}" | fzf --prompt="Rollback > " --height=60% --reverse || true)"
+          [[ -z "$sel" ]] && { echo "Cancelled."; } || apply_rollback "$sel"
+        else
+          id="$(latest_rollback_id || true)"; [[ -n "$id" ]] && apply_rollback "$id" || warn "No rollback snapshots yet"
+        fi
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+        ;;
+
       b|B) printf "Bundle filename [blank=auto]: "; read -r f; op_bundle "${f}"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-	  c|C)
-	    # immediate picker; includes "stress (gauntlet)"
-	    sel="$(_pick_test_target)" || { warn "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
-	    # normalize fzf line for stress
-	    [[ "$sel" == stress* ]] && sel="stress"
-	    op_test "$sel"
-	    printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
-	    ;;
+      c|C) # Test — with chooser (your improved flow)
+        if exists fzf; then
+          mapfile -t _cmds < <(_get_installed_cmd_names)
+          if ((${#_cmds[@]}==0)); then warn "No commands installed."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; fi
+          sel="$(printf '%s\n' "${_cmds[@]}" | fzf --prompt="Test > " --height=60% --reverse || true)"
+          [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
+          op_test "$sel"
+        else
+          printf "Command name to test (blank = stress): "; read -r n
+          [[ -z "$n" ]] && op_test stress || op_test "$n"
+        fi
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+        ;;
+
       s|S) SYSTEM_MODE=$((1-SYSTEM_MODE)); ok "System mode: $([[ $SYSTEM_MODE -eq 1 ]] && echo ON || echo OFF)"; sleep 0.5;;
       q|Q) exit 0;;
-      *) warn "Unknown choice: $c"; sleep 0.7;;
+      *)   warn "Unknown choice: $c"; sleep 0.7;;
     esac
   done
 }
+
+
 
 # --------------------------------------------------------------------------------------------------
 # Main

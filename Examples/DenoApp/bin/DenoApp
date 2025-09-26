@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Description: DenoApp (TypeScript runtime launcher)
+set -Eeuo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+if command -v tsx >/dev/null 2>&1; then
+  exec tsx "$HERE/src/index.ts" "$@"
+elif command -v node >/dev/null 2>&1 && node -e "require.resolve('ts-node/register')" >/dev/null 2>&1 2>/dev/null; then
+  exec node -r ts-node/register "$HERE/src/index.ts" "$@"
+else
+  echo "TypeScript runtime missing. Try: npm i -D tsx  (or: npm i -D ts-node typescript)" >&2
+  exit 1
+fi

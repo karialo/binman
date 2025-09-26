@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Description: PythonApp (python venv launcher)
+set -Eeuo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+if [[ ! -x "$HERE/.venv/bin/python" ]]; then python3 -m venv "$HERE/.venv" >/dev/null 2>&1 || true; fi
+[[ -f "$HERE/.venv/bin/activate" ]] && source "$HERE/.venv/bin/activate"
+if [[ -f "$HERE/requirements.txt" ]]; then "$HERE/.venv/bin/pip" install -q -r "$HERE/requirements.txt" || true; fi
+export PYTHONPATH="$HERE/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python -m PythonApp "$@"

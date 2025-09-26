@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Description: GoApp (go launcher)
+set -Eeuo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
+BIN="$HERE/.bin/GoApp"
+if [[ -x "$BIN" ]]; then exec "$BIN" "$@"; fi
+if command -v go >/dev/null 2>&1; then
+  mkdir -p "$HERE/.bin"
+  (cd "$HERE" && go build -o "$BIN" "./cmd/GoApp") && exec "$BIN" "$@"
+fi
+echo "Go toolchain not found. Install Go or prebuild $BIN" >&2
+exit 1
