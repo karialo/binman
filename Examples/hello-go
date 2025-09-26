@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="$SELF/hello-go.go"
+OUT="$SELF/hello-go.bin"
+if [[ -x "$OUT" ]]; then exec "$OUT" "$@"; fi
+if command -v go >/dev/null 2>&1; then go build -o "$OUT" "$SRC" && exec "$OUT" "$@"; fi
+echo "Go not found." >&2; exit 1

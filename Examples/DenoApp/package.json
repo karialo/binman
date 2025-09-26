@@ -1,0 +1,8 @@
+{
+  "name": "DenoApp",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "DenoApp": "./bin/DenoApp" },
+  "scripts": { "start": "./bin/DenoApp" },
+  "devDependencies": {}
+}

@@ -1,0 +1,8 @@
+{
+  "name": "JsApp",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": { "JsApp": "./bin/JsApp" },
+  "scripts": { "start": "node ./bin/JsApp" },
+  "dependencies": {}
+}

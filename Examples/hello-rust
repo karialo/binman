@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hello-rust_rs"
+BIN="$ROOT/target/release/hello-rust"
+if [[ -x "$BIN" ]]; then exec "$BIN" "$@"; fi
+if command -v cargo >/dev/null 2>&1; then (cd "$ROOT" && cargo build --quiet --release) && exec "$BIN" "$@"; fi
+echo "Rust not found." >&2; exit 1
