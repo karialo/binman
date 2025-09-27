@@ -21,7 +21,7 @@ shopt -s nullglob
 # Constants & defaults
 # --------------------------------------------------------------------------------------------------
 SCRIPT_NAME="binman"
-VERSION="1.7.0"
+VERSION="1.7.1"
 
 # User-scoped locations (XDG-ish)
 BIN_DIR="${HOME}/.local/bin"
