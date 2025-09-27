@@ -345,6 +345,34 @@ apply_rollback(){
   ok "Rollback applied: $id"
 }
 
+_binman_rb_dir(){ 
+	echo "${XDG_STATE_HOME:-$HOME/.local/state}/binman/rollback"; 
+}
+
+_cmd_binman_rollback(){
+  local rbdir="$(_binman_rb_dir)" pick=""
+  [[ -d "$rbdir" ]] || { err "No snapshots found."; return 2; }
+
+  if [[ -n "${1:-}" ]]; then
+    # allow passing a specific snapshot basename or version prefix
+    if [[ -f "$rbdir/$1" ]]; then
+      pick="$rbdir/$1"
+    else
+      # try version prefix match: binman-<ver>-timestamp
+      pick="$(ls -1t "$rbdir"/binman-"$1"-* 2>/dev/null | head -n1)"
+    fi
+  else
+    # default to newest snapshot
+    pick="$(ls -1t "$rbdir"/binman-* 2>/dev/null | head -n1)"
+  fi
+
+  [[ -n "$pick" && -f "$pick" ]] || { err "Snapshot not found."; return 2; }
+
+  local target="${BIN_DIR%/}/binman"
+  cp -f "$pick" "$target" || { err "Copy failed"; return 2; }
+  chmod 0755 "$target" 2>/dev/null || true
+  ok "Rolled back to $(basename "$pick")"
+}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -1238,29 +1266,202 @@ op_list(){
 
 
 # --------------------------------------------------------------------------------------------------
-# DOCTOR — environment checks (+ optional PATH patch)
 # --------------------------------------------------------------------------------------------------
-op_doctor(){
-  say "Mode      : $([[ $SYSTEM_MODE -eq 1 ]] && echo system || echo user)"
-  say "BIN_DIR   : $([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN" || echo "$BIN_DIR")"
-  say "APP_STORE : $([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_APPS" || echo "$APP_STORE")"
+# DOCTOR — environment + per‑app healing (venv/deps/hook)
+# --------------------------------------------------------------------------------------------------
+
+# Keep legacy entry for any old callers; now just proxies to the env summary.
+op_doctor(){ doctor_env; }
+
+# Environment summary (+ optional PATH patch)
+doctor_env() {
+  local mode bin_dir app_store
+  mode=$([[ $SYSTEM_MODE -eq 1 ]] && echo system || echo user)
+  bin_dir=$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN" || echo "$BIN_DIR")
+  app_store=$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_APPS" || echo "$APP_STORE")
+
+  say "Mode      : $mode"
+  say "BIN_DIR   : $bin_dir"
+  say "APP_STORE : $app_store"
   (( SYSTEM_MODE )) || { in_path && ok "PATH ok" || warn "PATH missing ${BIN_DIR}"; }
+
   exists zip   && ok "zip: present"   || warn "zip: not found (fallback to .tar.gz)"
   exists unzip && ok "unzip: present" || warn "unzip: not found (needed to restore .zip)"
   exists tar   && ok "tar: present"   || warn "tar: not found (needed to restore .tar.gz)"
+
+  # Bonus: shadow check for installed shims
+  if command -v binman >/dev/null 2>&1; then
+    local resolved
+    resolved="$(command -v binman)"
+    [[ "$resolved" != "$BIN_DIR/binman" && -e "$BIN_DIR/binman" ]] && \
+      warn "binman in PATH is '$resolved' but user shim exists at '$BIN_DIR/binman' (shadowed)."
+  fi
+
+  # Optional: safer PATH patching across shells
   if [[ $FIX_PATH -eq 1 ]]; then
-    for f in "$HOME/.zshrc" "$HOME/.zprofile"; do
-      if [[ -f "$f" ]] && ! grep -qE '(^|:)\$HOME/\.local/bin(:|$)' "$f"; then
-        printf '\n# Added by binman doctor\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$f"
-        ok "Patched PATH in $f"
-      fi
+    local line='export PATH="$HOME/.local/bin:$PATH"'
+    for f in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bashrc" "$HOME/.profile"; do
+      [[ -f "$f" ]] || continue
+      grep -qF "$line" "$f" || { printf '\n# Added by binman doctor\n%s\n' "$line" >> "$f"; ok "Patched PATH in $f"; }
     done
+    if command -v fish >/dev/null 2>&1; then
+      local fish_conf="$HOME/.config/fish/config.fish"
+      mkdir -p "$(dirname "$fish_conf")"
+      grep -q 'set -gx PATH $HOME/.local/bin $PATH' "$fish_conf" 2>/dev/null || {
+        printf '\n# Added by binman doctor\nset -gx PATH $HOME/.local/bin $PATH\n' >> "$fish_conf"
+        ok "Patched PATH in fish config"
+      }
+    fi
   fi
 }
 
+# ---- Per‑app helpers ---------------------------------------------------------
+
+_apps_dir(){ [[ $SYSTEM_MODE -eq 1 ]] && echo "${SYSTEM_APPS}" || echo "${APP_STORE}"; }
+
+_list_apps(){
+  local d; d="$(_apps_dir)"
+  [[ -d "$d" ]] || return 0
+  for x in "$d"/*; do [[ -d "$x" ]] && basename "$x"; done
+}
+
+_pick_app(){
+  local items; items="$(_list_apps)"
+  [[ -n "$items" ]] || { err "No apps installed."; return 1; }
+  if exists fzf; then
+    printf "%s\n" "$items" | fzf --prompt="Doctor → "
+  else
+    warn "Tip: install 'fzf' for fuzzy picking."
+    local i=1 arr; mapfile -t arr < <(printf "%s\n" "$items")
+    say "Choose an app:"; for n in "${arr[@]}"; do printf "  [%d] %s\n" "$i" "$n"; ((i++)); done
+    printf "Number: "; read -r n
+    [[ "$n" =~ ^[0-9]+$ ]] && echo "${arr[$((n-1))]}"
+  fi
+}
+
+_is_python_app(){
+  local d="$1"
+  [[ -d "$d/.venv" || -f "$d/requirements.txt" || -f "$d/pyproject.toml" ]] && return 0
+  find "$d" -maxdepth 2 -type f -name "*.py" | read -r _ && return 0
+  return 1
+}
+
+_make_venv(){
+  local d="$1" pyver="$2" dry="$3" py="python3"
+  [[ -n "$pyver" ]] && py="python${pyver}"
+  command -v "$py" >/dev/null 2>&1 || { err "Requested interpreter not found: $py"; return 2; }
+  if [[ "$dry" == 1 ]]; then
+    say "🩺 DRY: would create venv with $py at $d/.venv"
+  else
+    [[ -d "$d/.venv" ]] || { say "🩺 Creating venv (.venv) with $py"; "$py" -m venv "$d/.venv" || return 2; }
+    "$d/.venv/bin/python" -m pip install -U pip >/dev/null 2>&1 || true
+  fi
+  echo "$d/.venv"
+}
+
+_pyproj_deps(){
+  awk '
+    /^\[project\]/ { in=1; next }
+    /^\[/ { in=0 }
+    in && /^dependencies *= *\[/ {
+      buf=$0
+      while (buf !~ /\]/) { getline x; buf=buf x }
+      print buf
+    }
+  ' "$1" | sed -E 's/.*\[(.*)\].*/\1/' | tr -d '"'\'' ' | tr ',' '\n' | sed '/^$/d'
+}
+
+_install_reqs(){
+  local d="$1" venv="$2" dry="$3" quiet="$4"
+  local req="$d/requirements.txt" pyproj="$d/pyproject.toml" pkgs=() q=
+  [[ "$quiet" == 1 ]] && q="-q" || q=""
+  if [[ -f "$req" ]]; then
+    say "📦 requirements.txt"
+    if [[ "$dry" == 1 ]]; then
+      say "DRY: would install ->"; sed -E 's/#.*$//' "$req" | sed '/^\s*$/d' | sed 's/^/  - /'
+      return 0
+    fi
+    "$venv/bin/pip" install $q -U -r "$req" || return 2
+    return 0
+  fi
+  if [[ -f "$pyproj" ]]; then
+    mapfile -t pkgs < <(_pyproj_deps "$pyproj")
+    if ((${#pkgs[@]})); then
+      say "📦 pyproject.toml deps"
+      if [[ "$dry" == 1 ]]; then printf "  - %s\n" "${pkgs[@]}"; return 0; fi
+      "$venv/bin/pip" install $q -U "${pkgs[@]}" || return 2
+      return 0
+    else
+      warn "No dependencies listed."
+    fi
+  else
+    warn "No requirements.txt / pyproject.toml found."
+  fi
+}
+
+_run_hook(){
+  local d="$1" dry="$2" hook="$d/.binman/doctor.sh"
+  [[ -x "$hook" ]] || return 0
+  say "🔧 Hook: .binman/doctor.sh"
+  [[ "$dry" == 1 ]] && { say "DRY: would run hook"; return 0; }
+  ( cd "$d" && bash "$hook" )
+}
+
+doctor_app_one(){
+  local name="$1" pyver="$2" dry="$3" quiet="$4" status=0
+  local base d
+  base="$(_apps_dir)"; d="${base%/}/$name"
+  [[ -d "$d" ]] || { err "Not found: $name"; return 2; }
+  say "🩺 Checking: $name  →  $d"
+  if _is_python_app "$d"; then
+    local v; v="$(_make_venv "$d" "$pyver" "$dry")" || status=2
+    [[ $status -eq 0 ]] && _install_reqs "$d" "$v" "$dry" "$quiet" || status=2
+  else
+    say "🧩 Not a Python app; skipping venv stage."
+  fi
+  _run_hook "$d" "$dry" || status=2
+  (( status == 0 )) && ok "✅ Healthy" || warn "⚠️  Issues detected"
+  return $status
+}
+
+cmd_doctor(){
+  local DO_ALL=0 DRY=0 QUIET=0 PYVER="" tgt=
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --all) DO_ALL=1;;
+      --dry-run) DRY=1;;
+      -q|--quiet) QUIET=1;;
+      --python) shift; PYVER="$1";;
+      -h|--help) say "binman doctor [--all|<name>] [--python X.Y] [--dry-run] [-q]"; return 0;;
+      *) tgt="$1";;
+    esac
+    shift
+  done
+
+  # Run the environment summary ONCE
+  doctor_env
+  echo
+
+  if [[ $DO_ALL -eq 1 ]]; then
+    local fail=0 any=0
+    while read -r n; do
+      [[ -z "$n" ]] && continue
+      any=1
+      doctor_app_one "$n" "$PYVER" "$DRY" "$QUIET" || ((fail++))
+    done < <(_list_apps)
+    [[ $any -eq 0 ]] && { warn "No apps installed."; return 0; }
+    ((fail==0)) && return 0 || return 2
+  fi
+
+  # If no explicit target, pick interactively
+  if [[ -z "$tgt" ]]; then
+    tgt="$(_pick_app)" || return 2
+  fi
+
+  doctor_app_one "$tgt" "$PYVER" "$DRY" "$QUIET"
+}
 
 
-# --------------------------------------------------------------------------------------------------
 # UPDATE — reinstall with overwrite (optionally pull a git dir first)
 # --------------------------------------------------------------------------------------------------
 op_update(){
@@ -1413,32 +1614,87 @@ op_restore(){
 # --------------------------------------------------------------------------------------------------
 # SELF-UPDATE — pull repo and reinstall the binman shim
 # --------------------------------------------------------------------------------------------------
-op_self_update(){
-  # Always fetch our canonical raw script, then reinstall via `binman update <tmp>`
-  local url="https://raw.githubusercontent.com/karialo/binman/refs/heads/main/binman.sh"
-  local tmp
-  tmp="$(mktemp -t binman.update.XXXXXX.sh)"
+# Where we store rollbacks for the binman binary itself
+_binman_rb_dir(){ 
+	echo "${XDG_STATE_HOME:-$HOME/.local/state}/binman/rollback"; 
+}
 
+_parse_version(){
+  awk -F'"' '/^[[:space:]]*VERSION[[:space:]]*=/ {print $2; exit}' "$1" 2>/dev/null
+}
+
+op_self_update(){
+  local url="https://raw.githubusercontent.com/karialo/binman/refs/heads/main/binman.sh"
+  local tmp stage target dir rbdir now curr_ver new_ver stamp log
+
+  # 1) Download candidate
+  tmp="$(mktemp -t binman.new.XXXXXX)" || { err "mktemp failed"; return 2; }
   if exists curl; then
     curl -fsSL "$url" -o "$tmp" || { rm -f "$tmp"; err "Download failed."; return 2; }
   elif exists wget; then
-    wget -q "$url" -O "$tmp" || { rm -f "$tmp"; err "Download failed."; return 2; }
+    wget -q "$url" -O "$tmp"     || { rm -f "$tmp"; err "Download failed."; return 2; }
   else
-    err "Need curl or wget for self-update"; return 2
+    rm -f "$tmp"; err "Need curl or wget for self-update"; return 2
   fi
-
   chmod +x "$tmp"
 
-  # Sanity: look for literal case-switch on ACTION without expanding ACTION
-  if ! grep -q 'case "\$ACTION"' "$tmp"; then
-    rm -f "$tmp"
-    err "Fetched file doesn't look like binman.sh"
-    return 2
+  # 2) Sanity
+  grep -q 'case "\$ACTION"' "$tmp" || { rm -f "$tmp"; err "Fetched file doesn't look like binman.sh"; return 2; }
+
+  # 3) Locate current installed binary
+  target="$(command -v binman 2>/dev/null || true)"
+  [[ -z "$target" ]] && target="${BIN_DIR%/}/binman"
+  dir="$(dirname "$target")"
+
+  # 4) Versions (best-effort)
+  curr_ver="$(_parse_version "$target")"
+  new_ver="$(_parse_version "$tmp")"
+  [[ -z "$curr_ver" ]] && curr_ver="unknown"
+  [[ -z "$new_ver"  ]] && new_ver="unknown"
+
+  say "Updating binman: $curr_ver → $new_ver"
+
+  # 5) Snapshot current binary for rollback
+  rbdir="$(_binman_rb_dir)"; mkdir -p "$rbdir"
+  now="$(date -u +%Y%m%dT%H%M%SZ)"
+  stamp="binman-${curr_ver}-${now}"
+  if [[ -f "$target" ]]; then
+    cp -f "$target" "$rbdir/$stamp" || { rm -f "$tmp"; err "Failed to snapshot current binary"; return 2; }
+    chmod 0755 "$rbdir/$stamp"
+    ln -sf "$rbdir/$stamp" "$rbdir/binman.prev" 2>/dev/null || true
+    # append to versions log
+    log="$rbdir/versions.log"
+    printf "%s | from=%s -> to=%s | snapshot=%s\n" "$now" "$curr_ver" "$new_ver" "$stamp" >> "$log"
   fi
 
-  # Reinstall ourselves through the normal update path
-  "$0" update "$tmp"
-  ok "Self-update complete."
+  # 6) Stage + atomic replace
+  stage="$(mktemp -p "$dir" .binman.stage.XXXXXX)" || { rm -f "$tmp"; err "mktemp stage failed"; return 2; }
+  cp -f "$tmp" "$stage" || { rm -f "$tmp" "$stage"; err "Staging failed"; return 2; }
+  chmod 0755 "$stage"
+
+  if mv -f "$stage" "$target" 2>/dev/null; then
+    :
+  else
+    if exists sudo; then
+      sudo mv -f "$stage" "$target" || { rm -f "$stage"; err "Replace failed (sudo)"; return 2; }
+      sudo chmod 0755 "$target" || true
+    else
+      rm -f "$stage"; err "No permission to write $target (try system mode with sudo)"; rm -f "$tmp"; return 2;
+    fi
+  fi
+
+  rm -f "$tmp"
+  ok "Self-update complete. Rollback snapshot: $rbdir/$stamp"
+}
+
+_cmd_binman_rollback(){
+  local rbdir="$(_binman_rb_dir)" pick=""
+  [[ -d "$rbdir" ]] || { err "No snapshots found."; return 2; }
+  # Pick latest if none specified
+  pick="$(ls -1t "$rbdir"/binman-* 2>/dev/null | head -n1)"
+  [[ -n "$1" ]] && pick="$rbdir/binman-$1"
+  [[ -f "$pick" ]] || { err "Snapshot not found: $1"; return 2; }
+  cp -f "$pick" "${BIN_DIR%/}/binman" && chmod 0755 "${BIN_DIR%/}/binman" && ok "Rolled back to $(basename "$pick")"
 }
 
 
@@ -2564,7 +2820,7 @@ binman_tui(){
         ;;
 
       3) op_list;    printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      4) op_doctor;  printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+      4) cmd_doctor;  printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
       5) new_wizard; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
 
       6)  # Backup — pick ALL or a subset of cmds/apps
@@ -2672,10 +2928,15 @@ set -- "${ARGS_OUT[@]}"
 ACTION="${1:-}"; shift || true
 case "$ACTION" in
   install)
-    if [[ -n "$MANIFEST_FILE" ]]; then op_install_manifest "$MANIFEST_FILE"; else op_install "$@"; fi;;
+    if [[ -n "$MANIFEST_FILE" ]]; then
+      op_install_manifest "$MANIFEST_FILE"
+    else
+      op_install "$@"
+    fi
+    ;;
   uninstall) op_uninstall "$@";;
   list) op_list;;
-  doctor) op_doctor;;
+  doctor) cmd_doctor "$@";;
   update) op_update "$@";;
   new) new_cmd "$@";;
   wizard) new_wizard;;
@@ -2683,7 +2944,14 @@ case "$ACTION" in
   restore) op_restore "${1:-}";;
   self-update) op_self_update;;
   rollback)
-    if [[ -n "${1:-}" ]]; then apply_rollback "$1"; else id="$(latest_rollback_id || true)"; [[ -n "$id" ]] && apply_rollback "$id" || warn "No rollback snapshots yet"; fi;;
+    if [[ -n "${1:-}" ]]; then
+      apply_rollback "$1"
+    else
+      id="$(latest_rollback_id || true)"
+      [[ -n "$id" ]] && apply_rollback "$id" || warn "No rollback snapshots yet"
+    fi
+    ;;
+  binman-rollback) _cmd_binman_rollback "$@";;
   bundle) op_bundle "${1:-}";;
   test) op_test "$@";;
   tui|"") binman_tui;;
