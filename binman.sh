@@ -2700,28 +2700,38 @@ binman_tui(){
     IFS= read -r c
 
     case "$c" in
-      1)  # Install — fzf picker over CWD (files + dirs); fall back to prompt
+      1)  # Install — robust fzf picker over CWD (files + dirs); fall back to prompt
         if exists fzf; then
-          # Build tagged choices from the user's *current* working dir
+          # Build a TSV: TYPE<TAB>REL_PATH  (TYPE is DIR or FILE)
           mapfile -t items < <(
             for d in .* *; do
               [[ -e "$d" ]] || continue
               [[ "$d" == "." || "$d" == ".." ]] && continue
-              if [[ -d "$d" ]]; then printf "[DIR]  %s/\n" "$d"; else printf "[FILE] %s\n" "$d"; fi
+              if [[ -d "$d" ]]; then
+                printf "DIR\t%s/\n" "$d"
+              else
+                printf "FILE\t%s\n" "$d"
+              fi
             done
           )
-          sel="$(printf '%s\n' "${items[@]}" | fzf --multi --prompt="Install > " --height=60% --reverse || true)"
+
+          # Show only the path column; keep selections exactly as typed (spaces safe)
+          sel="$(printf '%s\n' "${items[@]}" \
+                | fzf --multi --prompt="Install > " --height=60% --reverse \
+                      --delimiter=$'\t' --with-nth=2 \
+                || true)"
+
           [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
 
           # Convert selections into absolute paths
           targets=()
-          while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            path="${line#*[[:space:]]}"    # strip tag
-            path="${path%/}"               # drop trailing slash for dirs
-            targets+=("$PWD/$path")
+          while IFS= read -r rel; do
+            [[ -z "$rel" ]] && continue
+            rel="${rel%/}"                      # drop trailing slash for dirs
+            targets+=("$PWD/$rel")
           done <<< "$sel"
 
+          # Manifest convenience
           if (( ${#targets[@]} == 1 )) && [[ "${targets[0]}" =~ \.(txt|list|json)$ ]]; then
             op_install_manifest "${targets[0]}"
           else
@@ -2731,7 +2741,11 @@ binman_tui(){
           printf "File/dir/URL (or --manifest FILE): "
           read -r f || { continue; }
           [[ -z "$f" ]] && { echo "Cancelled."; continue; }
-          if [[ "$f" =~ ^--manifest[[:space:]]+ ]]; then op_install_manifest "${f#--manifest }"; else op_install "$f"; fi
+          if [[ "$f" =~ ^--manifest[[:space:]]+ ]]; then
+            op_install_manifest "${f#--manifest }"
+          else
+            op_install "$f"
+          fi
         fi
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
@@ -2772,9 +2786,7 @@ binman_tui(){
         read -r
         ;;
 
-      
       4) cmd_doctor;  printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      
       5) new_wizard; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
 
       6)  # Backup — pick ALL or a subset of cmds/apps
@@ -2795,8 +2807,8 @@ binman_tui(){
             mkdir -p "$tmp/bin" "$tmp/apps"
             while IFS= read -r line; do
               typ="${line%%[[:space:]]*}"; name="${line##*  }"
-              if [[ "$typ" == "cmd"  && -f "$BIN_DIR/$name"        ]]; then cp -a "$BIN_DIR/$name"        "$tmp/bin/";  fi
-              if [[ "$typ" == "app"  && -e "$APP_STORE/$name"      ]]; then cp -a "$APP_STORE/$name"      "$tmp/apps/"; fi
+              if [[ "$typ" == "cmd"  && -f "$BIN_DIR/$name"   ]]; then cp -a "$BIN_DIR/$name"   "$tmp/bin/";  fi
+              if [[ "$typ" == "app"  && -e "$APP_STORE/$name" ]]; then cp -a "$APP_STORE/$name" "$tmp/apps/"; fi
             done <<< "$sel"
 
             out="binman_backup-$(date +%Y%m%d-%H%M%S).zip"
@@ -2831,12 +2843,12 @@ binman_tui(){
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
 
-      8)  # Self-Update — fetch from GitHub raw then reinstall via update
+      8)  # Self-Update
         op_self_update
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
 
-      a|A)  # Rollback — choose snapshot (or latest when no fzf)
+      a|A)  # Rollback
         if exists fzf && [[ -d "$ROLLBACK_ROOT" ]]; then
           mapfile -t snaps < <(cd "$ROLLBACK_ROOT" && ls -1 | sort -r)
           [[ ${#snaps[@]} -eq 0 ]] && { warn "No rollback snapshots yet"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
@@ -2849,7 +2861,7 @@ binman_tui(){
         ;;
 
       b|B) printf "Bundle filename [blank=auto]: "; read -r f; op_bundle "${f}"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      c|C) # Test — with chooser (your improved flow)
+      c|C) # Test
         if exists fzf; then
           mapfile -t _cmds < <(_get_installed_cmd_names)
           if ((${#_cmds[@]}==0)); then warn "No commands installed."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; fi
@@ -2870,14 +2882,9 @@ binman_tui(){
   done
 }
 
-
-
-
 _binman_rb_dir(){ 
 	echo "${XDG_STATE_HOME:-$HOME/.local/state}/binman/rollback"; 
 }
-
-
 
 _cmd_binman_rollback(){
   local rbdir="$(_binman_rb_dir)" pick=""
@@ -2888,9 +2895,6 @@ _cmd_binman_rollback(){
   [[ -f "$pick" ]] || { err "Snapshot not found: $1"; return 2; }
   cp -f "$pick" "${BIN_DIR%/}/binman" && chmod 0755 "${BIN_DIR%/}/binman" && ok "Rolled back to $(basename "$pick")"
 }
-
-
-
 
 __bm_list_tsv() {
   # Reuse your existing collector if present; else inline it:
@@ -2907,8 +2911,6 @@ __bm_list_tsv() {
     printf "app\t%s\t%s\t%s\n" "$(basename "$d")" "$(script_version "$d")" "$d"
   done
 }
-
-
 
 __bm_preview() {
   # Args: TYPE NAME VERSION PATH  (we'll also accept a single TSV arg for safety)
@@ -2984,13 +2986,9 @@ __bm_preview() {
   fi
 }
 
-
-
 _exists(){
 	command -v "$1" >/dev/null 2>&1;
 }
-
-
 
 _binman_preview() {
   local line="$1"
@@ -3059,8 +3057,6 @@ _binman_preview() {
   fi
 }
 
-
-
 _collect_items_tsv() {
   local dir adir f d
   dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
@@ -3076,10 +3072,6 @@ _collect_items_tsv() {
     printf "app\t%s\t%s\t%s\n" "$(basename "$d")" "$(script_version "$d")" "$d"
   done
 }
-
-
-
-
 
 _render_card_list(){
   local dir adir f d
@@ -3115,14 +3107,9 @@ _render_card_list(){
   done
 }
 
-
-
 _parse_version(){
   awk -F'"' '/^[[:space:]]*VERSION[[:space:]]*=/ {print $2; exit}' "$1" 2>/dev/null
 }
-
-
-
 
 
 # --------------------------------------------------------------------------------------------------
