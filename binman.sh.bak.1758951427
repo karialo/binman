@@ -21,7 +21,7 @@ shopt -s nullglob
 # Constants & defaults
 # --------------------------------------------------------------------------------------------------
 SCRIPT_NAME="binman"
-VERSION="1.7.3"
+VERSION="1.7.1"
 
 # User-scoped locations (XDG-ish)
 BIN_DIR="${HOME}/.local/bin"
@@ -1613,15 +1613,19 @@ op_restore(){
 # SELF-UPDATE — pull repo and reinstall the binman shim
 # --------------------------------------------------------------------------------------------------
 op_self_update(){
+  # Canonical raw script URL
   local url="https://raw.githubusercontent.com/karialo/binman/main/binman.sh"
 
+  # Resolve where *this* script actually lives (follow symlinks if possible)
   local dest
   dest="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
 
+  # Temp file for the new version
   local tmp bak
-  tmp="$(mktemp "${TMPDIR:-/tmp}/binman.update.XXXXXX")" || { err "mktemp failed"; return 2; }
-  trap '[ -n "${tmp:-}" ] && rm -f "$tmp"' EXIT
+  tmp="$(mktemp -t binman.update.XXXXXX.sh)" || { err "mktemp failed"; return 2; }
+  trap 'rm -f "$tmp" 2>/dev/null || true' EXIT
 
+  # Fetch
   if exists curl; then
     curl -fsSL "$url" -o "$tmp" || { err "Download failed."; return 2; }
   elif exists wget; then
@@ -1632,26 +1636,45 @@ op_self_update(){
 
   chmod 755 "$tmp"
 
+  # Sanity: make sure this looks like our script
   if ! grep -q 'case "\$ACTION"' "$tmp"; then
     err "Fetched file doesn't look like binman.sh"; return 2
   fi
 
+  # No-op if identical
   if cmp -s "$dest" "$tmp"; then
     ok "Already up to date."
     return 0
   fi
 
-  bak="${dest}.bak"  # single rotating backup
+  # Backup current file (best effort)
+  bak="${dest}.bak.$(date +%s)"
   cp -p -- "$dest" "$bak" 2>/dev/null || true
 
-  if install -m 755 "$tmp" "$dest" 2>/dev/null; then
-    ok "Self-update complete → $dest (backup: $bak)"
-  elif command -v sudo >/dev/null 2>&1 && sudo install -m 755 "$tmp" "$dest"; then
-    ok "Self-update complete (sudo) → $dest (backup: $bak)"
-  else
-    err "Couldn't write to $dest. Try: sudo install -m 755 \"$tmp\" \"$dest\""
-    return 2
+  # Try atomic replace. Prefer install(1) to keep perms, then sudo fallback if needed.
+  if command -v install >/dev/null 2>&1; then
+    if install -m 755 "$tmp" "$dest" 2>/dev/null; then
+      ok "Self-update complete → $dest (backup: $bak)"
+      return 0
+    elif command -v sudo >/dev/null 2>&1; then
+      if sudo install -m 755 "$tmp" "$dest"; then
+        ok "Self-update complete (sudo) → $dest (backup: $bak)"
+        return 0
+      fi
+    fi
   fi
+
+  # Fallback replace via mv, with sudo if needed
+  if mv -f "$tmp" "$dest" 2>/dev/null; then
+    ok "Self-update complete → $dest (backup: $bak)"
+    return 0
+  elif command -v sudo >/dev/null 2>&1 && sudo mv -f "$tmp" "$dest"; then
+    ok "Self-update complete (sudo) → $dest (backup: $bak)"
+    return 0
+  fi
+
+  err "Couldn't write to $dest. Try: sudo install -m 755 \"$tmp\" \"$dest\""
+  return 2
 }
 
 
