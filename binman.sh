@@ -21,7 +21,7 @@ shopt -s nullglob
 # Constants & defaults
 # --------------------------------------------------------------------------------------------------
 SCRIPT_NAME="binman"
-VERSION="1.7.0"
+VERSION="1.6.4"
 
 # User-scoped locations (XDG-ish)
 BIN_DIR="${HOME}/.local/bin"
@@ -305,26 +305,11 @@ rehash_shell(){
 # --------------------------------------------------------------------------------------------------
 # Path / dir helpers
 # --------------------------------------------------------------------------------------------------
-in_path(){ 
-	case ":$PATH:" in *":${BIN_DIR}:"*) return 0;; *) return 1;; esac;
-}
-
-ensure_dir(){ 
-	mkdir -p "$1"
-}
-
-ensure_bin(){ 
-	ensure_dir "$BIN_DIR";
-}
-
-ensure_apps(){
-	ensure_dir "$APP_STORE";
-}
-
-ensure_system_dirs(){
-	ensure_dir "$SYSTEM_BIN";
-	ensure_dir "$SYSTEM_APPS";
-}
+in_path(){ case ":$PATH:" in *":${BIN_DIR}:"*) return 0;; *) return 1;; esac; }
+ensure_dir(){ mkdir -p "$1"; }
+ensure_bin(){ ensure_dir "$BIN_DIR"; }
+ensure_apps(){ ensure_dir "$APP_STORE"; }
+ensure_system_dirs(){ ensure_dir "$SYSTEM_BIN"; ensure_dir "$SYSTEM_APPS"; }
 
 
 
@@ -360,34 +345,6 @@ apply_rollback(){
   ok "Rollback applied: $id"
 }
 
-_binman_rb_dir(){ 
-	echo "${XDG_STATE_HOME:-$HOME/.local/state}/binman/rollback"; 
-}
-
-_cmd_binman_rollback(){
-  local rbdir="$(_binman_rb_dir)" pick=""
-  [[ -d "$rbdir" ]] || { err "No snapshots found."; return 2; }
-
-  if [[ -n "${1:-}" ]]; then
-    # allow passing a specific snapshot basename or version prefix
-    if [[ -f "$rbdir/$1" ]]; then
-      pick="$rbdir/$1"
-    else
-      # try version prefix match: binman-<ver>-timestamp
-      pick="$(ls -1t "$rbdir"/binman-"$1"-* 2>/dev/null | head -n1)"
-    fi
-  else
-    # default to newest snapshot
-    pick="$(ls -1t "$rbdir"/binman-* 2>/dev/null | head -n1)"
-  fi
-
-  [[ -n "$pick" && -f "$pick" ]] || { err "Snapshot not found."; return 2; }
-
-  local target="${BIN_DIR%/}/binman"
-  cp -f "$pick" "$target" || { err "Copy failed"; return 2; }
-  chmod 0755 "$target" 2>/dev/null || true
-  ok "Rolled back to $(basename "$pick")"
-}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -955,10 +912,7 @@ EOF
 # Prompt helpers (TTY-safe; we always read/write via /dev/tty inside wizard/TUI)
 # --------------------------------------------------------------------------------------------------
 prompt_init(){ : "${UI_RESET:=}"; : "${UI_BOLD:=}"; : "${UI_DIM:=}"; : "${UI_CYAN:=}"; : "${UI_GREEN:=}"; : "${UI_YELLOW:=}"; }
-
-prompt_kv(){
-	printf "  %s%-14s%s %s\n" "$UI_BOLD" "$1:" "$UI_RESET" "$2";
-}
+prompt_kv(){ printf "  %s%-14s%s %s\n" "$UI_BOLD" "$1:" "$UI_RESET" "$2"; }
 
 ask(){
   local q="$1" def="$2" out
@@ -990,311 +944,436 @@ ask_yesno(){
   [[ "${out,,}" =~ ^y ]]
 }
 
-__bm_list_tsv() {
-  # Reuse your existing collector if present; else inline it:
-  local dir adir f d
-  dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
-  adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
 
+
+# --------------------------------------------------------------------------------------------------
+# App install/uninstall (user and system variants)
+# --------------------------------------------------------------------------------------------------
+_install_app(){
+  ensure_apps; ensure_bin
+  local src="$1" name dest
+  name=$(basename "$src"); dest="$APP_STORE/$name"
+
+  rm -rf "$dest"
+  [[ "$COPY_MODE" == "link" ]] && ln -s "$src" "$dest" || cp -a "$src" "$dest"
+
+  # Explicit --entry wins
+  if [[ -n "$ENTRY_CMD" ]]; then
+    if (( VENV_MODE )); then
+      _make_shim_cmd_venv "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD" "$REQ_FILE" "$BOOT_PY"
+      ok "App installed: $name → $dest (entry: $ENTRY_CMD; venv on)"
+    else
+      _make_shim_cmd "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD"
+      ok "App installed: $name → $dest (custom entry)"
+    fi
+    return 0
+  fi
+
+  # Conventional layout?
+  if [[ -x "$dest/bin/$name" ]]; then
+    _make_shim "$name" "$(_app_entry "$dest")"
+    ok "App installed: $name → $dest (v$(script_version "$dest"))"
+    return 0
+  fi
+
+  # Try auto-detect
+  local triplet; triplet="$(_detect_entry "$dest")"
+  local cmd="${triplet%%|*}"; triplet="${triplet#*|}"
+  local cwd="${triplet%%|*}"; local req="${triplet#*|}"
+
+  if [[ -n "$cmd" ]]; then
+    if (( VENV_MODE )) || [[ "$cmd" == python* || "$cmd" == */python* ]]; then
+      _make_shim_cmd_venv "$name" "$dest" "$cmd" "$cwd" "${REQ_FILE:-$req}" "$BOOT_PY"
+      ok "App installed: $name → $dest (entry: $cmd; venv on)"
+    else
+      _make_shim_cmd "$name" "$dest" "$cmd" "$cwd"
+      ok "App installed: $name → $dest (entry: $cmd)"
+    fi
+    return 0
+  fi
+
+  err "App '$name' missing bin/$name and no entry could be detected. Try: --entry 'python3 path/to/main.py' [--venv --req requirements.txt]"
+  return 2
+}
+
+_install_app_system(){
+  ensure_system_write; ensure_system_dirs
+  local src="$1" name dest
+  name=$(basename "$src"); dest="$SYSTEM_APPS/$name"
+
+  rm -rf "$dest"
+  [[ "$COPY_MODE" == "link" ]] && ln -s "$src" "$dest" || cp -a "$src" "$dest"
+
+  if [[ -n "$ENTRY_CMD" ]]; then
+    if (( VENV_MODE )); then
+      _make_shim_cmd_venv_system "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD" "$REQ_FILE" "$BOOT_PY"
+      ok "App installed (system): $name → $dest (entry: $ENTRY_CMD; venv on)"
+    else
+      _make_shim_cmd_system "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD"
+      ok "App installed (system): $name → $dest (custom entry)"
+    fi
+    return 0
+  fi
+
+  if [[ -x "$dest/bin/$name" ]]; then
+    _make_shim_system "$name" "$(_app_entry "$dest")"
+    ok "App installed (system): $name → $dest (v$(script_version "$dest"))"
+    return 0
+  fi
+
+  local triplet; triplet="$(_detect_entry "$dest")"
+  local cmd="${triplet%%|*}"; triplet="${triplet#*|}"
+  local cwd="${triplet%%|*}"; local req="${triplet#*|}"
+
+  if [[ -n "$cmd" ]]; then
+    if (( VENV_MODE )) || [[ "$cmd" == python* || "$cmd" == */python* ]]; then
+      _make_shim_cmd_venv_system "$name" "$dest" "$cmd" "$cwd" "${REQ_FILE:-$req}" "$BOOT_PY"
+      ok "App installed (system): $name → $dest (entry: $cmd; venv on)"
+    else
+      _make_shim_cmd_system "$name" "$dest" "$cmd" "$cwd"
+      ok "App installed (system): $name → $dest (entry: $cmd)"
+    fi
+    return 0
+  fi
+
+  err "App '$name' missing bin/$name and no entry could be detected. Try: --entry 'python3 path/to/main.py' [--venv --req requirements.txt]"
+  return 2
+}
+
+_uninstall_app(){
+  local name="$1" dest="$APP_STORE/$name" shim="$BIN_DIR/$name"
+  [[ -e "$shim" ]] && rm -f "$shim" && ok "Removed shim: $shim"
+  [[ -e "$dest" ]] && rm -rf "$dest" && ok "Removed app: $dest"
+}
+
+_uninstall_app_system(){
+  ensure_system_write
+  local name="$1" dest="$SYSTEM_APPS/$name" shim="$SYSTEM_BIN/$name"
+  [[ -e "$shim" ]] && rm -f "$shim" && ok "Removed shim: $shim"
+  [[ -e "$dest" ]] && rm -rf "$dest" && ok "Removed app: $dest"
+}
+
+
+
+# --------------------------------------------------------------------------------------------------
+# Remote file fetch (curl/wget)
+# --------------------------------------------------------------------------------------------------
+is_url(){ [[ "$1" =~ ^https?:// ]]; }
+fetch_remote(){
+  local url="$1" outdir fname out
+  outdir=$(mktemp -d)
+  fname="${2:-$(basename "${url%%\?*}")}"
+  out="${outdir}/${fname}"
+  if exists curl; then curl -fsSL "$url" -o "$out"
+  elif exists wget; then wget -q "$url" -O "$out"
+  else err "Need curl or wget for remote installs"; return 2; fi
+  echo "$out"
+}
+
+
+
+# --------------------------------------------------------------------------------------------------
+# Merge/copy helpers
+# --------------------------------------------------------------------------------------------------
+_merge_dir(){
+  # Merges one dir into another (clobber when --force). Includes dotfiles.
+  local src_dir="$1" dst_dir="$2"
+  [[ -d "$src_dir" ]] || return 0
+  mkdir -p "$dst_dir"
+  shopt -s dotglob
+  for p in "$src_dir"/*; do
+    [[ -e "$p" ]] || continue
+    local name dst; name="$(basename "$p")"; dst="$dst_dir/$name"
+    if [[ -e "$dst" && $FORCE -ne 1 ]]; then
+      warn "Skip existing: $dst (use --force to overwrite)"
+      continue
+    fi
+    rm -rf "$dst" 2>/dev/null || true
+    cp -a "$p" "$dst"
+  done
+}
+
+_chmod_bin_execs(){
+  # Re-assert executable bit on files in BIN_DIR (after restore).
+  if [[ -d "$BIN_DIR" ]]; then
+    find "$BIN_DIR" -maxdepth 1 -type f -exec chmod +x {} \; 2>/dev/null || true
+  fi
+}
+
+
+
+# --------------------------------------------------------------------------------------------------
+# INSTALL — core installer for scripts and apps (atomic for single files)
+# --------------------------------------------------------------------------------------------------
+op_install(){
+  # Build targets list (args or --from)
+  local targets=("$@")
+  [[ -n "$FROM_DIR" ]] && mapfile -t targets < <(list_targets)
+  [[ ${#targets[@]} -gt 0 ]] || { err "Nothing to install"; return 2; }
+
+  # Capture rollback snapshot before mutating
+  stash_before_change >/dev/null
+
+  local count=0
+  for src in "${targets[@]}"; do
+    # 1) Support URL installs
+    if is_url "$src"; then
+      local fetched; fetched=$(fetch_remote "$src") || { warn "Fetch failed: $src"; continue; }
+      src="$fetched"
+    fi
+
+    # 2) App install (directory with bin/<name> entry)
+    if [[ -d "$src" ]]; then
+      if (( SYSTEM_MODE )); then _install_app_system "$src"; else _install_app "$src"; fi
+      count=$((count+1))
+      continue
+    fi
+
+    # 3) Single-file install
+    [[ -f "$src" ]] || { warn "Skip (not a file): $src"; continue; }
+
+    # Destination path: drop extension for final name
+    local base dst tmp
+    base=$(basename "$src")
+    if (( SYSTEM_MODE )); then
+      dst="${SYSTEM_BIN}/${base%.*}"
+      ensure_system_write; ensure_system_dirs
+    else
+      dst="${BIN_DIR}/${base%.*}"
+      ensure_bin
+    fi
+
+    # Skip unless --force when dest already exists
+    if [[ -e "$dst" && $FORCE -ne 1 ]]; then
+      warn "Exists: $(basename "$dst") (use --force)"
+      continue
+    fi
+
+    if [[ "$COPY_MODE" == "link" && $SYSTEM_MODE -eq 0 ]]; then
+      # Dev-friendly: symlink (only for user scope)
+      ln -sf "$src" "$dst"
+      ok "Installed: $dst (symlink) (v$(script_version "$src"))"
+    else
+      # Atomic copy: write to tmp then mv into place
+      tmp="$(mktemp "${dst}.tmp.XXXXXX")"
+      cp "$src" "$tmp"
+      chmod +x "$tmp"
+
+      # Light syntax sanity for bash/sh shebangs (non-blocking for other types)
+      if head -n1 "$tmp" | grep -qE '/(ba)?sh'; then
+        if ! bash -n "$tmp" 2>/dev/null; then
+          rm -f "$tmp"
+          err "Syntax check failed; keeping existing $(basename "$dst")."
+          continue
+        fi
+      fi
+
+      mv -f "$tmp" "$dst"
+      ok "Installed: $dst (v$(script_version "$src"))"
+    fi
+
+    count=$((count+1))
+  done
+
+  # Path tip for user mode
+  if (( SYSTEM_MODE )); then :; else
+    ! in_path && warn "${BIN_DIR} not in PATH. Add: export PATH=\"${BIN_DIR}:\$PATH\""
+  fi
+
+  rehash_shell
+  say "$count item(s) installed."
+}
+
+
+
+# --------------------------------------------------------------------------------------------------
+# UNINSTALL — remove scripts or apps (user/system)
+# --------------------------------------------------------------------------------------------------
+op_uninstall(){
+  stash_before_change >/dev/null
+  local count=0
+  for name in "$@"; do
+    if (( SYSTEM_MODE )); then
+      [[ -e "$SYSTEM_APPS/$name" ]] && { _uninstall_app_system "$name"; count=$((count+1)); continue; }
+      local dst="$SYSTEM_BIN/${name%.*}"
+      [[ -e "$dst" ]] && { rm -f "$dst"; ok "Removed: $dst"; count=$((count+1)); } || warn "Not found: $name"
+    else
+      [[ -e "$APP_STORE/$name" ]] && { _uninstall_app "$name"; count=$((count+1)); continue; }
+      local dst="$BIN_DIR/${name%.*}"
+      [[ -e "$dst" ]] && { rm -f "$dst"; ok "Removed: $dst"; count=$((count+1)); } || warn "Not found: $name"
+    fi
+  done
+  rehash_shell
+  say "$count item(s) removed."
+}
+
+
+
+# --------------------------------------------------------------------------------------------------
+# LIST — show installed scripts/apps with versions and descriptions
+# --------------------------------------------------------------------------------------------------
+op_list(){
+  ensure_bin; ensure_apps
+  print_banner
+  say "Commands in ${SYSTEM_MODE:+(system) }$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN" || echo "$BIN_DIR"):"
+  printf "%-20s %-10s %s\n" "Name" "Version" "Description"
+  printf "%-20s %-10s %s\n" "----" "-------" "-----------"
+  local dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
   for f in "$dir"/*; do
     [[ -x "$f" && -f "$f" ]] || continue
-    printf "cmd\t%s\t%s\t%s\n" "$(basename "$f")" "$(script_version "$f")" "$f"
+    printf "%-20s %-10s %s\n" "$(basename "$f")" "$(script_version "$f")" "$(script_desc "$f")"
   done
+  echo
+  say "Apps in $([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_APPS" || echo "$APP_STORE"):"
+  printf "%-20s %-10s %s\n" "App" "Version" "Description"
+  printf "%-20s %-10s %s\n" "---" "-------" "-----------"
+  local adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
   for d in "$adir"/*; do
     [[ -d "$d" || -L "$d" ]] || continue
-    printf "app\t%s\t%s\t%s\n" "$(basename "$d")" "$(script_version "$d")" "$d"
-  done
-}
-
-__bm_preview() {
-  # arg is a single TSV line: TYPE\tNAME\tVERSION\tPATH
-  local line="${1:-}" type name ver path
-  IFS=$'\t' read -r type name ver path <<<"$line"
-
-  printf "\033[1m%s\033[0m  [%s]\n" "$name" "${ver:-unknown}"
-  printf "Path: %s\nType: %s\n\n" "$path" "$type"
-
-  # Description
-  local desc; desc="$(script_desc "$path")"
-  [[ -n "$desc" ]] && { printf "Description:\n%s\n\n" "$desc"; }
-
-  if [[ -d "$path" ]]; then
-    # README
-    local readme=""
-    for f in README.md README.txt README; do
-      [[ -f "$path/$f" ]] && { readme="$path/$f"; break; }
-    done
-    if [[ -n "$readme" ]]; then
-      printf "README: %s\n" "$readme"
-      if command -v bat >/dev/null 2>&1; then
-        bat --style=plain --color=always "$readme" | sed -n '1,120p'
-      else
-        sed -n '1,120p' "$readme"
-      fi
-      echo
-    fi
-
-    # Python venv info
-    if [[ -x "$path/.venv/bin/python" ]]; then
-      printf "venv: %s\n" "$path/.venv"
-      "$path/.venv/bin/python" -V 2>&1
-      "$path/.venv/bin/pip" list --format=columns 2>/dev/null | sed -n '2,20p' | sed 's/^/  /'
-      echo
-    fi
-
-    # File tree
-    printf "Files:\n"
-    if command -v tree >/dev/null 2>&1; then
-      tree -L 2 -a --dirsfirst "$path" | sed 's/^/  /'
-    else
-      find "$path" -maxdepth 2 -printf "  %p\n" | sort
-    fi
-  else
-    # Script preview
-    if command -v bat >/dev/null 2>&1; then
-      bat --style=plain --color=always -n "$path" | sed -n '1,120p'
-    else
-      sed -n '1,120p' "$path"
-    fi
-  fi
-}
-
-_exists(){
-	command -v "$1" >/dev/null 2>&1;
-}
-
-_binman_preview() {
-  local line="$1"
-  local type name ver path appdir venv req readme
-  IFS=$'\t' read -r type name ver path <<<"$line"
-
-  printf "\033[1m%s\033[0m  [%s]\n" "$name" "${ver:-unknown}"
-  printf "\033[2mPath:\033[0m %s\n" "$path"
-  printf "\033[2mType:\033[0m %s\n\n" "$type"
-
-  # description
-  if [[ "$type" == cmd ]]; then
-    printf "\033[1mDescription:\033[0m %s\n\n" "$(script_desc "$path")"
-  else
-    printf "\033[1mDescription:\033[0m %s\n\n" "$(script_desc "$path")"
-  fi
-
-  # show README or manifest if present
-  if [[ -d "$path" ]]; then
-    appdir="$path"
-    readme=""
-    for f in README.md README.txt README; do
-      [[ -f "$appdir/$f" ]] && { readme="$appdir/$f"; break; }
-    done
-    if [[ -n "$readme" ]]; then
-      printf "\033[1mREADME:\033[0m %s\n" "$readme"
-      if _exists glow; then glow -s dark "$readme" 2>/dev/null || cat "$readme"
-      elif _exists bat; then bat --style=plain --color=always "$readme"
-      else sed -E 's/^# (.*)$/\1\n\1\n/' "$readme" | sed 's/^#/  /'
-      fi
-      echo
-    fi
-  fi
-
-  # Python bits
-  if [[ -d "$path" && -f "$path/requirements.txt" ]]; then
-    req="$path/requirements.txt"
-    printf "\033[1mrequirements.txt:\033[0m\n"
-    if _exists bat; then bat --style=plain --color=always "$req"; else sed 's/^/  /' "$req"; fi
-    echo
-  fi
-
-  venv="$path/.venv"
-  if [[ -d "$venv" ]]; then
-    printf "\033[1mvenv:\033[0m %s\n" "$venv"
-    if [[ -x "$venv/bin/python" ]]; then
-      printf "  python: %s\n" "$("$venv/bin/python" -c 'import sys;print(".".join(map(str,sys.version_info[:3])))' 2>/dev/null || echo '?')"
-      printf "  pip pkgs: %s\n" "$("$venv/bin/pip" list --format=columns 2>/dev/null | sed -n '2,15p' | sed 's/^/    /')"
-    fi
-    echo
-  fi
-
-  # file tree (trimmed)
-  if [[ -d "$path" ]]; then
-    printf "\033[1mFiles:\033[0m\n"
-    if _exists tree; then
-      tree -L 2 -a --dirsfirst "$path" | sed 's/^/  /'
-    else
-      find "$path" -maxdepth 2 -printf "  %p\n" | sort
-    fi
-  else
-    # script preview
-    if _exists bat; then bat --style=plain --color=always -n "$path" | sed -n '1,120p'
-    else sed -n '1,120p' "$path"
-    fi
-  fi
-}
-
-_collect_items_tsv() {
-  local dir adir f d
-  dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
-  adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
-
-  for f in "$dir"/*; do
-    [[ -x "$f" && -f "$f" ]] || continue
-    printf "cmd\t%s\t%s\t%s\n" "$(basename "$f")" "$(script_version "$f")" "$f"
-  done
-
-  for d in "$adir"/*; do
-    [[ -d "$d" || -L "$d" ]] || continue
-    printf "app\t%s\t%s\t%s\n" "$(basename "$d")" "$(script_version "$d")" "$d"
+    local name; name="$(basename "$d")"
+    printf "%-20s %-10s %s\n" "$name" "$(script_version "$d")" "$(script_desc "$d")"
   done
 }
 
 op_list_ranger() {
-  # If no fzf, fall back to plain list and return to menu.
   if ! command -v fzf >/dev/null 2>&1; then
     op_list
     return 0
   fi
 
-  # Build the stream once and feed fzf. ALWAYS swallow fzf’s exit so TUI doesn’t die on ESC.
-  local out key line name
+  local out key line
   out="$(
-    __bm_list_tsv | sort -t $'\t' -k1,1 -k2,2 \
-      | fzf --ansi --border --height=100% --layout=reverse \
-            --delimiter=$'\t' --with-nth=1,2,3 \
-            --preview 'binman __internal:preview "{}"' \
-            --preview-window=right,60%,wrap \
-            --bind 'd:execute-silent(echo {2} | xargs -I{} binman doctor {})+refresh-preview' \
-            --bind 'u:execute-silent(echo {2} | xargs -I{} binman uninstall {})+reload(binman __internal:list)' \
-            --bind 'ctrl-r:reload(binman __internal:list)' \
-            --prompt='BinMan ▸ ' \
-            --expect=enter,d,u,ctrl-r \
+    __bm_list_tsv | sort -t $'\t' -k1,1 -k2,2 |
+    fzf --ansi --border --height=100% --layout=reverse \
+        --delimiter=$'\t' --with-nth=1,2,3 \
+        --preview 'binman __internal:preview {}' \
+        --preview-window=right,60%,wrap \
+        --bind "d:execute-silent(bash -c 'binman doctor \"\$1\" >/dev/null 2>&1' _ {2})+refresh-preview" \
+        --bind "u:execute-silent(bash -c 'binman uninstall \"\$1\" >/dev/null 2>&1' _ {2})+reload(binman __internal:list)" \
+        --bind 'ctrl-r:reload(binman __internal:list)' \
+        --prompt='BinMan ▸ ' \
+        --expect=enter,d,u,ctrl-r \
       || true
   )"
 
-  # ESC or empty selection → just return to menu.
   [[ -z "$out" ]] && return 0
-
   key="$(printf '%s\n' "$out" | head -n1)"
   line="$(printf '%s\n' "$out" | tail -n1)"
-  name="$(awk -F'\t' '{print $2}' <<<"$line")"
-
-  case "$key" in
-    d)
-      # doctor already ran via execute-silent+refresh; nothing else to print.
-      return 0
-      ;;
-    u)
-      # uninstall already ran via execute-silent+reload; nothing else to print.
-      return 0
-      ;;
-    ctrl-r)
-      # reload handled by fzf binding
-      return 0
-      ;;
-    enter)
-      # Optional: show a compact confirmation line (does NOT break box layout)
-      printf "%s\t%s\t%s\t%s\n" "$(awk -F'\t' '{print $1}' <<<"$line")" "$name" "$(awk -F'\t' '{print $3}' <<<"$line")" "$(awk -F'\t' '{print $4}' <<<"$line")" >/dev/null
-      return 0
-      ;;
-    *)
-      return 0
-      ;;
-  esac
+  # actions already executed via fzf bindings; we just stay in the TUI
+  return 0
 }
+
+
+
+# --------------------------------------------------------------------------------------------------
+# DOCTOR — environment + per‑app healing (venv/deps/hook)
+# --------------------------------------------------------------------------------------------------
+
+# Keep legacy entry for any old callers; now just proxies to the env summary.
+op_doctor(){ 
+	doctor_env;
+}
+
+# Environment summary (+ optional PATH patch)
+doctor_env() {
+  local mode bin_dir app_store
+  mode=$([[ $SYSTEM_MODE -eq 1 ]] && echo system || echo user)
+  bin_dir=$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN" || echo "$BIN_DIR")
+  app_store=$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_APPS" || echo "$APP_STORE")
+
+  say "Mode      : $mode"
+  say "BIN_DIR   : $bin_dir"
+  say "APP_STORE : $app_store"
+  (( SYSTEM_MODE )) || { in_path && ok "PATH ok" || warn "PATH missing ${BIN_DIR}"; }
+
+  exists zip   && ok "zip: present"   || warn "zip: not found (fallback to .tar.gz)"
+  exists unzip && ok "unzip: present" || warn "unzip: not found (needed to restore .zip)"
+  exists tar   && ok "tar: present"   || warn "tar: not found (needed to restore .tar.gz)"
+
+  # Bonus: shadow check for installed shims
+  if command -v binman >/dev/null 2>&1; then
+    local resolved
+    resolved="$(command -v binman)"
+    [[ "$resolved" != "$BIN_DIR/binman" && -e "$BIN_DIR/binman" ]] && \
+      warn "binman in PATH is '$resolved' but user shim exists at '$BIN_DIR/binman' (shadowed)."
+  fi
+
+  # Optional: safer PATH patching across shells
+  if [[ $FIX_PATH -eq 1 ]]; then
+    local line='export PATH="$HOME/.local/bin:$PATH"'
+    for f in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bashrc" "$HOME/.profile"; do
+      [[ -f "$f" ]] || continue
+      grep -qF "$line" "$f" || { printf '\n# Added by binman doctor\n%s\n' "$line" >> "$f"; ok "Patched PATH in $f"; }
+    done
+    if command -v fish >/dev/null 2>&1; then
+      local fish_conf="$HOME/.config/fish/config.fish"
+      mkdir -p "$(dirname "$fish_conf")"
+      grep -q 'set -gx PATH $HOME/.local/bin $PATH' "$fish_conf" 2>/dev/null || {
+        printf '\n# Added by binman doctor\nset -gx PATH $HOME/.local/bin $PATH\n' >> "$fish_conf"
+        ok "Patched PATH in fish config"
+      }
+    fi
+  fi
+}
+
+# ---- Per‑app helpers ---------------------------------------------------------
 
 _apps_dir(){
-	(( SYSTEM_MODE )) && echo "$SYSTEM_APPS" || echo "$APP_STORE";
+	[[ $SYSTEM_MODE -eq 1 ]] && echo "${SYSTEM_APPS}" || echo "${APP_STORE}";
 }
 
-_list_apps(){ 
-	local d="$(_apps_dir)";
-	[[ -d "$d" ]] || return;
-	for x in "$d"/*;
-	    do [[ -d "$x" || -L "$x" ]] && basename "$x"
-	    done;
+_list_apps(){
+  local d; d="$(_apps_dir)"
+  [[ -d "$d" ]] || return 0
+  for x in "$d"/*; do [[ -d "$x" ]] && basename "$x"; done
 }
 
 _pick_app(){
-  local items; items="$(_list_apps)"; [[ -n "$items" ]] || { err "No apps installed."; return 1; }
-  if command -v fzf >/dev/null 2>&1; then
+  local items; items="$(_list_apps)"
+  [[ -n "$items" ]] || { err "No apps installed."; return 1; }
+  if exists fzf; then
     printf "%s\n" "$items" | fzf --prompt="Doctor → "
   else
-    local i=1 arr sel
-    mapfile -t arr < <(printf "%s\n" "$items")
+    warn "Tip: install 'fzf' for fuzzy picking."
+    local i=1 arr; mapfile -t arr < <(printf "%s\n" "$items")
     say "Choose an app:"; for n in "${arr[@]}"; do printf "  [%d] %s\n" "$i" "$n"; ((i++)); done
-    printf "Number: "; read -r sel
-    [[ "$sel" =~ ^[0-9]+$ ]] && echo "${arr[$((sel-1))]}"
+    printf "Number: "; read -r n
+    [[ "$n" =~ ^[0-9]+$ ]] && echo "${arr[$((n-1))]}"
   fi
 }
 
 _is_python_app(){
   local d="$1"
   [[ -d "$d/.venv" || -f "$d/requirements.txt" || -f "$d/pyproject.toml" ]] && return 0
-  compgen -G "$d/**/*.py" >/dev/null || compgen -G "$d/*.py" >/dev/null
+  find "$d" -maxdepth 2 -type f -name "*.py" | read -r _ && return 0
+  return 1
 }
 
 _make_venv(){
   local d="$1" pyver="$2" dry="$3" py="python3"
   [[ -n "$pyver" ]] && py="python${pyver}"
-  [[ "$dry" == 1 ]] && { say "🩺 DRY: would create venv with $py"; echo "$d/.venv"; return 0; }
-  [[ -d "$d/.venv" ]] || { say "🩺 Creating venv (.venv) with $py"; "$py" -m venv "$d/.venv" || return 2; }
-  "$d/.venv/bin/python" -m pip install -U pip >/dev/null 2>&1 || true
+  command -v "$py" >/dev/null 2>&1 || { err "Requested interpreter not found: $py"; return 2; }
+  if [[ "$dry" == 1 ]]; then
+    say "🩺 DRY: would create venv with $py at $d/.venv"
+  else
+    [[ -d "$d/.venv" ]] || { say "🩺 Creating venv (.venv) with $py"; "$py" -m venv "$d/.venv" || return 2; }
+    "$d/.venv/bin/python" -m pip install -U pip >/dev/null 2>&1 || true
+  fi
   echo "$d/.venv"
 }
 
 _pyproj_deps(){
   awk '
-    /^\[project\]/ { in=1; next } /^\[/ { in=0 }
-    in && /^dependencies *= *\[/ { buf=$0; while (buf !~ /\]/) { getline x; buf=buf x } print buf }
+    /^\[project\]/ { in=1; next }
+    /^\[/ { in=0 }
+    in && /^dependencies *= *\[/ {
+      buf=$0
+      while (buf !~ /\]/) { getline x; buf=buf x }
+      print buf
+    }
   ' "$1" | sed -E 's/.*\[(.*)\].*/\1/' | tr -d '"'\'' ' | tr ',' '\n' | sed '/^$/d'
 }
 
-_render_card_list(){
-  local dir adir f d
-  dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
-  adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
-
-  say ""
-  say "Commands in $dir"
-  ui_hr
-  for f in "$dir"/*; do
-    [[ -x "$f" && -f "$f" ]] || continue
-    local name ver desc
-    name="$(basename "$f")"
-    ver="$(script_version "$f")"
-    desc="$(script_desc "$f")"
-    printf "• %s %s[%s]%s\n" "$name" "$UI_DIM" "${ver:-unknown}" "$UI_RESET"
-    [[ -n "$desc" ]] && printf "  %s\n" "$desc"
-    printf "%s\n" "$UI_DIM────────────────────────────────────────────────────────────────$UI_RESET"
-  done
-
-  say ""
-  say "Apps in $adir"
-  ui_hr
-  for d in "$adir"/*; do
-    [[ -d "$d" || -L "$d" ]] || continue
-    local name ver desc
-    name="$(basename "$d")"
-    ver="$(script_version "$d")"
-    desc="$(script_desc "$d")"
-    printf "• %s %s[%s]%s\n" "$name" "$UI_DIM" "${ver:-unknown}" "$UI_RESET"
-    [[ -n "$desc" ]] && printf "  %s\n" "$desc"
-    printf "%s\n" "$UI_DIM────────────────────────────────────────────────────────────────$UI_RESET"
-  done
-}
-
-op_list(){
-  # Prefer fzf “ranger” if available; otherwise the card list.
-  if command -v fzf >/dev/null 2>&1; then
-    op_list_ranger
-  else
-    _render_card_list
-  fi
-}
-
-
-
-# --------------------------------------------------------------------------------------------------
-# Doctor
-# --------------------------------------------------------------------------------------------------
 _install_reqs(){
   local d="$1" venv="$2" dry="$3" quiet="$4"
   local req="$d/requirements.txt" pyproj="$d/pyproject.toml" pkgs=() q=
@@ -1358,13 +1437,14 @@ cmd_doctor(){
       --python) shift; PYVER="$1";;
       -h|--help) say "binman doctor [--all|<name>] [--python X.Y] [--dry-run] [-q]"; return 0;;
       *) tgt="$1";;
-    esac
-    shift
+    esac; shift
   done
 
-  # Run the environment summary ONCE
-  doctor_env
-  echo
+  if [[ -z "$tgt" && $DO_ALL -eq 0 ]]; then
+    doctor_env
+    echo
+    tgt="$(_pick_app)" || return 2
+  fi
 
   if [[ $DO_ALL -eq 1 ]]; then
     local fail=0 any=0
@@ -1375,19 +1455,11 @@ cmd_doctor(){
     done < <(_list_apps)
     [[ $any -eq 0 ]] && { warn "No apps installed."; return 0; }
     ((fail==0)) && return 0 || return 2
+  else
+    doctor_env; echo; doctor_app_one "$tgt" "$PYVER" "$DRY" "$QUIET"
   fi
-
-  # If no explicit target, pick interactively
-  if [[ -z "$tgt" ]]; then
-    tgt="$(_pick_app)" || return 2
-  fi
-
-  doctor_app_one "$tgt" "$PYVER" "$DRY" "$QUIET"
 }
 
-
-
-# --------------------------------------------------------------------------------------------------
 # UPDATE — reinstall with overwrite (optionally pull a git dir first)
 # --------------------------------------------------------------------------------------------------
 op_update(){
@@ -1401,13 +1473,9 @@ op_update(){
 # --------------------------------------------------------------------------------------------------
 # BACKUP & RESTORE — archive management (zip preferred; tar.gz fallback)
 # --------------------------------------------------------------------------------------------------
-_backup_filename_default(){ 
-	local ext="$1"
-	local ts 
-	ts=$(date +%Y%m%d-%H%M%S)
-	echo "binman_backup-${ts}.${ext}"
-}
+_backup_filename_default(){ local ext="$1"; local ts; ts=$(date +%Y%m%d-%H%M%S); echo "binman_backup-${ts}.${ext}"; }
 
+# ----- Backup subset (build a temp tree and reuse op_backup archiver) --------
 op_backup_subset(){
   # ARGS: output filename (optional) + selected rows on stdin ("cmd  name" / "app  name")
   # Example use:
@@ -1544,86 +1612,32 @@ op_restore(){
 # --------------------------------------------------------------------------------------------------
 # SELF-UPDATE — pull repo and reinstall the binman shim
 # --------------------------------------------------------------------------------------------------
-_binman_rb_dir(){ 
-	echo "${XDG_STATE_HOME:-$HOME/.local/state}/binman/rollback"; 
-}
-
-_parse_version(){
-  awk -F'"' '/^[[:space:]]*VERSION[[:space:]]*=/ {print $2; exit}' "$1" 2>/dev/null
-}
-
 op_self_update(){
+  # Always fetch our canonical raw script, then reinstall via `binman update <tmp>`
   local url="https://raw.githubusercontent.com/karialo/binman/refs/heads/main/binman.sh"
-  local tmp stage target dir rbdir now curr_ver new_ver stamp log
+  local tmp
+  tmp="$(mktemp -t binman.update.XXXXXX.sh)"
 
-  # 1) Download candidate
-  tmp="$(mktemp -t binman.new.XXXXXX)" || { err "mktemp failed"; return 2; }
   if exists curl; then
     curl -fsSL "$url" -o "$tmp" || { rm -f "$tmp"; err "Download failed."; return 2; }
   elif exists wget; then
-    wget -q "$url" -O "$tmp"     || { rm -f "$tmp"; err "Download failed."; return 2; }
+    wget -q "$url" -O "$tmp" || { rm -f "$tmp"; err "Download failed."; return 2; }
   else
-    rm -f "$tmp"; err "Need curl or wget for self-update"; return 2
+    err "Need curl or wget for self-update"; return 2
   fi
+
   chmod +x "$tmp"
 
-  # 2) Sanity
-  grep -q 'case "\$ACTION"' "$tmp" || { rm -f "$tmp"; err "Fetched file doesn't look like binman.sh"; return 2; }
-
-  # 3) Locate current installed binary
-  target="$(command -v binman 2>/dev/null || true)"
-  [[ -z "$target" ]] && target="${BIN_DIR%/}/binman"
-  dir="$(dirname "$target")"
-
-  # 4) Versions (best-effort)
-  curr_ver="$(_parse_version "$target")"
-  new_ver="$(_parse_version "$tmp")"
-  [[ -z "$curr_ver" ]] && curr_ver="unknown"
-  [[ -z "$new_ver"  ]] && new_ver="unknown"
-
-  say "Updating binman: $curr_ver → $new_ver"
-
-  # 5) Snapshot current binary for rollback
-  rbdir="$(_binman_rb_dir)"; mkdir -p "$rbdir"
-  now="$(date -u +%Y%m%dT%H%M%SZ)"
-  stamp="binman-${curr_ver}-${now}"
-  if [[ -f "$target" ]]; then
-    cp -f "$target" "$rbdir/$stamp" || { rm -f "$tmp"; err "Failed to snapshot current binary"; return 2; }
-    chmod 0755 "$rbdir/$stamp"
-    ln -sf "$rbdir/$stamp" "$rbdir/binman.prev" 2>/dev/null || true
-    # append to versions log
-    log="$rbdir/versions.log"
-    printf "%s | from=%s -> to=%s | snapshot=%s\n" "$now" "$curr_ver" "$new_ver" "$stamp" >> "$log"
+  # Sanity: look for literal case-switch on ACTION without expanding ACTION
+  if ! grep -q 'case "\$ACTION"' "$tmp"; then
+    rm -f "$tmp"
+    err "Fetched file doesn't look like binman.sh"
+    return 2
   fi
 
-  # 6) Stage + atomic replace
-  stage="$(mktemp -p "$dir" .binman.stage.XXXXXX)" || { rm -f "$tmp"; err "mktemp stage failed"; return 2; }
-  cp -f "$tmp" "$stage" || { rm -f "$tmp" "$stage"; err "Staging failed"; return 2; }
-  chmod 0755 "$stage"
-
-  if mv -f "$stage" "$target" 2>/dev/null; then
-    :
-  else
-    if exists sudo; then
-      sudo mv -f "$stage" "$target" || { rm -f "$stage"; err "Replace failed (sudo)"; return 2; }
-      sudo chmod 0755 "$target" || true
-    else
-      rm -f "$stage"; err "No permission to write $target (try system mode with sudo)"; rm -f "$tmp"; return 2;
-    fi
-  fi
-
-  rm -f "$tmp"
-  ok "Self-update complete. Rollback snapshot: $rbdir/$stamp"
-}
-
-_cmd_binman_rollback(){
-  local rbdir="$(_binman_rb_dir)" pick=""
-  [[ -d "$rbdir" ]] || { err "No snapshots found."; return 2; }
-  # Pick latest if none specified
-  pick="$(ls -1t "$rbdir"/binman-* 2>/dev/null | head -n1)"
-  [[ -n "$1" ]] && pick="$rbdir/binman-$1"
-  [[ -f "$pick" ]] || { err "Snapshot not found: $1"; return 2; }
-  cp -f "$pick" "${BIN_DIR%/}/binman" && chmod 0755 "${BIN_DIR%/}/binman" && ok "Rolled back to $(basename "$pick")"
+  # Reinstall ourselves through the normal update path
+  "$0" update "$tmp"
+  ok "Self-update complete."
 }
 
 
@@ -2636,6 +2650,7 @@ EOF
   ui_hr
 }
 
+# Write guard for /usr/local
 ensure_system_write(){
   [[ -w "$SYSTEM_BIN" && -w "$SYSTEM_APPS" ]] || warn "Need write access to ${SYSTEM_BIN} and ${SYSTEM_APPS}. Try: sudo $SCRIPT_NAME --system <cmd> ..."
 }
@@ -2747,8 +2762,19 @@ binman_tui(){
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
 
-      3) op_list;    printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+      3)
+        if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
+          op_list_ranger
+        else
+          op_list
+        fi
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"
+        read -r
+        ;;
+
+      
       4) cmd_doctor;  printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+      
       5) new_wizard; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
 
       6)  # Backup — pick ALL or a subset of cmds/apps
@@ -2846,6 +2872,259 @@ binman_tui(){
 
 
 
+
+_binman_rb_dir(){ 
+	echo "${XDG_STATE_HOME:-$HOME/.local/state}/binman/rollback"; 
+}
+
+
+
+_cmd_binman_rollback(){
+  local rbdir="$(_binman_rb_dir)" pick=""
+  [[ -d "$rbdir" ]] || { err "No snapshots found."; return 2; }
+  # Pick latest if none specified
+  pick="$(ls -1t "$rbdir"/binman-* 2>/dev/null | head -n1)"
+  [[ -n "$1" ]] && pick="$rbdir/binman-$1"
+  [[ -f "$pick" ]] || { err "Snapshot not found: $1"; return 2; }
+  cp -f "$pick" "${BIN_DIR%/}/binman" && chmod 0755 "${BIN_DIR%/}/binman" && ok "Rolled back to $(basename "$pick")"
+}
+
+
+
+
+__bm_list_tsv() {
+  # Reuse your existing collector if present; else inline it:
+  local dir adir f d
+  dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
+  adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
+
+  for f in "$dir"/*; do
+    [[ -x "$f" && -f "$f" ]] || continue
+    printf "cmd\t%s\t%s\t%s\n" "$(basename "$f")" "$(script_version "$f")" "$f"
+  done
+  for d in "$adir"/*; do
+    [[ -d "$d" || -L "$d" ]] || continue
+    printf "app\t%s\t%s\t%s\n" "$(basename "$d")" "$(script_version "$d")" "$d"
+  done
+}
+
+
+
+__bm_preview() {
+  # Args: TYPE NAME VERSION PATH  (we'll also accept a single TSV arg for safety)
+  local type name ver path line
+
+  if [[ $# -eq 1 && "$1" == *$'\t'* ]]; then
+    # fallback: got one TSV-joined arg
+    line="$1"
+    IFS=$'\t' read -r type name ver path <<<"$line"
+  else
+    type="${1:-}"; name="${2:-}"; ver="${3:-}"; path="${4:-}"
+  fi
+
+  # strip any wrapping single/double quotes that sneak in
+
+
+  _stripq(){ 
+    local s="$1"
+    [[ ${#s} -ge 2 && ( "${s:0:1}" == "'" && "${s: -1}" == "'" ) ]] && s="${s:1:-1}"
+    [[ ${#s} -ge 2 && ( "${s:0:1}" == '"' && "${s: -1}" == '"' ) ]] && s="${s:1:-1}"
+    printf "%s" "$s"
+  }
+  path="$(_stripq "$path")"
+
+  printf "\033[1m%s\033[0m  [%s]\n" "$name" "${ver:-unknown}"
+  printf "Path: %s\nType: %s\n\n" "$path" "$type"
+
+  # Description
+  local desc; desc="$(script_desc "$path")"
+  [[ -n "$desc" ]] && { printf "Description:\n%s\n\n" "$desc"; }
+
+  if [[ -d "$path" ]]; then
+    # README (only if it exists)
+    local readme=""
+    for f in README.md README.txt README; do
+      [[ -f "$path/$f" ]] && { readme="$path/$f"; break; }
+    done
+    if [[ -n "$readme" ]]; then
+      printf "README: %s\n" "$readme"
+      if command -v bat >/dev/null 2>&1; then
+        bat --style=plain --color=always "$readme" | sed -n '1,120p'
+      else
+        sed -n '1,120p' "$readme"
+      fi
+      echo
+    fi
+
+    # Python venv quick info
+    if [[ -x "$path/.venv/bin/python" ]]; then
+      printf "venv: %s\n" "$path/.venv"
+      "$path/.venv/bin/python" -V 2>&1
+      "$path/.venv/bin/pip" list --format=columns 2>/dev/null | sed -n '2,20p' | sed 's/^/  /'
+      echo
+    fi
+
+    # File tree (trimmed)
+    printf "Files:\n"
+    if command -v tree >/dev/null 2>&1; then
+      tree -L 2 -a --dirsfirst "$path" | sed 's/^/  /'
+    else
+      find "$path" -maxdepth 2 -printf "  %p\n" | sort
+    fi
+
+  elif [[ -f "$path" ]]; then
+    # Script preview
+    if command -v bat >/dev/null 2>&1; then
+      bat --style=plain --color=always -n "$path" | sed -n '1,120p'
+    else
+      sed -n '1,120p' "$path"
+    fi
+  else
+    printf "(no preview available)\n"
+  fi
+}
+
+
+
+_exists(){
+	command -v "$1" >/dev/null 2>&1;
+}
+
+
+
+_binman_preview() {
+  local line="$1"
+  local type name ver path appdir venv req readme
+  IFS=$'\t' read -r type name ver path <<<"$line"
+
+  printf "\033[1m%s\033[0m  [%s]\n" "$name" "${ver:-unknown}"
+  printf "\033[2mPath:\033[0m %s\n" "$path"
+  printf "\033[2mType:\033[0m %s\n\n" "$type"
+
+  # description
+  if [[ "$type" == cmd ]]; then
+    printf "\033[1mDescription:\033[0m %s\n\n" "$(script_desc "$path")"
+  else
+    printf "\033[1mDescription:\033[0m %s\n\n" "$(script_desc "$path")"
+  fi
+
+  # show README or manifest if present
+  if [[ -d "$path" ]]; then
+    appdir="$path"
+    readme=""
+    for f in README.md README.txt README; do
+      [[ -f "$appdir/$f" ]] && { readme="$appdir/$f"; break; }
+    done
+    if [[ -n "$readme" ]]; then
+      printf "\033[1mREADME:\033[0m %s\n" "$readme"
+      if _exists glow; then glow -s dark "$readme" 2>/dev/null || cat "$readme"
+      elif _exists bat; then bat --style=plain --color=always "$readme"
+      else sed -E 's/^# (.*)$/\1\n\1\n/' "$readme" | sed 's/^#/  /'
+      fi
+      echo
+    fi
+  fi
+
+  # Python bits
+  if [[ -d "$path" && -f "$path/requirements.txt" ]]; then
+    req="$path/requirements.txt"
+    printf "\033[1mrequirements.txt:\033[0m\n"
+    if _exists bat; then bat --style=plain --color=always "$req"; else sed 's/^/  /' "$req"; fi
+    echo
+  fi
+
+  venv="$path/.venv"
+  if [[ -d "$venv" ]]; then
+    printf "\033[1mvenv:\033[0m %s\n" "$venv"
+    if [[ -x "$venv/bin/python" ]]; then
+      printf "  python: %s\n" "$("$venv/bin/python" -c 'import sys;print(".".join(map(str,sys.version_info[:3])))' 2>/dev/null || echo '?')"
+      printf "  pip pkgs: %s\n" "$("$venv/bin/pip" list --format=columns 2>/dev/null | sed -n '2,15p' | sed 's/^/    /')"
+    fi
+    echo
+  fi
+
+  # file tree (trimmed)
+  if [[ -d "$path" ]]; then
+    printf "\033[1mFiles:\033[0m\n"
+    if _exists tree; then
+      tree -L 2 -a --dirsfirst "$path" | sed 's/^/  /'
+    else
+      find "$path" -maxdepth 2 -printf "  %p\n" | sort
+    fi
+  else
+    # script preview
+    if _exists bat; then bat --style=plain --color=always -n "$path" | sed -n '1,120p'
+    else sed -n '1,120p' "$path"
+    fi
+  fi
+}
+
+
+
+_collect_items_tsv() {
+  local dir adir f d
+  dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
+  adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
+
+  for f in "$dir"/*; do
+    [[ -x "$f" && -f "$f" ]] || continue
+    printf "cmd\t%s\t%s\t%s\n" "$(basename "$f")" "$(script_version "$f")" "$f"
+  done
+
+  for d in "$adir"/*; do
+    [[ -d "$d" || -L "$d" ]] || continue
+    printf "app\t%s\t%s\t%s\n" "$(basename "$d")" "$(script_version "$d")" "$d"
+  done
+}
+
+
+
+
+
+_render_card_list(){
+  local dir adir f d
+  dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
+  adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
+
+  say ""
+  say "Commands in $dir"
+  ui_hr
+  for f in "$dir"/*; do
+    [[ -x "$f" && -f "$f" ]] || continue
+    local name ver desc
+    name="$(basename "$f")"
+    ver="$(script_version "$f")"
+    desc="$(script_desc "$f")"
+    printf "• %s %s[%s]%s\n" "$name" "$UI_DIM" "${ver:-unknown}" "$UI_RESET"
+    [[ -n "$desc" ]] && printf "  %s\n" "$desc"
+    printf "%s\n" "$UI_DIM────────────────────────────────────────────────────────────────$UI_RESET"
+  done
+
+  say ""
+  say "Apps in $adir"
+  ui_hr
+  for d in "$adir"/*; do
+    [[ -d "$d" || -L "$d" ]] || continue
+    local name ver desc
+    name="$(basename "$d")"
+    ver="$(script_version "$d")"
+    desc="$(script_desc "$d")"
+    printf "• %s %s[%s]%s\n" "$name" "$UI_DIM" "${ver:-unknown}" "$UI_RESET"
+    [[ -n "$desc" ]] && printf "  %s\n" "$desc"
+    printf "%s\n" "$UI_DIM────────────────────────────────────────────────────────────────$UI_RESET"
+  done
+}
+
+
+
+_parse_version(){
+  awk -F'"' '/^[[:space:]]*VERSION[[:space:]]*=/ {print $2; exit}' "$1" 2>/dev/null
+}
+
+
+
+
+
 # --------------------------------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------------------------------
@@ -2856,35 +3135,28 @@ set -- "${ARGS_OUT[@]}"
 ACTION="${1:-}"; shift || true
 case "$ACTION" in
   install)
-    if [[ -n "$MANIFEST_FILE" ]]; then
-      op_install_manifest "$MANIFEST_FILE"
+    if [[ -n "$MANIFEST_FILE" ]]; then op_install_manifest "$MANIFEST_FILE"; else op_install "$@"; fi;;
+  uninstall) op_uninstall "$@";;
+  list)
+    if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
+      op_list_ranger
     else
-      op_install "$@"
+      op_list
     fi
     ;;
-  uninstall) op_uninstall "$@";;
-  list) op_list;;
   doctor) cmd_doctor "$@";;
   update) op_update "$@";;
-  __internal:list)    __bm_list_tsv;;
-  __internal:preview) __bm_preview "$@";;
   new) new_cmd "$@";;
   wizard) new_wizard;;
   backup) op_backup "${1:-}";;
   restore) op_restore "${1:-}";;
   self-update) op_self_update;;
   rollback)
-    if [[ -n "${1:-}" ]]; then
-      apply_rollback "$1"
-    else
-      id="$(latest_rollback_id || true)"
-      [[ -n "$id" ]] && apply_rollback "$id" || warn "No rollback snapshots yet"
-    fi
-    ;;
-  binman-rollback) _cmd_binman_rollback "$@";;
+    if [[ -n "${1:-}" ]]; then apply_rollback "$1"; else id="$(latest_rollback_id || true)"; [[ -n "$id" ]] && apply_rollback "$id" || warn "No rollback snapshots yet"; fi;;
   bundle) op_bundle "${1:-}";;
   test) op_test "$@";;
   tui|"") binman_tui;;
   version) say "${SCRIPT_NAME} v${VERSION}";;
   help|*) usage;;
 esac
+
