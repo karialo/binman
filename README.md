@@ -12,6 +12,8 @@ Install your scripts or apps (even multi-file monsters) straight into `~/.local/
 
 Update them when you tweak your masterpiece. BinMan is version-aware, so it swaps the old for the new like a well-trained butler.
 
+Run `binman` with zero arguments to drop into a lurid little terminal arcade: neon ASCII banner, fzf-powered pickers, rollback buttons, even a stress gauntlet launcher. It’s the control room for your personal tool empire.
+
 Uninstall when you realize your brilliant script was actually a crime against humanity, or straight up tried to `sudo rm -rf /*` your box.
 
 ### Install from URL
@@ -57,21 +59,20 @@ So… do you keep pretending your system is “organized enough,” or do you le
 
 ## Features
 
-- **Install**: files, app directories, or remote URLs → `~/.local/bin` and `~/.local/share/binman/apps`.
-- **Uninstall**: remove a single command or a whole app (shim + store dir).
-- **List**: show installed commands & apps with version and docstring (from top comment).
-- **Update**: force-reinstall from file/dir; optionally `--git` pull first.
-- **Backup/Restore**: snapshot + restore everything, `.zip` or `.tar.gz`.
-- **Rollback**: auto-snapshots before changes; roll back to previous state.
-- **Self-update**: fetches the project’s raw script and atomically swaps itself.
-- **Bundle export**: pack bin+apps+manifest for sync/migration.
-- **Manifest install**: bulk installs from text or JSON (with `jq`).
-- **Generator / Wizard**: `binman new` + `binman wizard` scaffold scripts/apps across multiple languages (bash/python/node/typescript/deno/go/rust/ruby/php). Python apps can auto-manage a `.venv`.
-- **TUI**: `binman` with no args → full menu (fzf pickers for uninstall/test if available).
-- **System mode**: `--system` installs to `/usr/local/*` (requires perms).
-- **Stress test**: `binman test stress` runs an internal gauntlet to sanity-check behaviors.
+- **Install**: single files, app directories, or remote URLs land in `~/.local/bin` and `~/.local/share/binman/apps` (or `/usr/local/*` with `--system`).
+- **Uninstall**: rip out shims and app dirs in one shot, user or system scope, then auto-rehash your shell.
+- **Autodetect brains**: app installs sniff out entry points for bash, Python, Node/TS, Deno, Go, Rust, Ruby, PHP; fall back to `--entry`, `--workdir`, and friends when the repo is feral.
+- **Per-app venvs**: `--venv`, `--req`, and `--python` spin up a private `.venv`, upgrade the interpreter, and pip install quietly before every launch.
+- **List + TUI**: fuzzy-search with ANSI previews (`fzf` if you have it), neon dashboard when you run `binman`, and one-keystroke doctor/bundle/test bindings.
+- **Update**: reinstall from file/dir, optionally `--git <repo>` pull first, or let `self-update` fetch the latest BinMan script.
+- **Backup/Restore**: archive everything (`zip` > `tar.gz`) and restore atomically; rollbacks are auto-created before every destructive move.
+- **Bundle export**: portable archives with a manifest so you can clone your toolbox onto new machines.
+- **Doctor**: `binman doctor` audits PATH, warns about missing zip/tar, and with `--fix-path` writes the PATH snippet into zsh/bash/fish configs.
+- **Manifest install**: bulk install from newline lists, or JSON arrays when `jq` is around.
+- **Generator / Wizard**: `binman new` / `binman wizard` scaffold scripts/apps across Bash, Python, Node/TS, Deno, Go, Rust, Ruby, PHP—with optional git init and `gitprep` hand-off.
+- **Stress test**: `binman test stress` hammers installs in parallel (`--jobs`, `--verbose`, `--keep`, `--quick`).
 
-Version in this README: **v1.6.4**
+Version in this README: **v1.7.3**
 
 ---
 
@@ -97,11 +98,13 @@ source ~/.zshrc
 
 ## How it works
 
-- **Scripts**: installed as `~/.local/bin/<name>` (extension dropped).
-- **Apps**: copied/symlinked into `~/.local/share/binman/apps/<name>` with a shim at `~/.local/bin/<name>`.
-- **Versions**: detected from `VERSION=`, `# Version:`, `__version__`, or a `VERSION` file.
+- **Scripts** drop into `~/.local/bin/<name>` (extension stripped, chmod +x enforced, bash scripts linted with `bash -n` before the swap).
+- **Apps** live in `~/.local/share/binman/apps/<name>` with a shim dropped into your bin; `--link` keeps a symlink instead for dev workflows.
+- **Entry detection** scans for sensible launchers across languages (pyproject console scripts, `package.json` bins, `cargo` bins, `go/cmd`, `deno task`, Gemfile executables, Composer bins). Override or fine-tune with `--entry`, `--workdir/--cwd`, `--venv`, `--req`, `--python`.
+- **Versions** bubble up from `VERSION` files or inline markers (`VERSION=`, `# Version:`, `__version__ =`).
+- **Safety net**: every mutating command snapshots `bin/` and `apps/` for `binman rollback`, and single-file installs write to a temp file before the atomic move.
 
-Shim looks like:
+Shim for a classic app layout looks like:
 
 ```
 #!/usr/bin/env bash
@@ -134,7 +137,7 @@ exec "$HOME/.local/share/binman/apps/<name>/bin/<name>" "$@"
 - `--req FILE` / `--requirements FILE` — requirements file name (default `requirements.txt`)  
 - `--python BIN` — Python to bootstrap the venv (default `python3`)  
 
-Heads-up: if you have `fzf` installed, the **Uninstall** and **Test** menus support selection in the TUI.
+Heads-up: if you have `fzf` installed, `binman list` turns into a fuzzy preview browser and the TUI’s **Uninstall** / **Test** menus support interactive selection.
 
 ### Install
 
@@ -254,8 +257,10 @@ binman bundle my-env.zip
 ```
 binman test hello -- --help
 binman test resize -- -v
-binman test stress --verbose
+binman test stress --jobs 8 --verbose --keep
 ```
+
+Plain tests run the command with `--help` (or whatever args you pass after `--`). `stress` spins up a scratch playground, installs examples in parallel, and lets you tune concurrency with `--jobs`, preserve artifacts with `--keep`, or speed-run with `--quick`.
 
 ### New (scaffold) & Wizard
 
@@ -296,7 +301,7 @@ binman tui
 # or just: binman
 ```
 
-Menu includes **Install, Uninstall, List, Doctor, Wizard, Backup, Restore, Self-Update, Rollback, Bundle, Test**, and a **System mode** toggle. With `fzf`, **Uninstall** and **Test** show interactive pickers.
+Menu includes **Install, Uninstall, List, Doctor, Wizard, Backup, Restore, Self-Update, Rollback, Bundle, Test**, and a **System mode** toggle. With `fzf`, the List screen becomes a swanky preview browser (peek README, manifest, venv info), and Uninstall/Test grow interactive pickers with hotkeys (`d` doctor, `u` uninstall, `ctrl-r` refresh).
 
 ---
 
