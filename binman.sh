@@ -17,6 +17,42 @@
 set -Eeuo pipefail
 shopt -s nullglob
 
+# ===== Early, standalone preview handler (fields version) =====
+if [[ "${1:-}" == "--_preview_fields" ]]; then
+  # Args: type name ver path desc  (5 separate args from fzf {1..5})
+  type="${2:-}"; name="${3:-}"; ver="${4:-}"; path="${5:-}"; desc="${6:-}"
+
+  stripq(){ local s="$1"; [[ ${s:0:1} == "'" || ${s:0:1} == '"' ]] && s="${s:1}"; [[ ${s: -1} == "'" || ${s: -1} == '"' ]] && s="${s:0:${#s}-1}"; printf '%s' "$s"; }
+  type="$(stripq "$type")"; name="$(stripq "$name")"; ver="$(stripq "$ver")"; path="$(stripq "$path")"; desc="$(stripq "$desc")"
+
+  printf "\033[1m%s\033[0m  [%s]  — %s\n" "${name:-?}" "${ver:-unknown}" "${type:-?}"
+  [[ -n "$desc" ]] && printf "%s\n" "$desc"
+  printf "\n\033[2m──────────────────────────────────────────────────────────────\033[0m\n\n"
+
+  try_help(){ "$1" --help 2>&1 || "$1" -h 2>&1; }
+  show_file(){ if command -v bat >/dev/null 2>&1; then bat --style=plain --paging=never --wrap=never "$1"; else sed -n '1,400p' "$1"; fi; }
+
+  if [[ "$type" == "cmd" ]]; then
+    if [[ -x "$path" ]]; then try_help "$path" && exit 0; show_file "$path" && exit 0; fi
+    [[ -f "$path" ]] && { show_file "$path"; exit 0; }
+    exit 0
+  elif [[ "$type" == "app" ]]; then
+    for rd in "$path"/README "$path"/README.md "$path"/README.txt; do [[ -f "$rd" ]] && { show_file "$rd"; exit 0; }; done
+    if [[ -x "$path/bin/$name" ]]; then try_help "$path/bin/$name" && exit 0; fi
+    if [[ -f "$path/manifest.json" ]]; then show_file "$path/manifest.json"; exit 0; fi
+    if command -v tree >/dev/null 2>&1; then (cd "$path" 2>/dev/null && tree -L 2); else (cd "$path" 2>/dev/null && find . -maxdepth 2 -print | sed -n '1,120p'); fi
+    exit 0
+  fi
+  exit 0
+fi
+# ===== End fields preview handler =====
+
+
+# Path to THIS running script; export for fzf subshells
+SELF="${SELF:-$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || command -v "$0" || echo "$0")}"
+export BINMAN_SELF="$SELF"
+
+
 # --------------------------------------------------------------------------------------------------
 # Constants & defaults
 # --------------------------------------------------------------------------------------------------
@@ -55,16 +91,34 @@ BOOT_PY="python3"   # --python BIN : bootstrap interpreter to create venv
 # --------------------------------------------------------------------------------------------------
 # Small helpers (consistent messages, detection, paths)
 # --------------------------------------------------------------------------------------------------
-say(){ printf "%s\n" "$*"; }
-err(){ printf "\e[31m%s\e[0m\n" "$*" 1>&2; }
-warn(){ printf "\e[33m%s\e[0m\n" "$*" 1>&2; }
-ok(){ printf "\e[32m%s\e[0m\n" "$*"; }
+say(){
+    printf "%s\n" "$*"; 
+}
 
-exists(){ command -v "$1" >/dev/null 2>&1; }
-iso_now(){ date -Iseconds; }
+err(){
+    printf "\e[31m%s\e[0m\n" "$*" 1>&2;
+}
+
+warn(){
+    printf "\e[33m%s\e[0m\n" "$*" 1>&2;
+}
+
+ok(){
+    printf "\e[32m%s\e[0m\n" "$*";
+}
+
+exists(){
+    command -v "$1" >/dev/null 2>&1;
+}
+
+iso_now(){
+    date -Iseconds;
+}
 
 # POSIX-friendly realpath fallback (prefers python3, then readlink -f)
-realpath_f(){ python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null || readlink -f "$1"; }
+realpath_f(){
+    python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null || readlink -f "$1";
+}
 
 # Return just the names of installed commands (user or system)
 _get_installed_cmd_names() {
@@ -160,8 +214,8 @@ _pick_test_target(){
 }
 
 _fzf(){ 
-	command -v fzf >/dev/null 2>&1; 
-	}
+    command -v fzf >/dev/null 2>&1; 
+    }
 
 _tui_pick_install_target(){
   # Lists files/dirs from CWD for Install. Return selection on stdout.
@@ -174,7 +228,7 @@ _tui_pick_install_target(){
     sel="$(printf "%s\n" "${items[@]}" \
       | sed 's#^\./##' \
       | while read -r p; do [[ -d "$p" ]] && echo "dir  $p" || echo "file $p"; done \
-      | fzf --prompt="Install > " --height=60% --reverse --expect=enter --ansi \
+      | fzf --prompt="Install > " --height=60% --reverse --expect=enter --ansi  --bind 'esc:abort'\
       | tail -n +2 | sed 's/^.... //')"
     [[ -n "$sel" ]] && printf "%s\n" "$sel"
     return
@@ -411,8 +465,8 @@ ui_init(){
 }
 
 ui_hr(){ 
-	printf "%s\n" "$(printf '─%.0s' $(seq 1 "${1:-$UI_WIDTH}"))"; 
-	}
+    printf "%s\n" "$(printf '─%.0s' $(seq 1 "${1:-$UI_WIDTH}"))"; 
+    }
 
 shorten_path() {
   local p="${1-}" max="${2:-$((UI_WIDTH-10))}"
@@ -431,8 +485,8 @@ shorten_path() {
 }
 
 ui_kv(){
-	printf "%s%-10s%s %s\n" "$UI_DIM" "$1" "$UI_RESET" "$2"; 
-	}
+    printf "%s%-10s%s %s\n" "$UI_DIM" "$1" "$UI_RESET" "$2"; 
+    }
 
 
 
@@ -724,9 +778,9 @@ PY
 }
 
 _app_entry(){
-	local appdir="$1"; local name; name=$(basename "$appdir"); echo "$appdir/bin/$name"; 
+    local appdir="$1"; local name; name=$(basename "$appdir"); echo "$appdir/bin/$name"; 
 }
-	
+    
 _make_shim(){
   local name="$1" entry="$2" shim="$BIN_DIR/$name"
   printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"
@@ -1058,7 +1112,10 @@ _uninstall_app_system(){
 # --------------------------------------------------------------------------------------------------
 # Remote file fetch (curl/wget)
 # --------------------------------------------------------------------------------------------------
-is_url(){ [[ "$1" =~ ^https?:// ]]; }
+is_url(){
+    [[ "$1" =~ ^https?:// ]];
+}
+
 fetch_remote(){
   local url="$1" outdir fname out
   outdir=$(mktemp -d)
@@ -1246,15 +1303,19 @@ op_list_ranger() {
     __bm_list_tsv | sort -t $'\t' -k1,1 -k2,2 |
     fzf --ansi --border --height=100% --layout=reverse \
         --delimiter=$'\t' --with-nth=1,2,3 \
-        --preview 'binman __internal:preview {}' \
+        --preview 'bash -c '\''exec "$BINMAN_SELF" --_preview_fields "$1" "$2" "$3" "$4" "$5"'\'' sh {1} {2} {3} {4} {5}' \
         --preview-window=right,60%,wrap \
-        --bind "d:execute-silent(bash -c 'binman doctor \"\$1\" >/dev/null 2>&1' _ {2})+refresh-preview" \
-        --bind "u:execute-silent(bash -c 'binman uninstall \"\$1\" >/dev/null 2>&1' _ {2})+reload(binman __internal:list)" \
-        --bind 'ctrl-r:reload(binman __internal:list)' \
+        --bind 'd:execute-silent(bash -c '\''exec "$BINMAN_SELF" doctor >/dev/null 2>&1'\'' sh)+refresh-preview' \
+        --bind 'u:execute-silent(bash -c '\''exec "$BINMAN_SELF" uninstall "$1" >/dev/null 2>&1'\'' sh {2})+reload(bash -c '\''exec "$BINMAN_SELF" __internal:list'\'' sh)' \
+        --bind 'ctrl-r:reload(bash -c '\''exec "$BINMAN_SELF" __internal:list'\'' sh)' \
+        --bind 'esc:abort' \
+        --header="↑↓ navigate • Enter select • ESC cancel" \
         --prompt='BinMan ▸ ' \
         --expect=enter,d,u,ctrl-r \
       || true
   )"
+
+
 
   [[ -z "$out" ]] && return 0
   key="$(printf '%s\n' "$out" | head -n1)"
@@ -1271,7 +1332,7 @@ op_list_ranger() {
 
 # Keep legacy entry for any old callers; now just proxies to the env summary.
 op_doctor(){ 
-	doctor_env;
+    doctor_env;
 }
 
 # Environment summary (+ optional PATH patch)
@@ -1317,9 +1378,8 @@ doctor_env() {
 }
 
 # ---- Per‑app helpers ---------------------------------------------------------
-
 _apps_dir(){
-	[[ $SYSTEM_MODE -eq 1 ]] && echo "${SYSTEM_APPS}" || echo "${APP_STORE}";
+    [[ $SYSTEM_MODE -eq 1 ]] && echo "${SYSTEM_APPS}" || echo "${APP_STORE}";
 }
 
 _list_apps(){
@@ -1473,9 +1533,13 @@ op_update(){
 # --------------------------------------------------------------------------------------------------
 # BACKUP & RESTORE — archive management (zip preferred; tar.gz fallback)
 # --------------------------------------------------------------------------------------------------
-_backup_filename_default(){ local ext="$1"; local ts; ts=$(date +%Y%m%d-%H%M%S); echo "binman_backup-${ts}.${ext}"; }
+_backup_filename_default(){
+    local ext="$1"; 
+    local ts; 
+    ts=$(date +%Y%m%d-%H%M%S); 
+    echo "binman_backup-${ts}.${ext}";
+}
 
-# ----- Backup subset (build a temp tree and reuse op_backup archiver) --------
 op_backup_subset(){
   # ARGS: output filename (optional) + selected rows on stdin ("cmd  name" / "app  name")
   # Example use:
@@ -2896,7 +2960,7 @@ binman_tui(){
 }
 
 _binman_rb_dir(){ 
-	echo "${XDG_STATE_HOME:-$HOME/.local/state}/binman/rollback"; 
+    echo "${XDG_STATE_HOME:-$HOME/.local/state}/binman/rollback"; 
 }
 
 _cmd_binman_rollback(){
@@ -2999,8 +3063,35 @@ __bm_preview() {
   fi
 }
 
+# Internal router for hidden subcommands used by fzf
+
+# Fast path for hidden internal calls (used by fzf preview/reload)
+if [[ "${1:-}" == __internal:* ]]; then
+  __bm_internal "$1" "${@:2}"
+  exit $?
+fi
+
+__bm_internal(){
+    local sub="$1"; shift || true
+  case "$sub" in
+    __internal:list)
+      _bm_list_tsv
+      return 0 ;;
+    __internal:preview)
+      _bm_preview "$@"
+      return 0 ;;
+  esac
+  return 1
+}
+# __BINMAN_INTERNAL_FASTPATH__
+if [[ "${1:-}" == __internal:* ]]; then
+  __bm_internal "$1" "${@:2}"
+  exit $?
+fi
+
+
 _exists(){
-	command -v "$1" >/dev/null 2>&1;
+    command -v "$1" >/dev/null 2>&1;
 }
 
 _binman_preview() {
@@ -3133,6 +3224,12 @@ if parse_common_opts "$@"; then exit 0; fi
 set -- "${ARGS_OUT[@]}"
 
 ACTION="${1:-}"; shift || true
+# Handle hidden internal calls used by fzf list UI
+if [[ "${ACTION:-}" == __internal:* ]]; then
+  __bm_internal "$ACTION" "$@"
+  exit $?
+fi
+
 case "$ACTION" in
   install)
     if [[ -n "$MANIFEST_FILE" ]]; then op_install_manifest "$MANIFEST_FILE"; else op_install "$@"; fi;;
