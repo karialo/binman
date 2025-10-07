@@ -76,6 +76,7 @@ FIX_PATH=0         # doctor --fix-path flag
 SYSTEM_MODE=0      # target system dirs
 MANIFEST_FILE=""   # bulk install manifest
 QUIET=0            # less noisy
+JSON_MODE=0        # machine-readable output flag
 
 ENTRY_CMD=""      # custom entry command for apps
 ENTRY_CWD=""      # optional subdir to cd into before running entry
@@ -105,6 +106,32 @@ warn(){
 
 ok(){
     printf "\e[32m%s\e[0m\n" "$*";
+}
+
+json_escape(){
+  local s="${1-}"
+  s=${s//\/\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\f'/\\f}
+  s=${s//$'\b'/\\b}
+  printf '%s' "$s"
+}
+
+emit_json_object(){
+  (( JSON_MODE )) || return 0
+  local first=1 key value
+  printf '{'
+  for kv in "$@"; do
+    key="${kv%%=*}"
+    value="${kv#*=}"
+    (( first )) || printf ','
+    printf '"%s":"%s"' "$(json_escape "$key")" "$(json_escape "$value")"
+    first=0
+  done
+  printf '}\n'
 }
 
 exists(){
@@ -308,7 +335,7 @@ usage(){ cat <<USAGE
 ${SCRIPT_NAME} v${VERSION}
 Manage personal CLI scripts in ${BIN_DIR} and apps in ${APP_STORE}
 
-USAGE: ${SCRIPT_NAME} <install|uninstall|list|update|doctor|new|wizard|tui|backup|restore|self-update|rollback|bundle|test|version|help> [args] [options]
+USAGE: ${SCRIPT_NAME} <install|uninstall|verify|list|update|doctor|new|wizard|tui|backup|restore|self-update|rollback|bundle|test|version|help> [args] [options]
        ${SCRIPT_NAME} --backup [FILE]
        ${SCRIPT_NAME} --restore FILE [--force]
 
@@ -1005,28 +1032,42 @@ ask_yesno(){
 # --------------------------------------------------------------------------------------------------
 _install_app(){
   ensure_apps; ensure_bin
-  local src="$1" name dest
+  local src="$1" name dest mode="copy"
   name=$(basename "$src"); dest="$APP_STORE/$name"
 
   rm -rf "$dest"
-  [[ "$COPY_MODE" == "link" ]] && ln -s "$src" "$dest" || cp -a "$src" "$dest"
+  if [[ "$COPY_MODE" == "link" ]]; then
+    ln -s "$src" "$dest"
+    mode="link"
+  else
+    cp -a "$src" "$dest"
+  fi
+
+  local version entry entry_kind="default"
 
   # Explicit --entry wins
   if [[ -n "$ENTRY_CMD" ]]; then
+    entry="$ENTRY_CMD"
     if (( VENV_MODE )); then
       _make_shim_cmd_venv "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD" "$REQ_FILE" "$BOOT_PY"
-      ok "App installed: $name → $dest (entry: $ENTRY_CMD; venv on)"
+      entry_kind="custom-venv"
     else
       _make_shim_cmd "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD"
-      ok "App installed: $name → $dest (custom entry)"
+      entry_kind="custom"
     fi
+    version="$(script_version "$dest")"
+    printf 'installed\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$dest" "$version" "$mode" "$entry_kind" "$entry"
     return 0
   fi
 
   # Conventional layout?
   if [[ -x "$dest/bin/$name" ]]; then
-    _make_shim "$name" "$(_app_entry "$dest")"
-    ok "App installed: $name → $dest (v$(script_version "$dest"))"
+    local entry_path
+    entry_path="$(_app_entry "$dest")"
+    _make_shim "$name" "$entry_path"
+    entry="$entry_path"
+    version="$(script_version "$dest")"
+    printf 'installed\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$dest" "$version" "$mode" "$entry_kind" "$entry"
     return 0
   fi
 
@@ -1036,42 +1077,55 @@ _install_app(){
   local cwd="${triplet%%|*}"; local req="${triplet#*|}"
 
   if [[ -n "$cmd" ]]; then
+    entry="$cmd"
     if (( VENV_MODE )) || [[ "$cmd" == python* || "$cmd" == */python* ]]; then
       _make_shim_cmd_venv "$name" "$dest" "$cmd" "$cwd" "${REQ_FILE:-$req}" "$BOOT_PY"
-      ok "App installed: $name → $dest (entry: $cmd; venv on)"
+      entry_kind="detected-venv"
     else
       _make_shim_cmd "$name" "$dest" "$cmd" "$cwd"
-      ok "App installed: $name → $dest (entry: $cmd)"
+      entry_kind="detected"
     fi
+    version="$(script_version "$dest")"
+    printf 'installed\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$dest" "$version" "$mode" "$entry_kind" "$entry"
     return 0
   fi
 
+  rm -rf "$dest"
   err "App '$name' missing bin/$name and no entry could be detected. Try: --entry 'python3 path/to/main.py' [--venv --req requirements.txt]"
-  return 2
+  return 5
 }
 
 _install_app_system(){
   ensure_system_write; ensure_system_dirs
-  local src="$1" name dest
+  local src="$1" name dest mode="copy"
   name=$(basename "$src"); dest="$SYSTEM_APPS/$name"
 
   rm -rf "$dest"
-  [[ "$COPY_MODE" == "link" ]] && ln -s "$src" "$dest" || cp -a "$src" "$dest"
+  cp -a "$src" "$dest"
+
+  local version entry entry_kind="default"
 
   if [[ -n "$ENTRY_CMD" ]]; then
+    entry="$ENTRY_CMD"
     if (( VENV_MODE )); then
       _make_shim_cmd_venv_system "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD" "$REQ_FILE" "$BOOT_PY"
-      ok "App installed (system): $name → $dest (entry: $ENTRY_CMD; venv on)"
+      entry_kind="custom-venv"
     else
       _make_shim_cmd_system "$name" "$dest" "$ENTRY_CMD" "$ENTRY_CWD"
-      ok "App installed (system): $name → $dest (custom entry)"
+      entry_kind="custom"
     fi
+    version="$(script_version "$dest")"
+    printf 'installed\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$dest" "$version" "$mode" "$entry_kind" "$entry"
     return 0
   fi
 
   if [[ -x "$dest/bin/$name" ]]; then
-    _make_shim_system "$name" "$(_app_entry "$dest")"
-    ok "App installed (system): $name → $dest (v$(script_version "$dest"))"
+    local entry_path
+    entry_path="$(_app_entry "$dest")"
+    _make_shim_system "$name" "$entry_path"
+    entry="$entry_path"
+    version="$(script_version "$dest")"
+    printf 'installed\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$dest" "$version" "$mode" "$entry_kind" "$entry"
     return 0
   fi
 
@@ -1080,31 +1134,39 @@ _install_app_system(){
   local cwd="${triplet%%|*}"; local req="${triplet#*|}"
 
   if [[ -n "$cmd" ]]; then
+    entry="$cmd"
     if (( VENV_MODE )) || [[ "$cmd" == python* || "$cmd" == */python* ]]; then
       _make_shim_cmd_venv_system "$name" "$dest" "$cmd" "$cwd" "${REQ_FILE:-$req}" "$BOOT_PY"
-      ok "App installed (system): $name → $dest (entry: $cmd; venv on)"
+      entry_kind="detected-venv"
     else
       _make_shim_cmd_system "$name" "$dest" "$cmd" "$cwd"
-      ok "App installed (system): $name → $dest (entry: $cmd)"
+      entry_kind="detected"
     fi
+    version="$(script_version "$dest")"
+    printf 'installed\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$dest" "$version" "$mode" "$entry_kind" "$entry"
     return 0
   fi
 
+  rm -rf "$dest"
   err "App '$name' missing bin/$name and no entry could be detected. Try: --entry 'python3 path/to/main.py' [--venv --req requirements.txt]"
-  return 2
+  return 5
 }
 
 _uninstall_app(){
   local name="$1" dest="$APP_STORE/$name" shim="$BIN_DIR/$name"
-  [[ -e "$shim" ]] && rm -f "$shim" && ok "Removed shim: $shim"
-  [[ -e "$dest" ]] && rm -rf "$dest" && ok "Removed app: $dest"
+  local shim_removed=0 dest_removed=0
+  if [[ -e "$shim" ]]; then rm -f "$shim"; shim_removed=1; fi
+  if [[ -e "$dest" ]]; then rm -rf "$dest"; dest_removed=1; fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$shim" "$dest" "$shim_removed" "$dest_removed"
 }
 
 _uninstall_app_system(){
   ensure_system_write
   local name="$1" dest="$SYSTEM_APPS/$name" shim="$SYSTEM_BIN/$name"
-  [[ -e "$shim" ]] && rm -f "$shim" && ok "Removed shim: $shim"
-  [[ -e "$dest" ]] && rm -rf "$dest" && ok "Removed app: $dest"
+  local shim_removed=0 dest_removed=0
+  if [[ -e "$shim" ]]; then rm -f "$shim"; shim_removed=1; fi
+  if [[ -e "$dest" ]]; then rm -rf "$dest"; dest_removed=1; fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$shim" "$dest" "$shim_removed" "$dest_removed"
 }
 
 
@@ -1121,9 +1183,23 @@ fetch_remote(){
   outdir=$(mktemp -d)
   fname="${2:-$(basename "${url%%\?*}")}"
   out="${outdir}/${fname}"
-  if exists curl; then curl -fsSL "$url" -o "$out"
-  elif exists wget; then wget -q "$url" -O "$out"
-  else err "Need curl or wget for remote installs"; return 2; fi
+  if exists curl; then
+    if ! curl -fsSL "$url" -o "$out"; then
+      rm -rf "$outdir"
+      err "Download failed: $url"
+      return 4
+    fi
+  elif exists wget; then
+    if ! wget -q "$url" -O "$out"; then
+      rm -rf "$outdir"
+      err "Download failed: $url"
+      return 4
+    fi
+  else
+    rm -rf "$outdir"
+    err "Need curl or wget for remote installs"
+    return 4
+  fi
   echo "$out"
 }
 
@@ -1171,77 +1247,199 @@ op_install(){
   # Capture rollback snapshot before mutating
   stash_before_change >/dev/null
 
-  local count=0
-  for src in "${targets[@]}"; do
+  local count=0 exit_code=0
+  local target_bin="$BIN_DIR"
+  local target_apps="$APP_STORE"
+  (( SYSTEM_MODE )) && target_bin="$SYSTEM_BIN"
+  (( SYSTEM_MODE )) && target_apps="$SYSTEM_APPS"
+
+  local original src
+  for original in "${targets[@]}"; do
+    src="$original"
+
+    # --- Normalize picker rows / quoting ------------------------------------
+    # If the source came from fzf as "TYPE<TAB>PATH", take only the PATH (last field).
+    if [[ "$src" == *$'\t'* ]]; then
+      src="${src##*$'\t'}"
+    fi
+    # Strip wrapping single/double quotes if present.
+    if [[ ${#src} -ge 2 ]]; then
+      if { [[ "${src:0:1}" == "'" && "${src: -1}" == "'" ]] || [[ "${src:0:1}" == '"' && "${src: -1}" == '"' ]]; }; then
+        src="${src:1:${#src}-2}"
+      fi
+    fi
+    # Collapse any accidental trailing spaces from TUI rows.
+    src="${src%"${src##*[![:space:]]}"}"
+
     # 1) Support URL installs
     if is_url "$src"; then
-      local fetched; fetched=$(fetch_remote "$src") || { warn "Fetch failed: $src"; continue; }
-      src="$fetched"
+      local fetched
+      if fetched=$(fetch_remote "$src"); then
+        src="$fetched"
+      else
+        local rc=$?
+        (( rc > exit_code )) && exit_code=$rc
+        warn "Fetch failed: $src"
+        emit_json_object \
+          "action=install" \
+          "status=error" \
+          "type=remote" \
+          "name=$src" \
+          "code=$rc" \
+          "message=download_failed"
+        continue
+      fi
     fi
 
-    # 2) App install (directory with bin/<name> entry)
+    # 2) App install (directory)
     if [[ -d "$src" ]]; then
-      if (( SYSTEM_MODE )); then _install_app_system "$src"; else _install_app "$src"; fi
+      local result rc
+      if (( SYSTEM_MODE )); then
+        if ! result=$(_install_app_system "$src"); then
+          rc=$?
+          (( rc > exit_code )) && exit_code=$rc
+          emit_json_object \
+            "action=install" \
+            "status=error" \
+            "type=app" \
+            "name=$(basename "$src")" \
+            "message=entry_not_detected"
+          continue
+        fi
+      else
+        if ! result=$(_install_app "$src"); then
+          rc=$?
+          (( rc > exit_code )) && exit_code=$rc
+          emit_json_object \
+            "action=install" \
+            "status=error" \
+            "type=app" \
+            "name=$(basename "$src")" \
+            "message=entry_not_detected"
+          continue
+        fi
+      fi
+
+      IFS=$'\t' read -r status name dest_path version mode entry_kind entry_cmd <<<"$result"
+      emit_json_object \
+        "action=install" \
+        "status=$status" \
+        "type=app" \
+        "name=$name" \
+        "path=$dest_path" \
+        "version=$version" \
+        "mode=$mode" \
+        "entry_kind=$entry_kind" \
+        "entry=$entry_cmd"
+
+      if (( ! JSON_MODE )); then
+        local suffix=""
+        case "$entry_kind" in
+          custom) suffix="(custom entry)" ;;
+          custom-venv) suffix="(entry: $entry_cmd; venv on)" ;;
+          detected) suffix="(entry: $entry_cmd)" ;;
+          detected-venv) suffix="(entry: $entry_cmd; venv on)" ;;
+          *) suffix="(v$version)" ;;
+        esac
+        ok "App installed: $name → $dest_path ${suffix}"
+      fi
+
       count=$((count+1))
       continue
     fi
 
     # 3) Single-file install
-    [[ -f "$src" ]] || { warn "Skip (not a file): $src"; continue; }
-
-    # Destination path: drop extension for final name
-    local base dst tmp
-    base=$(basename "$src")
-    if (( SYSTEM_MODE )); then
-      dst="${SYSTEM_BIN}/${base%.*}"
-      ensure_system_write; ensure_system_dirs
-    else
-      dst="${BIN_DIR}/${base%.*}"
-      ensure_bin
+    if [[ ! -f "$src" ]]; then
+      warn "Skip (not a file): $src"
+      emit_json_object \
+        "action=install" \
+        "status=skipped" \
+        "type=cmd" \
+        "name=$src" \
+        "reason=not_a_file"
+      continue
     fi
 
-    # Skip unless --force when dest already exists
+    local base dst tmp mode="copy" name version
+    base=$(basename "$src")
+    if (( SYSTEM_MODE )); then
+      dst="${target_bin}/${base%.*}"
+      ensure_system_write; ensure_system_dirs
+    else
+      dst="${target_bin}/${base%.*}"
+      ensure_bin
+    fi
+    name=$(basename "$dst")
+
     if [[ -e "$dst" && $FORCE -ne 1 ]]; then
       warn "Exists: $(basename "$dst") (use --force)"
+      emit_json_object \
+        "action=install" \
+        "status=skipped" \
+        "type=cmd" \
+        "name=$name" \
+        "path=$dst" \
+        "reason=exists"
       continue
     fi
 
     if [[ "$COPY_MODE" == "link" && $SYSTEM_MODE -eq 0 ]]; then
-      # Dev-friendly: symlink (only for user scope)
       ln -sf "$src" "$dst"
-      ok "Installed: $dst (symlink) (v$(script_version "$src"))"
+      mode="link"
+      version="$(script_version "$src")"
     else
-      # Atomic copy: write to tmp then mv into place
       tmp="$(mktemp "${dst}.tmp.XXXXXX")"
       cp "$src" "$tmp"
       chmod +x "$tmp"
 
-      # Light syntax sanity for bash/sh shebangs (non-blocking for other types)
       if head -n1 "$tmp" | grep -qE '/(ba)?sh'; then
         if ! bash -n "$tmp" 2>/dev/null; then
           rm -f "$tmp"
           err "Syntax check failed; keeping existing $(basename "$dst")."
+          emit_json_object \
+            "action=install" \
+            "status=error" \
+            "type=cmd" \
+            "name=$name" \
+            "path=$dst" \
+            "message=syntax_check_failed"
+          (( exit_code < 5 )) && exit_code=5
           continue
         fi
       fi
 
       mv -f "$tmp" "$dst"
-      ok "Installed: $dst (v$(script_version "$src"))"
+      version="$(script_version "$dst")"
+    fi
+
+    emit_json_object \
+      "action=install" \
+      "status=installed" \
+      "type=cmd" \
+      "name=$name" \
+      "path=$dst" \
+      "mode=$mode" \
+      "version=$version"
+
+    if (( ! JSON_MODE )); then
+      if [[ "$mode" == "link" ]]; then
+        ok "Installed: $dst (symlink) (v$version)"
+      else
+        ok "Installed: $dst (v$version)"
+      fi
     fi
 
     count=$((count+1))
   done
 
-  # Path tip for user mode
-  if (( SYSTEM_MODE )); then :; else
+  if (( SYSTEM_MODE == 0 )); then
     ! in_path && warn "${BIN_DIR} not in PATH. Add: export PATH=\"${BIN_DIR}:\$PATH\""
   fi
 
   rehash_shell
-  say "$count item(s) installed."
+  (( JSON_MODE )) || say "$count item(s) installed."
+  return $exit_code
 }
-
-
 
 # --------------------------------------------------------------------------------------------------
 # UNINSTALL — remove scripts or apps (user/system)
@@ -1249,20 +1447,247 @@ op_install(){
 op_uninstall(){
   stash_before_change >/dev/null
   local count=0
+  local target_bin="$BIN_DIR"
+  local target_apps="$APP_STORE"
+  (( SYSTEM_MODE )) && target_bin="$SYSTEM_BIN"
+  (( SYSTEM_MODE )) && target_apps="$SYSTEM_APPS"
+
   for name in "$@"; do
     if (( SYSTEM_MODE )); then
-      [[ -e "$SYSTEM_APPS/$name" ]] && { _uninstall_app_system "$name"; count=$((count+1)); continue; }
-      local dst="$SYSTEM_BIN/${name%.*}"
-      [[ -e "$dst" ]] && { rm -f "$dst"; ok "Removed: $dst"; count=$((count+1)); } || warn "Not found: $name"
+      if [[ -e "$target_apps/$name" ]]; then
+        local info
+        info=$(_uninstall_app_system "$name")
+        IFS=$'\t' read -r _ shim_path dest_path shim_removed dest_removed <<<"$info"
+        local status="missing"
+        (( shim_removed || dest_removed )) && status="removed"
+        emit_json_object \
+          "action=uninstall" \
+          "status=$status" \
+          "type=app" \
+          "name=$name" \
+          "path=$dest_path" \
+          "shim=$shim_path" \
+          "shim_removed=$shim_removed" \
+          "app_removed=$dest_removed"
+        if (( shim_removed )); then (( ! JSON_MODE )) && ok "Removed shim: $shim_path"; fi
+        if (( dest_removed )); then (( ! JSON_MODE )) && ok "Removed app: $dest_path"; fi
+        (( shim_removed || dest_removed )) && count=$((count+1))
+        continue
+      fi
+
+      ensure_system_write
+      local dst="$target_bin/${name%.*}"
+      if [[ -e "$dst" ]]; then
+        rm -f "$dst"
+        emit_json_object \
+          "action=uninstall" \
+          "status=removed" \
+          "type=cmd" \
+          "name=$name" \
+          "path=$dst"
+        (( ! JSON_MODE )) && ok "Removed: $dst"
+        count=$((count+1))
+      else
+        warn "Not found: $name"
+        emit_json_object \
+          "action=uninstall" \
+          "status=missing" \
+          "type=cmd" \
+          "name=$name"
+      fi
     else
-      [[ -e "$APP_STORE/$name" ]] && { _uninstall_app "$name"; count=$((count+1)); continue; }
-      local dst="$BIN_DIR/${name%.*}"
-      [[ -e "$dst" ]] && { rm -f "$dst"; ok "Removed: $dst"; count=$((count+1)); } || warn "Not found: $name"
+      if [[ -e "$target_apps/$name" ]]; then
+        local info
+        info=$(_uninstall_app "$name")
+        IFS=$'\t' read -r _ shim_path dest_path shim_removed dest_removed <<<"$info"
+        local status="missing"
+        (( shim_removed || dest_removed )) && status="removed"
+        emit_json_object \
+          "action=uninstall" \
+          "status=$status" \
+          "type=app" \
+          "name=$name" \
+          "path=$dest_path" \
+          "shim=$shim_path" \
+          "shim_removed=$shim_removed" \
+          "app_removed=$dest_removed"
+        if (( shim_removed )); then (( ! JSON_MODE )) && ok "Removed shim: $shim_path"; fi
+        if (( dest_removed )); then (( ! JSON_MODE )) && ok "Removed app: $dest_path"; fi
+        (( shim_removed || dest_removed )) && count=$((count+1))
+        continue
+      fi
+
+      local dst="$target_bin/${name%.*}"
+      if [[ -e "$dst" ]]; then
+        rm -f "$dst"
+        emit_json_object \
+          "action=uninstall" \
+          "status=removed" \
+          "type=cmd" \
+          "name=$name" \
+          "path=$dst"
+        (( ! JSON_MODE )) && ok "Removed: $dst"
+        count=$((count+1))
+      else
+        warn "Not found: $name"
+        emit_json_object \
+          "action=uninstall" \
+          "status=missing" \
+          "type=cmd" \
+          "name=$name"
+      fi
     fi
   done
+
   rehash_shell
-  say "$count item(s) removed."
+  (( JSON_MODE )) || say "$count item(s) removed."
 }
+
+
+
+# --------------------------------------------------------------------------------------------------
+# VERIFY — ensure installed commands/apps have their shims and entries intact
+# --------------------------------------------------------------------------------------------------
+op_verify(){
+  local names=("$@")
+  local verified_any=0
+  local exit_code=0
+  local target_bin="$BIN_DIR"
+  local target_apps="$APP_STORE"
+  (( SYSTEM_MODE )) && target_bin="$SYSTEM_BIN"
+  (( SYSTEM_MODE )) && target_apps="$SYSTEM_APPS"
+
+  local cmd_targets=()
+  local app_targets=()
+  if (( ${#names[@]} == 0 )); then
+    mapfile -t cmd_targets < <(_get_installed_cmd_names)
+    mapfile -t app_targets < <(_get_installed_app_names)
+  else
+    declare -A seen_cmd=()
+    declare -A seen_app=()
+    for item in "${names[@]}"; do
+      local found=0
+      if [[ -e "$target_apps/$item" && -z "${seen_app[$item]:-}" ]]; then
+        app_targets+=("$item")
+        seen_app[$item]=1
+        found=1
+      fi
+      local cmd_name="${item%.*}"
+      if [[ -e "$target_bin/$cmd_name" && -z "${seen_cmd[$cmd_name]:-}" ]]; then
+        cmd_targets+=("$cmd_name")
+        seen_cmd[$cmd_name]=1
+        found=1
+      fi
+      if (( ! found )); then
+        emit_json_object \
+          "action=verify" \
+          "status=missing" \
+          "type=unknown" \
+          "name=$item"
+        (( ! JSON_MODE )) && err "Verify failed: $item (not installed)"
+        exit_code=3
+      fi
+    done
+  fi
+
+  for name in "${cmd_targets[@]}"; do
+    verified_any=1
+    local path="$target_bin/$name"
+    local status="ok" message="" version=""
+    if [[ ! -e "$path" ]]; then
+      status="error"
+      message="missing"
+    else
+      version="$(script_version "$path")"
+      if [[ ! -x "$path" ]]; then
+        status="error"
+        message="not executable"
+      fi
+    fi
+    [[ $status == error ]] && exit_code=3
+    emit_json_object \
+      "action=verify" \
+      "status=$status" \
+      "type=cmd" \
+      "name=$name" \
+      "path=$path" \
+      "version=$version" \
+      "message=$message"
+    if (( ! JSON_MODE )); then
+      if [[ $status == ok ]]; then
+        ok "Verified cmd: $name ($path)"
+      else
+        err "Verify failed cmd: $name — $message"
+      fi
+    fi
+  done
+
+  for name in "${app_targets[@]}"; do
+    verified_any=1
+    local path="$target_apps/$name"
+    local entry="$path/bin/$name"
+    local shim="$target_bin/$name"
+    local version="" status="ok"
+    local message_parts=()
+
+    if [[ ! -e "$path" ]]; then
+      status="error"
+      message_parts+=("app missing")
+    else
+      version="$(script_version "$path")"
+      if [[ ! -e "$entry" ]]; then
+        status="error"
+        message_parts+=("missing entry bin/$name")
+      elif [[ ! -x "$entry" ]]; then
+        status="error"
+        message_parts+=("entry not executable")
+      fi
+      if [[ ! -e "$shim" ]]; then
+        status="error"
+        message_parts+=("shim missing")
+      elif [[ ! -x "$shim" ]]; then
+        status="error"
+        message_parts+=("shim not executable")
+      fi
+    fi
+
+    [[ $status == error ]] && exit_code=3
+
+    local message=""
+    if (( ${#message_parts[@]} )); then
+      message=$(printf '%s; ' "${message_parts[@]}")
+      message=${message%; }
+    fi
+
+    emit_json_object \
+      "action=verify" \
+      "status=$status" \
+      "type=app" \
+      "name=$name" \
+      "path=$path" \
+      "entry=$entry" \
+      "shim=$shim" \
+      "version=$version" \
+      "message=$message"
+
+    if (( ! JSON_MODE )); then
+      if [[ $status == ok ]]; then
+        ok "Verified app: $name ($entry)"
+      else
+        err "Verify failed app: $name — $message"
+      fi
+    fi
+  done
+
+  if (( ! JSON_MODE )) && (( verified_any == 0 )) && (( exit_code == 0 )); then
+    say "Nothing to verify."
+  fi
+
+  (( exit_code )) && return 3 || return 0
+}
+
+
+
 
 
 
@@ -1327,16 +1752,31 @@ op_list_ranger() {
 
 
 # --------------------------------------------------------------------------------------------------
-# DOCTOR — environment + per‑app healing (venv/deps/hook)
+# DOCTOR — environment + per-app healing (venv/deps/hook)
 # --------------------------------------------------------------------------------------------------
 
 # Keep legacy entry for any old callers; now just proxies to the env summary.
-op_doctor(){ 
-    doctor_env;
+# Flags:
+#   --quiet      : suppress any pauses/handoffs; same as BINMAN_NONINTERACTIVE=1
+#   --fix-path   : attempt PATH patching in common shells
+op_doctor(){
+  local QUIET=0
+  FIX_PATH=${FIX_PATH:-0}
+
+  while (( $# )); do
+    case "$1" in
+      --quiet|-q) QUIET=1; shift ;;
+      --fix-path) FIX_PATH=1; shift ;;
+      *) break ;;
+    esac
+  done
+
+  doctor_env "$QUIET"
 }
 
 # Environment summary (+ optional PATH patch)
 doctor_env() {
+  local quiet="${1:-0}"
   local mode bin_dir app_store
   mode=$([[ $SYSTEM_MODE -eq 1 ]] && echo system || echo user)
   bin_dir=$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN" || echo "$BIN_DIR")
@@ -1360,7 +1800,7 @@ doctor_env() {
   fi
 
   # Optional: safer PATH patching across shells
-  if [[ $FIX_PATH -eq 1 ]]; then
+  if [[ ${FIX_PATH:-0} -eq 1 ]]; then
     local line='export PATH="$HOME/.local/bin:$PATH"'
     for f in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bashrc" "$HOME/.profile"; do
       [[ -f "$f" ]] || continue
@@ -1375,7 +1815,16 @@ doctor_env() {
       }
     fi
   fi
+
+  # --- Non-interactive guard: never pause or chain to other menus ---
+  if [[ -n "${BINMAN_NONINTERACTIVE:-}" || "$quiet" -eq 1 || ! -t 0 || ! -t 1 ]]; then
+    return 0
+  fi
+
+  # Interactive mode simply returns; no hidden prompts, no chaining.
+  return 0
 }
+
 
 # ---- Per‑app helpers ---------------------------------------------------------
 _apps_dir(){
@@ -2756,6 +3205,7 @@ parse_common_opts(){
       --fix-path) FIX_PATH=1; shift;;
       --manifest) MANIFEST_FILE="$2"; shift 2;;
       --quiet) QUIET=1; shift;;
+      --json) JSON_MODE=1; QUIET=1; shift;;
       --backup) shift || true; op_backup "${1:-}"; return 0;;
       --restore) shift || true; op_restore "${1:-}"; return 0;;
       --) shift; while [[ $# -gt 0 ]]; do ARGS_OUT+=("$1"); shift; done;;
@@ -3234,6 +3684,7 @@ case "$ACTION" in
   install)
     if [[ -n "$MANIFEST_FILE" ]]; then op_install_manifest "$MANIFEST_FILE"; else op_install "$@"; fi;;
   uninstall) op_uninstall "$@";;
+  verify) op_verify "$@";;
   list)
     if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
       op_list_ranger
@@ -3254,6 +3705,6 @@ case "$ACTION" in
   test) op_test "$@";;
   tui|"") binman_tui;;
   version) say "${SCRIPT_NAME} v${VERSION}";;
-  help|*) usage;;
+  help) usage;;
+  *) usage >&2; exit 2;;
 esac
-
