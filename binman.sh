@@ -1244,7 +1244,6 @@ op_install(){
   [[ -n "$FROM_DIR" ]] && mapfile -t targets < <(list_targets)
   [[ ${#targets[@]} -gt 0 ]] || { err "Nothing to install"; return 2; }
 
-  # Capture rollback snapshot before mutating
   stash_before_change >/dev/null
 
   local count=0 exit_code=0
@@ -1257,21 +1256,16 @@ op_install(){
   for original in "${targets[@]}"; do
     src="$original"
 
-    # --- Normalize picker rows / quoting ------------------------------------
-    # If the source came from fzf as "TYPE<TAB>PATH", take only the PATH (last field).
-    if [[ "$src" == *$'\t'* ]]; then
-      src="${src##*$'\t'}"
-    fi
-    # Strip wrapping single/double quotes if present.
+    # Normalize picker rows / quotes / trailing space
+    [[ "$src" == *$'\t'* ]] && src="${src##*$'\t'}"
     if [[ ${#src} -ge 2 ]]; then
       if { [[ "${src:0:1}" == "'" && "${src: -1}" == "'" ]] || [[ "${src:0:1}" == '"' && "${src: -1}" == '"' ]]; }; then
         src="${src:1:${#src}-2}"
       fi
     fi
-    # Collapse any accidental trailing spaces from TUI rows.
     src="${src%"${src##*[![:space:]]}"}"
 
-    # 1) Support URL installs
+    # URL fetch
     if is_url "$src"; then
       local fetched
       if fetched=$(fetch_remote "$src"); then
@@ -1281,56 +1275,26 @@ op_install(){
         (( rc > exit_code )) && exit_code=$rc
         warn "Fetch failed: $src"
         emit_json_object \
-          "action=install" \
-          "status=error" \
-          "type=remote" \
-          "name=$src" \
-          "code=$rc" \
-          "message=download_failed"
+          "action=install" "status=error" "type=remote" "name=$src" \
+          "code=$rc" "message=download_failed"
         continue
       fi
     fi
 
-    # 2) App install (directory)
+    # App directories
     if [[ -d "$src" ]]; then
       local result rc
       if (( SYSTEM_MODE )); then
-        if ! result=$(_install_app_system "$src"); then
-          rc=$?
-          (( rc > exit_code )) && exit_code=$rc
-          emit_json_object \
-            "action=install" \
-            "status=error" \
-            "type=app" \
-            "name=$(basename "$src")" \
-            "message=entry_not_detected"
-          continue
-        fi
+        result=$(_install_app_system "$src") || { rc=$?; (( rc > exit_code )) && exit_code=$rc; continue; }
       else
-        if ! result=$(_install_app "$src"); then
-          rc=$?
-          (( rc > exit_code )) && exit_code=$rc
-          emit_json_object \
-            "action=install" \
-            "status=error" \
-            "type=app" \
-            "name=$(basename "$src")" \
-            "message=entry_not_detected"
-          continue
-        fi
+        result=$(_install_app "$src") || { rc=$?; (( rc > exit_code )) && exit_code=$rc; continue; }
       fi
 
       IFS=$'\t' read -r status name dest_path version mode entry_kind entry_cmd <<<"$result"
       emit_json_object \
-        "action=install" \
-        "status=$status" \
-        "type=app" \
-        "name=$name" \
-        "path=$dest_path" \
-        "version=$version" \
-        "mode=$mode" \
-        "entry_kind=$entry_kind" \
-        "entry=$entry_cmd"
+        "action=install" "status=$status" "type=app" "name=$name" \
+        "path=$dest_path" "version=$version" "mode=$mode" \
+        "entry_kind=$entry_kind" "entry=$entry_cmd"
 
       if (( ! JSON_MODE )); then
         local suffix=""
@@ -1348,15 +1312,12 @@ op_install(){
       continue
     fi
 
-    # 3) Single-file install
+    # Single-file installs
     if [[ ! -f "$src" ]]; then
       warn "Skip (not a file): $src"
       emit_json_object \
-        "action=install" \
-        "status=skipped" \
-        "type=cmd" \
-        "name=$src" \
-        "reason=not_a_file"
+        "action=install" "status=skipped" "type=cmd" \
+        "name=$src" "reason=not_a_file"
       continue
     fi
 
@@ -1374,72 +1335,83 @@ op_install(){
     if [[ -e "$dst" && $FORCE -ne 1 ]]; then
       warn "Exists: $(basename "$dst") (use --force)"
       emit_json_object \
-        "action=install" \
-        "status=skipped" \
-        "type=cmd" \
-        "name=$name" \
-        "path=$dst" \
-        "reason=exists"
+        "action=install" "status=skipped" "type=cmd" \
+        "name=$name" "path=$dst" "reason=exists"
       continue
     fi
 
-    if [[ "$COPY_MODE" == "link" && $SYSTEM_MODE -eq 0 ]]; then
-      ln -sf "$src" "$dst"
-      mode="link"
-      version="$(script_version "$src")"
-    else
-      tmp="$(mktemp "${dst}.tmp.XXXXXX")"
-      cp "$src" "$tmp"
-      chmod +x "$tmp"
+    # use system tmp (not bin) and always clean up
+    tmp="$(mktemp "${TMPDIR:-/tmp}/${name}.XXXXXX")"
+    cp "$src" "$tmp"
+    chmod +x "$tmp"
 
-      if head -n1 "$tmp" | grep -qE '/(ba)?sh'; then
-        if ! bash -n "$tmp" 2>/dev/null; then
-          rm -f "$tmp"
-          err "Syntax check failed; keeping existing $(basename "$dst")."
-          emit_json_object \
-            "action=install" \
-            "status=error" \
-            "type=cmd" \
-            "name=$name" \
-            "path=$dst" \
-            "message=syntax_check_failed"
-          (( exit_code < 5 )) && exit_code=5
-          continue
-        fi
+    # Bash syntax sanity check
+    if head -n1 "$tmp" | grep -qE '/(ba)?sh'; then
+      if ! bash -n "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        err "Syntax check failed for $(basename "$dst")."
+        (( exit_code < 5 )) && exit_code=5
+        continue
+      fi
+    fi
+
+    # ---- Python venv auto-setup (stable payload in ~/.config/<AppName>) ----
+    if head -n1 "$tmp" | grep -q "python"; then
+      local cfgdir="$HOME/.config/$name"
+      local vdir="$cfgdir/.venv"
+      local payload="$cfgdir/app.py"
+      mkdir -p "$cfgdir"
+
+      if [[ ! -d "$vdir" ]]; then
+        say "Creating venv for $name..."
+        python3 -m venv "$vdir" || warn "Failed to create venv"
       fi
 
+      # copy validated script into a stable location
+      cp "$tmp" "$payload"
+      chmod +x "$payload"
+
+      # install requirements if present next to original src
+      if [[ -f "$(dirname "$src")/requirements.txt" ]]; then
+        say "Installing requirements for $name..."
+        "$vdir/bin/pip" install -r "$(dirname "$src")/requirements.txt" >/dev/null 2>&1 || warn "pip install failed"
+      fi
+
+      # launcher always uses venv + stable payload
+      cat >"$dst" <<EOF
+#!/usr/bin/env bash
+exec "$vdir/bin/python" "$payload" "\$@"
+EOF
+      chmod +x "$dst"
+      mode="venv"
+      version="$(script_version "$payload")"
+
+      rm -f "$tmp"
+
+      emit_json_object \
+        "action=install" "status=installed" "type=cmd" \
+        "name=$name" "path=$dst" "mode=venv" "version=$version"
+      (( ! JSON_MODE )) && ok "Installed: $name (venv @ $vdir)"
+    else
+      # non-Python: install checked file directly
       mv -f "$tmp" "$dst"
       version="$(script_version "$dst")"
+      emit_json_object \
+        "action=install" "status=installed" "type=cmd" \
+        "name=$name" "path=$dst" "mode=$mode" "version=$version"
+      (( ! JSON_MODE )) && ok "Installed: $dst (v$version)"
     fi
-
-    emit_json_object \
-      "action=install" \
-      "status=installed" \
-      "type=cmd" \
-      "name=$name" \
-      "path=$dst" \
-      "mode=$mode" \
-      "version=$version"
-
-    if (( ! JSON_MODE )); then
-      if [[ "$mode" == "link" ]]; then
-        ok "Installed: $dst (symlink) (v$version)"
-      else
-        ok "Installed: $dst (v$version)"
-      fi
-    fi
+    # ------------------------------------------------------------------------
 
     count=$((count+1))
   done
 
-  if (( SYSTEM_MODE == 0 )); then
-    ! in_path && warn "${BIN_DIR} not in PATH. Add: export PATH=\"${BIN_DIR}:\$PATH\""
-  fi
-
+  (( SYSTEM_MODE == 0 )) && ! in_path && warn "${BIN_DIR} not in PATH. Add: export PATH=\"${BIN_DIR}:\$PATH\""
   rehash_shell
   (( JSON_MODE )) || say "$count item(s) installed."
   return $exit_code
 }
+
 
 # --------------------------------------------------------------------------------------------------
 # UNINSTALL — remove scripts or apps (user/system)
