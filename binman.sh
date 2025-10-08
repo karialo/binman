@@ -88,6 +88,13 @@ REQ_FILE=""         # --req FILE : requirements file name (default: requirements
 BOOT_PY="python3"   # --python BIN : bootstrap interpreter to create venv
 
 
+# Rollback snapshot controls (env overrides)
+AUTO_BACKUP_WARNED=0
+PRUNE_LAST_REMOVED=0
+PATH_WARNED=0
+SYSTEM_WRITE_WARNED=0
+
+
 
 # --------------------------------------------------------------------------------------------------
 # Small helpers (consistent messages, detection, paths)
@@ -142,9 +149,55 @@ iso_now(){
     date -Iseconds;
 }
 
+maybe_sudo_cmd(){
+  : "${SUDO_NONINTERACTIVE:=-1}"
+  if (( SUDO_NONINTERACTIVE == -1 )); then
+    if command -v sudo >/dev/null 2>&1; then
+      if sudo -n true >/dev/null 2>&1; then
+        SUDO_NONINTERACTIVE=1
+      else
+        SUDO_NONINTERACTIVE=0
+      fi
+    else
+      SUDO_NONINTERACTIVE=0
+    fi
+  fi
+
+  if (( SUDO_NONINTERACTIVE == 1 )); then
+    sudo "$@"
+  else
+    "$@"
+  fi
+}
+
 # POSIX-friendly realpath fallback (prefers python3, then readlink -f)
 realpath_f(){
     python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null || readlink -f "$1";
+}
+
+human_size(){
+  local bytes="$1"
+  [[ -z "$bytes" ]] && { echo "0B"; return; }
+  if command -v numfmt >/dev/null 2>&1; then
+    numfmt --to=iec --suffix=B "$bytes"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$bytes" <<'PY'
+import sys
+def human(n):
+    n=float(n)
+    units=["B","KB","MB","GB","TB","PB"]
+    for u in units:
+        if n<1024 or u==units[-1]:
+            return f"{n:.1f}{u}" if u!="B" else f"{int(n)}B"
+        n/=1024
+
+print(human(sys.argv[1]))
+PY
+    return
+  fi
+  echo "${bytes}B"
 }
 
 # Return just the names of installed commands (user or system)
@@ -335,7 +388,7 @@ usage(){ cat <<USAGE
 ${SCRIPT_NAME} v${VERSION}
 Manage personal CLI scripts in ${BIN_DIR} and apps in ${APP_STORE}
 
-USAGE: ${SCRIPT_NAME} <install|uninstall|verify|list|update|doctor|new|wizard|tui|backup|restore|self-update|rollback|bundle|test|version|help> [args] [options]
+USAGE: ${SCRIPT_NAME} <install|uninstall|verify|list|update|doctor|new|wizard|tui|backup|restore|self-update|rollback|prune-rollbacks|analyze|bundle|test|version|help> [args] [options]
        ${SCRIPT_NAME} --backup [FILE]
        ${SCRIPT_NAME} --restore FILE [--force]
 
@@ -357,6 +410,8 @@ Backup/Restore convenience:
 Extra commands:
   self-update          Update BinMan from its git repo then reinstall the shim
   rollback [ID]        Restore the latest (or specific) rollback snapshot
+  prune-rollbacks      Prune rollback snapshots beyond BINMAN_ROLLBACK_KEEP (default 20)
+  analyze [opts]       Inspect disk usage hotspots (--top N --root DIR)
   bundle [OUT]         Export bundle (bin+apps+manifest.txt) to archive
   test NAME [-- ARGS]  Run NAME with --help (or ARGS) to sanity-check exit
   test stress [--jobs N] [--verbose] [--keep] [--quick]  
@@ -392,6 +447,40 @@ ensure_bin(){ ensure_dir "$BIN_DIR"; }
 ensure_apps(){ ensure_dir "$APP_STORE"; }
 ensure_system_dirs(){ ensure_dir "$SYSTEM_BIN"; ensure_dir "$SYSTEM_APPS"; }
 
+maybe_warn_path(){
+  (( SYSTEM_MODE == 0 )) || return 0
+  (( PATH_WARNED )) && return 0
+  (( QUIET )) && return 0
+  (( JSON_MODE )) && return 0
+  in_path && return 0
+
+  PATH_WARNED=1
+  local snippet='export PATH="$HOME/.local/bin:$PATH"'
+  local shell_name profile
+  shell_name="${SHELL##*/}"
+  case "$shell_name" in
+    zsh) profile="$HOME/.zshrc";;
+    bash) profile="$HOME/.bashrc";;
+    *) profile="$HOME/.profile";;
+  esac
+
+  warn "${BIN_DIR} is not in PATH. Run: ${snippet}"
+
+  if [[ -t 1 ]]; then
+    prompt_init
+    local short_profile="${profile/#$HOME/~}"
+    if ask_yesno "Append to ${short_profile}?" "n"; then
+      touch "$profile"
+      if grep -F "$snippet" "$profile" >/dev/null 2>&1; then
+        say "Already present in ${short_profile}."
+      else
+        printf '\n# Added by BinMan %s\n%s\n' "$(iso_now)" "$snippet" >> "$profile"
+        ok "Added PATH export to ${short_profile}"
+      fi
+    fi
+  fi
+}
+
 
 
 # --------------------------------------------------------------------------------------------------
@@ -410,6 +499,36 @@ stash_before_change(){
     "$(iso_now)" "${VERSION}" "$BIN_DIR" "$APP_STORE" > "${root}/meta/info.txt"
   ! (( QUIET )) && ok "Rollback snapshot: ${ts}"
   echo "${ts}"
+}
+
+prune_rollbacks(){
+  PRUNE_LAST_REMOVED=0
+  local keep="${BINMAN_ROLLBACK_KEEP:-20}"
+  [[ "$keep" =~ ^[0-9]+$ ]] || keep=20
+  (( keep < 0 )) && keep=0
+  [[ -d "$ROLLBACK_ROOT" ]] || return 0
+  mapfile -t ids < <(ls -1 "$ROLLBACK_ROOT" 2>/dev/null | sort -r)
+  (( ${#ids[@]} == 0 )) && return 0
+
+  local i=0 id path
+  for id in "${ids[@]}"; do
+    [[ -n "$id" ]] || continue
+    [[ "$id" == "." || "$id" == ".." ]] && continue
+    i=$((i+1))
+    if (( i > keep )); then
+      path="$ROLLBACK_ROOT/$id"
+      [[ -e "$path" || -L "$path" ]] || continue
+      rm -rf -- "$path"
+      (( PRUNE_LAST_REMOVED++ ))
+    fi
+  done
+}
+
+maybe_snapshot(){
+  (( ${BINMAN_AUTO_BACKUP:-0} )) || return 0
+  if stash_before_change >/dev/null; then
+    prune_rollbacks
+  fi
 }
 
 latest_rollback_id(){
@@ -995,6 +1114,16 @@ EOF
 prompt_init(){ : "${UI_RESET:=}"; : "${UI_BOLD:=}"; : "${UI_DIM:=}"; : "${UI_CYAN:=}"; : "${UI_GREEN:=}"; : "${UI_YELLOW:=}"; }
 prompt_kv(){ printf "  %s%-14s%s %s\n" "$UI_BOLD" "$1:" "$UI_RESET" "$2"; }
 
+maybe_warn_auto_backup_disabled(){
+  (( ${BINMAN_AUTO_BACKUP:-1} )) && return 0
+  (( JSON_MODE )) && return 0
+  : "${AUTO_BACKUP_WARNED:=0}"
+  (( AUTO_BACKUP_WARNED )) && return 0
+  prompt_init
+  printf "%s[i]%s Auto backups disabled (BINMAN_AUTO_BACKUP=0)\n" "$UI_DIM" "$UI_RESET"
+  AUTO_BACKUP_WARNED=1
+}
+
 ask(){
   local q="$1" def="$2" out
   if [[ -n "$def" ]]; then
@@ -1244,7 +1373,7 @@ op_install(){
   [[ -n "$FROM_DIR" ]] && mapfile -t targets < <(list_targets)
   [[ ${#targets[@]} -gt 0 ]] || { err "Nothing to install"; return 2; }
 
-  stash_before_change >/dev/null
+  maybe_snapshot
 
   local count=0 exit_code=0
   local target_bin="$BIN_DIR"
@@ -1406,7 +1535,7 @@ EOF
     count=$((count+1))
   done
 
-  (( SYSTEM_MODE == 0 )) && ! in_path && warn "${BIN_DIR} not in PATH. Add: export PATH=\"${BIN_DIR}:\$PATH\""
+  maybe_warn_path
   rehash_shell
   (( JSON_MODE )) || say "$count item(s) installed."
   return $exit_code
@@ -1417,7 +1546,7 @@ EOF
 # UNINSTALL — remove scripts or apps (user/system)
 # --------------------------------------------------------------------------------------------------
 op_uninstall(){
-  stash_before_change >/dev/null
+  maybe_snapshot
   local count=0
   local target_bin="$BIN_DIR"
   local target_apps="$APP_STORE"
@@ -1689,35 +1818,72 @@ op_list(){
   done
 }
 
+
 op_list_ranger() {
   if ! command -v fzf >/dev/null 2>&1; then
     op_list
     return 0
   fi
 
-  local out key line
-  out="$(
-    __bm_list_tsv | sort -t $'\t' -k1,1 -k2,2 |
+  local out key row type name ver path preview_cmd bind_doctor bind_reload exec_target rc
+
+  preview_cmd="bash -c 'exec \"$BINMAN_SELF\" __internal:preview \"$@\"' _ {1} {2} {3} {4}"
+  bind_doctor="d:execute-silent(bash -c 'exec \"$BINMAN_SELF\" doctor \"$@\"' doctor {2})"
+  bind_reload="ctrl-r:reload(bash -c 'exec \"$BINMAN_SELF\" __internal:list' sh)"
+
+  out="$(__bm_list_tsv | sort -t $'\t' -k1,1 -k2,2 |
     fzf --ansi --border --height=100% --layout=reverse \
         --delimiter=$'\t' --with-nth=1,2,3 \
-        --preview 'bash -c '\''exec "$BINMAN_SELF" --_preview_fields "$1" "$2" "$3" "$4" "$5"'\'' sh {1} {2} {3} {4} {5}' \
+        --preview "${preview_cmd}" \
         --preview-window=right,60%,wrap \
-        --bind 'd:execute-silent(bash -c '\''exec "$BINMAN_SELF" doctor >/dev/null 2>&1'\'' sh)+refresh-preview' \
-        --bind 'u:execute-silent(bash -c '\''exec "$BINMAN_SELF" uninstall "$1" >/dev/null 2>&1'\'' sh {2})+reload(bash -c '\''exec "$BINMAN_SELF" __internal:list'\'' sh)' \
-        --bind 'ctrl-r:reload(bash -c '\''exec "$BINMAN_SELF" __internal:list'\'' sh)' \
-        --bind 'esc:abort' \
-        --header="↑↓ navigate • Enter select • ESC cancel" \
+        --bind "${bind_doctor}" \
+        --bind "${bind_reload}" \
+        --bind esc:abort \
         --prompt='BinMan ▸ ' \
-        --expect=enter,d,u,ctrl-r \
-      || true
-  )"
-
-
+        --header='↑↓ navigate • Enter=Back • d=Doctor • ctrl-r=Reload • Esc=Back' \
+        --expect=enter,d,ctrl-r \
+    || true)"
 
   [[ -z "$out" ]] && return 0
+
   key="$(printf '%s\n' "$out" | head -n1)"
-  line="$(printf '%s\n' "$out" | tail -n1)"
-  # actions already executed via fzf bindings; we just stay in the TUI
+  row="$(printf '%s\n' "$out" | tail -n1)"
+  IFS=$'\t' read -r type name ver path <<<"$row"
+
+  case "$key" in
+    d)
+      "$BINMAN_SELF" doctor "$name"
+      ;;
+    ctrl-r)
+      op_list_ranger
+      ;;
+    enter|*)
+      exec_target="$path"
+      if [[ "$type" == "app" ]]; then
+        local shim
+        if (( SYSTEM_MODE )); then
+          shim="$SYSTEM_BIN/$name"
+        else
+          shim="$BIN_DIR/$name"
+        fi
+        if [[ -x "$shim" ]]; then
+          exec_target="$shim"
+        elif [[ -x "$path/bin/$name" ]]; then
+          exec_target="$path/bin/$name"
+        fi
+      fi
+
+      if [[ ! -x "$exec_target" ]]; then
+        warn "Not executable: $exec_target"
+      else
+        printf "\nRunning: %s\n\n" "$exec_target"
+        "$exec_target"
+        rc=$?
+        printf "\nExit code: %s\n" "$rc"
+      fi
+      ;;
+  esac
+
   return 0
 }
 
@@ -1941,12 +2107,113 @@ cmd_doctor(){
   fi
 }
 
+cmd_prune_rollbacks(){
+  [[ -d "$ROLLBACK_ROOT" ]] || { say "No rollback snapshots found."; return 0; }
+
+  local before_h before_k after_h after_k freed_k freed_bytes freed_h
+  before_h=$(du -sh "$ROLLBACK_ROOT" 2>/dev/null | awk '{print $1}')
+  before_k=$(du -sk "$ROLLBACK_ROOT" 2>/dev/null | awk '{print $1}')
+  before_k=${before_k:-0}
+  before_h=${before_h:-0B}
+
+  prune_rollbacks
+
+  after_h=$(du -sh "$ROLLBACK_ROOT" 2>/dev/null | awk '{print $1}')
+  after_k=$(du -sk "$ROLLBACK_ROOT" 2>/dev/null | awk '{print $1}')
+  after_k=${after_k:-0}
+  after_h=${after_h:-0B}
+
+  freed_k=$(( before_k - after_k ))
+  (( freed_k < 0 )) && freed_k=0
+  freed_bytes=$(( freed_k * 1024 ))
+
+  if command -v numfmt >/dev/null 2>&1; then
+    freed_h=$(numfmt --to=iec --suffix=B "$freed_bytes" 2>/dev/null || echo "${freed_bytes}B")
+  else
+    if (( freed_k == 0 )); then
+      freed_h="0B"
+    else
+      freed_h="${freed_k}K"
+    fi
+  fi
+
+  local msg
+  msg="Pruned ${PRUNE_LAST_REMOVED:-0} rollback(s); reclaimed ${freed_h} (was ${before_h:-0}, now ${after_h:-0})"
+  if (( PRUNE_LAST_REMOVED > 0 )); then
+    ok "$msg"
+  else
+    say "$msg"
+  fi
+}
+
+cmd_analyze(){
+  local top=20 root="/"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --top)
+        [[ -n "${2:-}" ]] || { err "--top requires a number"; return 2; }
+        top="$2"; shift 2;;
+      --root)
+        [[ -n "${2:-}" ]] || { err "--root requires a directory"; return 2; }
+        root="$2"; shift 2;;
+      -h|--help)
+        say "Usage: ${SCRIPT_NAME} analyze [--top N] [--root DIR]"; return 0;;
+      *)
+        err "Unknown analyze option: $1"; return 2;;
+    esac
+  done
+
+  [[ "$top" =~ ^[0-9]+$ && top -gt 0 ]] || { warn "Invalid --top value; defaulting to 20"; top=20; }
+  [[ -d "$root" ]] || { err "Root directory not found: $root"; return 2; }
+
+  local root_abs
+  root_abs=$(realpath_f "$root" 2>/dev/null || echo "$root")
+
+  ui_init
+  printf "%sAnalyze:%s inspecting %s (top %s)\n" "$UI_BOLD" "$UI_RESET" "$root_abs" "$top"
+  ui_hr
+
+  printf "%sDisk overview (df -hT)%s\n" "$UI_CYAN" "$UI_RESET"
+  if ! df -hT "$root_abs" 2>/dev/null; then
+    df -hT 2>/dev/null || warn "df failed"
+  fi
+
+  echo
+  printf "%sTop %s directories under %s%s\n" "$UI_CYAN" "$top" "$root_abs" "$UI_RESET"
+  ui_hr
+  local du_output
+  du_output="$( { maybe_sudo_cmd du -xhd1 "$root_abs" 2>/dev/null || true; } | sort -hr | head -n "$top" || true)"
+  if [[ -n "$du_output" ]]; then
+    printf "%s\n" "$du_output" | sed 's/^/  /'
+  else
+    printf "  (no data)\n"
+  fi
+
+  echo
+  printf "%sTop %s files under %s%s\n" "$UI_CYAN" "$top" "$root_abs" "$UI_RESET"
+  ui_hr
+  local find_output
+  find_output="$( { maybe_sudo_cmd find "$root_abs" -xdev \( -path /proc -o -path /sys -o -path /dev -o -path /run \) -prune -o -type f -printf '%s\t%p\n' 2>/dev/null || true; } | sort -nr | head -n "$top" || true)"
+
+  if [[ -n "$find_output" ]]; then
+    while IFS=$'\t' read -r size path; do
+      [[ -z "$path" ]] && continue
+      printf "  %s%-9s%s %s\n" "$UI_GREEN" "$(human_size "$size")" "$UI_RESET" "$path"
+    done <<< "$find_output"
+  else
+    printf "  (no files)\n"
+  fi
+
+  echo
+  printf "%sHint:%s Use sysclean for interactive cleanup.\n" "$UI_DIM" "$UI_RESET"
+}
+
 # UPDATE — reinstall with overwrite (optionally pull a git dir first)
 # --------------------------------------------------------------------------------------------------
 op_update(){
   [[ -n "$GIT_DIR" && -d "$GIT_DIR/.git" ]] && (cd "$GIT_DIR" && git pull --rebase --autostash)
   local targets=("$@"); [[ -n "$FROM_DIR" ]] && mapfile -t targets < <(list_targets)
-  [[ ${#targets[@]} -gt 0 ]] && { FORCE=1; stash_before_change >/dev/null; op_install "${targets[@]}"; } || warn "Nothing to reinstall"
+  [[ ${#targets[@]} -gt 0 ]] && { FORCE=1; maybe_snapshot; op_install "${targets[@]}"; } || warn "Nothing to reinstall"
 }
 
 
@@ -2060,7 +2327,7 @@ _detect_extract_root(){
 }
 
 op_restore(){
-  ensure_bin; ensure_apps; stash_before_change >/dev/null
+  ensure_bin; ensure_apps; maybe_snapshot
   local archive="$1"
   [[ -n "$archive" && -f "$archive" ]] || { err "restore requires an existing archive"; exit 2; }
 
@@ -3136,10 +3403,10 @@ EOF
   ui_kv "Apps:"  "$apps_path"
   ui_kv "System:" "$sys_path"
   ui_hr
-  printf "%s1)%s Install   %s2)%s Uninstall   %s3)%s List   %s4)%s Doctor   %s5)%s Wizard\n" \
+  printf "%s1)%s Install   %s2)%s Uninstall   %s3)%s List   %s4)%s Doctor   %s5)%s Prune Rollbacks\n" \
     "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET"
-    
-  printf "%s6)%s Backup    %s7)%s Restore     %s8)%s Self-Update   %sa)%s Rollback   %sb)%s Bundle   %sc)%s Test\n" \
+
+  printf "%s6)%s Wizard    %s7)%s Backup    %s8)%s Restore     %s9)%s Self-Update   %sa)%s Rollback   %sb)%s Bundle   %sc)%s Test\n" \
     "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET"
 
   printf "%ss)%s Toggle System Mode %s(currently: %s)%s    %sq)%s Quit\n" \
@@ -3150,7 +3417,14 @@ EOF
 
 # Write guard for /usr/local
 ensure_system_write(){
-  [[ -w "$SYSTEM_BIN" && -w "$SYSTEM_APPS" ]] || warn "Need write access to ${SYSTEM_BIN} and ${SYSTEM_APPS}. Try: sudo $SCRIPT_NAME --system <cmd> ..."
+  if [[ ! -w "$SYSTEM_BIN" || ! -w "$SYSTEM_APPS" ]]; then
+    if (( ! SYSTEM_WRITE_WARNED )); then
+      SYSTEM_WRITE_WARNED=1
+      err "System mode requires write access to ${SYSTEM_BIN} and ${SYSTEM_APPS}. Use 'Toggle System Mode' to install to user bin instead."
+    fi
+    return 1
+  fi
+  return 0
 }
 
 
@@ -3215,20 +3489,43 @@ binman_tui(){
           )
 
           # Show only the path column; keep selections exactly as typed (spaces safe)
-          sel="$(printf '%s\n' "${items[@]}" \
+          mapfile -t selections < <(
+            { printf '%s\n' "${items[@]}" \
                 | fzf --multi --prompt="Install > " --height=60% --reverse \
                       --delimiter=$'\t' --with-nth=2 \
-                || true)"
+                | cut -f2; } || true
+          )
 
-          [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
+          if ((${#selections[@]} == 0)); then
+            echo "Cancelled."
+            printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"
+            read -r
+            continue
+          fi
 
-          # Convert selections into absolute paths
+          # Convert selections into absolute paths (validate files/dirs)
           targets=()
-          while IFS= read -r rel; do
+          for rel in "${selections[@]}"; do
             [[ -z "$rel" ]] && continue
             rel="${rel%/}"                      # drop trailing slash for dirs
-            targets+=("$PWD/$rel")
-          done <<< "$sel"
+            if [[ "$rel" == /* ]]; then
+              abs="$rel"
+            else
+              abs="$PWD/$rel"
+            fi
+            if [[ -f "$abs" || -d "$abs" ]]; then
+              targets+=("$abs")
+            else
+              warn "Skip (not a file): $rel"
+            fi
+          done
+
+          if (( ${#targets[@]} == 0 )); then
+            warn "No valid selections."
+            printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"
+            read -r
+            continue
+          fi
 
           # Manifest convenience
           if (( ${#targets[@]} == 1 )) && [[ "${targets[0]}" =~ \.(txt|list|json)$ ]]; then
@@ -3238,12 +3535,48 @@ binman_tui(){
           fi
         else
           printf "File/dir/URL (or --manifest FILE): "
-          read -r f || { continue; }
-          [[ -z "$f" ]] && { echo "Cancelled."; continue; }
-          if [[ "$f" =~ ^--manifest[[:space:]]+ ]]; then
-            op_install_manifest "${f#--manifest }"
+          manual_lines=()
+          if IFS= read -r line; then
+            [[ -z "$line" ]] && { echo "Cancelled."; continue; }
+            manual_lines+=("$line")
+            while IFS= read -r -t 0 extra_line; do
+              manual_lines+=("$extra_line")
+            done
           else
-            op_install "$f"
+            continue
+          fi
+
+          targets=()
+          manifest=""
+          for entry in "${manual_lines[@]}"; do
+            [[ -z "$entry" ]] && continue
+            if [[ "$entry" =~ ^--manifest[[:space:]]+ ]]; then
+              manifest="${entry#--manifest }"
+              continue
+            fi
+            entry="${entry%/}"
+            if [[ "$entry" == /* ]]; then
+              abs="$entry"
+            else
+              abs="$PWD/$entry"
+            fi
+            if [[ -f "$abs" || -d "$abs" ]]; then
+              targets+=("$abs")
+            else
+              targets+=("$entry")
+            fi
+          done
+
+          if [[ -n "$manifest" ]]; then
+            if [[ "$manifest" != /* && -e "$manifest" ]]; then
+              manifest="$PWD/$manifest"
+            fi
+            op_install_manifest "$manifest"
+          elif (( ${#targets[@]} > 0 )); then
+            op_install "${targets[@]}"
+          else
+            echo "Cancelled."
+            continue
           fi
         fi
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
@@ -3286,9 +3619,14 @@ binman_tui(){
         ;;
 
       4) cmd_doctor;  printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
-      5) new_wizard; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+      5)  # Prune rollbacks
+        cmd_prune_rollbacks
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+        ;;
 
-      6)  # Backup — pick ALL or a subset of cmds/apps
+      6) new_wizard; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
+
+      7)  # Backup — pick ALL or a subset of cmds/apps
         if exists fzf; then
           mapfile -t _cmds < <(_get_installed_cmd_names)
           mapfile -t _apps < <(_get_installed_app_names)
@@ -3325,7 +3663,7 @@ binman_tui(){
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
 
-      7)  # Restore — choose an archive in CWD or type a path
+      8)  # Restore — choose an archive in CWD or type a path
         if exists fzf; then
           mapfile -t cands < <(ls -1 *.zip *.tar.gz 2>/dev/null || true)
           cands=("Type a path…" "${cands[@]}")
@@ -3342,7 +3680,7 @@ binman_tui(){
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
 
-      8)  # Self-Update
+      9)  # Self-Update
         op_self_update
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
@@ -3641,9 +3979,10 @@ _parse_version(){
 # --------------------------------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------------------------------
-if [[ $# -eq 0 ]]; then binman_tui; exit 0; fi
 if parse_common_opts "$@"; then exit 0; fi
 set -- "${ARGS_OUT[@]}"
+maybe_warn_auto_backup_disabled
+if [[ $# -eq 0 ]]; then binman_tui; exit 0; fi
 
 ACTION="${1:-}"; shift || true
 # Handle hidden internal calls used by fzf list UI
@@ -3673,6 +4012,8 @@ case "$ACTION" in
   self-update) op_self_update;;
   rollback)
     if [[ -n "${1:-}" ]]; then apply_rollback "$1"; else id="$(latest_rollback_id || true)"; [[ -n "$id" ]] && apply_rollback "$id" || warn "No rollback snapshots yet"; fi;;
+  prune-rollbacks) cmd_prune_rollbacks;;
+  analyze) cmd_analyze "$@";;
   bundle) op_bundle "${1:-}";;
   test) op_test "$@";;
   tui|"") binman_tui;;
