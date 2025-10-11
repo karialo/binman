@@ -5,6 +5,9 @@
 # Extras: TUI, generator, wizard, backup/restore, self-update, system installs, rollbacks, remotes,
 #         manifests, bundles, test harness.
 #
+# CHANGELOG:
+#   - Fix TUI metadata: robust manifest parsing, path expansion, preview/help rendering, debug mode.
+#
 # Design notes:
 #   • “Scripts” live in ~/.local/bin/<name> (extension dropped on install).
 #   • “Apps” live in ~/.local/share/binman/apps/<name> with a shim in ~/.local/bin/<name> that execs
@@ -16,6 +19,18 @@
 
 set -Eeuo pipefail
 shopt -s nullglob
+
+: "${BINMAN_DEBUG:=0}"
+
+BINMAN_DEBUG_FLAG=0
+case "${BINMAN_DEBUG:-}" in
+  1|true|TRUE|True|yes|YES|Yes|on|ON|On)
+    BINMAN_DEBUG_FLAG=1
+    ;;
+esac
+
+BINMAN_LIST_SIG=""
+REINDEX_REQUEST=0
 
 # ===== Early, standalone preview handler (fields version) =====
 if [[ "${1:-}" == "--_preview_fields" ]]; then
@@ -49,8 +64,8 @@ fi
 
 
 # Path to THIS running script; export for fzf subshells
-SELF="${SELF:-$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || command -v "$0" || echo "$0")}"
-export BINMAN_SELF="$SELF"
+BINMAN_SELF="${BINMAN_SELF:-$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || command -v "$0" || echo "$0")}"
+export BINMAN_SELF
 
 
 # --------------------------------------------------------------------------------------------------
@@ -66,6 +81,11 @@ APP_STORE="${HOME}/.local/share/binman/apps"
 # System-scoped locations (used with --system; requires write perms/sudo)
 SYSTEM_BIN="/usr/local/bin"
 SYSTEM_APPS="/usr/local/share/binman/apps"
+
+# Cache/state paths
+BINMAN_STATE_DIR="${BINMAN_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/binman}"
+mkdir -p "$BINMAN_STATE_DIR" 2>/dev/null || true
+BINMAN_LIST_CACHE="${BINMAN_LIST_CACHE:-$BINMAN_STATE_DIR/inventory.tsv}"
 
 # Runtime flags (influenced by CLI options)
 COPY_MODE="copy"   # copy | link
@@ -94,11 +114,33 @@ PRUNE_LAST_REMOVED=0
 PATH_WARNED=0
 SYSTEM_WRITE_WARNED=0
 
+# Silence implicit getopts error messages globally
+OPTERR=0
+
 
 
 # --------------------------------------------------------------------------------------------------
 # Small helpers (consistent messages, detection, paths)
 # --------------------------------------------------------------------------------------------------
+# Prefer the project's fzf() checker if it exists; otherwise fall back to binary check.
+__has_fzf() {
+  if declare -F fzf >/dev/null 2>&1; then
+    fzf   # your function should return 0/1 without launching UI
+    return $?
+  fi
+  command -v fzf >/dev/null 2>&1
+}
+
+# Remove zero-length/whitespace args from "$@"
+__strip_empty_args() {
+  local out=() a
+  for a in "$@"; do
+    [[ -z "${a//[$' \t\r\n']/}" ]] && continue
+    out+=("$a")
+  done
+  ARGS_OUT=("${out[@]}")
+}
+
 say(){
     printf "%s\n" "$*"; 
 }
@@ -113,6 +155,11 @@ warn(){
 
 ok(){
     printf "\e[32m%s\e[0m\n" "$*";
+}
+
+debug(){
+  (( BINMAN_DEBUG_FLAG )) || return 0
+  printf '[binman] %s\n' "$*" >&2
 }
 
 json_escape(){
@@ -198,6 +245,169 @@ PY
     return
   fi
   echo "${bytes}B"
+}
+
+stat_mtime(){
+  local path="$1"
+  stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || echo 0
+}
+
+trim(){
+  local s="${1-}"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+strip_inline_comment(){
+  local s="${1-}"
+  local in_single=0 in_double=0 ch out=""
+  local i len=${#s}
+  for (( i=0; i<len; i++ )); do
+    ch="${s:i:1}"
+    if [[ "$ch" == "'" && $in_double -eq 0 ]]; then
+      (( in_single = 1 - in_single ))
+      out+="$ch"
+      continue
+    fi
+    if [[ "$ch" == '"' && $in_single -eq 0 ]]; then
+      (( in_double = 1 - in_double ))
+      out+="$ch"
+      continue
+    fi
+    if [[ "$ch" == '#' && $in_single -eq 0 && $in_double -eq 0 ]]; then
+      break
+    fi
+    out+="$ch"
+  done
+  printf '%s' "$out"
+}
+
+__bm_tui_install_flow() {
+  # Use fzf file/dir picker from CWD; supports manual multi-line entry too
+  if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
+    mapfile -t items < <(find . -maxdepth 1 -mindepth 1 -printf '%P\n' 2>/dev/null | sort)
+    items=("Type a path/URL…" "${items[@]}")
+    sel="$(printf '%s\n' "${items[@]}" | fzf --prompt="Install > " --height=60% --reverse || true)"
+    [[ -z "$sel" ]] && { warn "Nothing to install"; return 0; }
+
+    if [[ "$sel" == "Type a path/URL…" ]]; then
+      printf "File/dir/URL (or --manifest FILE): "
+      manual_lines=()
+      if IFS= read -r line; then
+        [[ -z "$line" ]] && { say "Cancelled."; return 0; }
+        manual_lines+=("$line")
+        while IFS= read -r -t 0 extra; do manual_lines+=("$extra"); done
+      else
+        return 0
+      fi
+
+      targets=(); manifest=""
+      for entry in "${manual_lines[@]}"; do
+        [[ -z "$entry" ]] && continue
+        if [[ "$entry" =~ ^--manifest[[:space:]]+ ]]; then
+          manifest="${entry#--manifest }"; continue
+        fi
+        entry="${entry%/}"
+        if [[ "$entry" == /* ]]; then abs="$entry"; else abs="$PWD/$entry"; fi
+        if [[ -f "$abs" || -d "$abs" ]]; then targets+=("$abs"); else targets+=("$entry"); fi
+      done
+
+      if [[ -n "$manifest" ]]; then
+        [[ "$manifest" != /* && -e "$manifest" ]] && manifest="$PWD/$manifest"
+        op_install_manifest "$manifest"
+      elif (( ${#targets[@]} > 0 )); then
+        op_install "${targets[@]}"
+      else
+        say "Cancelled."
+      fi
+    else
+      # Selected a visible item; pass absolute path
+      pick="$sel"
+      [[ "$pick" != /* ]] && pick="$PWD/$pick"
+      op_install "$pick"
+    fi
+  else
+    # No TTY/fzf → fall back to plain op_install (expects args)
+    op_install
+  fi
+}
+
+__bm_tui_uninstall_flow() {
+  if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
+    mapfile -t _cmds < <(_get_installed_cmd_names)
+    mapfile -t _apps < <(_get_installed_app_names)
+    if ((${#_cmds[@]}==0 && ${#_apps[@]}==0)); then
+      warn "Nothing to uninstall."; return 0
+    fi
+    _choices=()
+    for c in "${_cmds[@]}"; do _choices+=("cmd  $c"); done
+    for a in "${_apps[@]}"; do _choices+=("app  $a"); done
+    sel="$(printf '%s\n' "${_choices[@]}" | fzf --multi --prompt="Uninstall > " --height=60% --reverse || true)"
+    [[ -z "$sel" ]] && { say "Cancelled."; return 0; }
+    names="$(echo "$sel" | awk '{print $2}' | tr '\n' ' ')"
+    # shellcheck disable=SC2086
+    op_uninstall $names
+  else
+    _print_uninstall_menu
+    printf "Name (space-separated for multiple, Enter to cancel): "
+    IFS= read -r names
+    [[ -z "$names" ]] && { say "Cancelled."; return 0; }
+    # shellcheck disable=SC2086
+    op_uninstall $names
+  fi
+}
+
+_bm_expand_tokens(){
+  local raw="${1-}"
+  if [[ -z "$raw" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$raw" <<'PY' 2>/dev/null && return 0
+import os
+import re
+import sys
+s = sys.argv[1]
+pattern = re.compile(r'(?:(?<=^)|(?<=[\s:=\'"(\[]))~[A-Za-z0-9_\-]*')
+def repl(match):
+    token = match.group(0)
+    try:
+        return os.path.expanduser(token)
+    except Exception:
+        return token
+try:
+    expanded = pattern.sub(repl, s)
+except re.error:
+    expanded = os.path.expanduser(s)
+try:
+    expanded = os.path.expandvars(expanded)
+except Exception:
+    pass
+sys.stdout.write(expanded)
+PY
+  fi
+
+  local out="$raw"
+  if [[ "$out" == "~" || "$out" == "~/"* ]]; then
+    out="${HOME}${out:1}"
+  fi
+  out="${out//\$HOME/$HOME}"
+  out="${out//\$\{HOME\}/$HOME}"
+  printf '%s' "$out"
+}
+
+expand_path(){
+  local raw="${1-}"
+  [[ -z "$raw" ]] && return 0
+  printf '%s\n' "$(_bm_expand_tokens "$raw")"
+}
+
+expand_command(){
+  local raw="${1-}"
+  [[ -z "$raw" ]] && return 0
+  printf '%s\n' "$(_bm_expand_tokens "$raw")"
 }
 
 # Return just the names of installed commands (user or system)
@@ -402,6 +612,7 @@ Options:
   --system           Target system dirs (/usr/local/*) (requires write perms/sudo)
   --fix-path         (doctor) Add ~/.local/bin to zsh PATH (~/.zshrc & ~/.zprofile)
   --manifest FILE    For bulk install (line list or JSON array if jq available)
+  --reindex          Rebuild manifest index before running command
   --quiet            Less chatty
 Backup/Restore convenience:
   --backup [FILE]    Create archive (.zip if zip/unzip exist else .tar.gz)
@@ -423,6 +634,9 @@ Examples:
   ${SCRIPT_NAME} install --manifest tools.txt        # bulk installs
   ${SCRIPT_NAME} backup ; ${SCRIPT_NAME} restore file.zip
   ${SCRIPT_NAME} self-update
+
+Environment:
+  BINMAN_DEBUG=1      Verbose logging (manifest parsing, index rebuild)
 USAGE
 }
 
@@ -577,7 +791,138 @@ script_desc(){
     | sed -E 's/^# *//; s/^Description: *//'
 }
 
+encode_field(){
+  local s="${1-}"
+  s="${s//$'\t'/\\t}"
+  s="${s//$'\n'/\\n}"
+  printf '%s' "$s"
+}
 
+decode_field(){
+  local s="${1-}"
+  s="${s//\\t/$'\t'}"
+  s="${s//\\n/$'\n'}"
+  printf '%s' "$s"
+}
+
+read_manifest(){
+  local file="$1"
+  declare -gA MF
+  MF=()
+  [[ -n "$file" && -r "$file" ]] || { debug "manifest unreadable: $file"; return 1; }
+
+  local line key value lowered
+  debug "Parsing manifest: $file"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    line="$(strip_inline_comment "$line")"
+    line="$(trim "$line")"
+    [[ -z "$line" ]] && continue
+    [[ "$line" == \;* ]] && continue
+    [[ "$line" == \[* ]] && continue
+    [[ "$line" != *"="* ]] && continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="$(trim "$key")"
+    value="$(trim "$value")"
+    [[ -z "$key" ]] && continue
+    if [[ ${#value} -ge 2 ]]; then
+      local first="${value:0:1}" last="${value: -1}"
+      if [[ "$first" == "$last" && ( "$first" == '"' || "$first" == "'" ) ]]; then
+        value="${value:1:${#value}-2}"
+      fi
+    fi
+    lowered="${key,,}"
+    case "$lowered" in
+      name|type|version|path|run|help|preview|tags)
+        MF["$lowered"]="$value"
+        ;;
+      desc|description|summary)
+        [[ -z "${MF[preview]:-}" ]] && MF[preview]="$value"
+        [[ -z "${MF[help]:-}" ]] && MF[help]="$value"
+        ;;
+      command|cmd|exec)
+        MF[run]="$value"
+        ;;
+      location|dir|directory)
+        MF[path]="$value"
+        ;;
+      kind)
+        MF[type]="$value"
+        ;;
+      *)
+        MF["extra_${lowered}"]="$value"
+        ;;
+    esac
+  done < "$file"
+
+  if [[ -z "${MF[name]:-}" ]]; then
+    debug "Manifest missing required 'name': $file"
+    return 2
+  fi
+
+  if [[ -n "${MF[path]:-}" ]]; then
+    MF[path_raw]="${MF[path]}"
+    MF[path]="$(expand_path "${MF[path]}")"
+  fi
+  if [[ -n "${MF[run]:-}" ]]; then
+    MF[run_raw]="${MF[run]}"
+    MF[run]="$(expand_command "${MF[run]}")"
+  fi
+  [[ -n "${MF[type]:-}" ]] || MF[type]="cmd"
+  MF[type]="${MF[type],,}"
+  [[ -n "${MF[version]:-}" ]] || MF[version]="unknown"
+  MF[file]="$file"
+  debug "Manifest parsed: name=${MF[name]:-?} type=${MF[type]} version=${MF[version]} path=${MF[path]:-${MF[path_raw]:-}}"
+  return 0
+}
+
+inventory_signature(){
+  local dir entry
+  for dir in "$BIN_DIR" "$SYSTEM_BIN"; do
+    [[ -d "$dir" ]] || continue
+    printf 'dir:%s:%s\n' "$dir" "$(stat_mtime "$dir")"
+    while IFS= read -r entry; do
+      printf 'entry:%s:%s\n' "$entry" "$(stat_mtime "$entry")"
+    done < <(find "$dir" -maxdepth 1 -mindepth 1 -type f -print 2>/dev/null | LC_ALL=C sort)
+  done
+  for dir in "$APP_STORE" "$SYSTEM_APPS"; do
+    [[ -d "$dir" ]] || continue
+    printf 'dir:%s:%s\n' "$dir" "$(stat_mtime "$dir")"
+    while IFS= read -r entry; do
+      printf 'entry:%s:%s\n' "$entry" "$(stat_mtime "$entry")"
+    done < <(find "$dir" -maxdepth 1 -mindepth 1 \( -type d -o -type f \) -print 2>/dev/null | LC_ALL=C sort)
+  done
+}
+
+bm_rebuild_inventory(){
+  local preset_sig="${1:-}"
+  local status=0
+
+  build_inventory || status=$?
+
+  if [[ -n "$preset_sig" ]]; then
+    BINMAN_LIST_SIG="$preset_sig"
+  else
+    BINMAN_LIST_SIG="$(inventory_signature)"
+  fi
+  (( status != 0 )) && debug "Inventory rebuild status: $status"
+  return 0
+}
+
+bm_ensure_inventory(){
+  local new_sig
+  new_sig="$(inventory_signature)"
+  if [[ -z "${BINMAN_LIST_SIG:-}" || "$BINMAN_LIST_SIG" != "$new_sig" ]]; then
+    debug "Inventory signature changed"
+    bm_rebuild_inventory "$new_sig"
+  fi
+}
+
+bm_force_reindex(){
+  BINMAN_LIST_SIG=""
+  bm_rebuild_inventory "$(inventory_signature)"
+}
 
 # --------------------------------------------------------------------------------------------------
 # Build list of install targets (files) based on args or --from
@@ -633,6 +978,13 @@ shorten_path() {
 ui_kv(){
     printf "%s%-10s%s %s\n" "$UI_DIM" "$1" "$UI_RESET" "$2"; 
     }
+
+if ! declare -F _ui_right_clear >/dev/null 2>&1; then
+  _ui_right_clear(){ :; }
+  _ui_right_header(){ printf "%s\n" "$1"; }
+  _ui_right_kv(){ printf "%-6s %s\n" "$1" "$2"; }
+  _ui_right_text(){ printf "%s\n" "$1"; }
+fi
 
 
 
@@ -1111,8 +1463,18 @@ EOF
 # --------------------------------------------------------------------------------------------------
 # Prompt helpers (TTY-safe; we always read/write via /dev/tty inside wizard/TUI)
 # --------------------------------------------------------------------------------------------------
-prompt_init(){ : "${UI_RESET:=}"; : "${UI_BOLD:=}"; : "${UI_DIM:=}"; : "${UI_CYAN:=}"; : "${UI_GREEN:=}"; : "${UI_YELLOW:=}"; }
-prompt_kv(){ printf "  %s%-14s%s %s\n" "$UI_BOLD" "$1:" "$UI_RESET" "$2"; }
+prompt_init(){ 
+	: "${UI_RESET:=}"; 
+	: "${UI_BOLD:=}"; 
+	: "${UI_DIM:=}"; 
+	: "${UI_CYAN:=}"; 
+	: "${UI_GREEN:=}"; 
+	: "${UI_YELLOW:=}"; 
+}
+
+prompt_kv(){
+    printf "  %s%-14s%s %s\n" "$UI_BOLD" "$1:" "$UI_RESET" "$2"; 
+}
 
 maybe_warn_auto_backup_disabled(){
   (( ${BINMAN_AUTO_BACKUP:-1} )) && return 0
@@ -1789,35 +2151,246 @@ op_verify(){
 
 
 
-
-
-
 # --------------------------------------------------------------------------------------------------
 # LIST — show installed scripts/apps with versions and descriptions
 # --------------------------------------------------------------------------------------------------
 op_list(){
   ensure_bin; ensure_apps
+  bm_ensure_inventory
   print_banner
-  say "Commands in ${SYSTEM_MODE:+(system) }$([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_BIN" || echo "$BIN_DIR"):"
-  printf "%-20s %-10s %s\n" "Name" "Version" "Description"
-  printf "%-20s %-10s %s\n" "----" "-------" "-----------"
-  local dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
-  for f in "$dir"/*; do
-    [[ -x "$f" && -f "$f" ]] || continue
-    printf "%-20s %-10s %s\n" "$(basename "$f")" "$(script_version "$f")" "$(script_desc "$f")"
-  done
-  echo
-  say "Apps in $([[ $SYSTEM_MODE -eq 1 ]] && echo "$SYSTEM_APPS" || echo "$APP_STORE"):"
-  printf "%-20s %-10s %s\n" "App" "Version" "Description"
-  printf "%-20s %-10s %s\n" "---" "-------" "-----------"
-  local adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
-  for d in "$adir"/*; do
-    [[ -d "$d" || -L "$d" ]] || continue
-    local name; name="$(basename "$d")"
-    printf "%-20s %-10s %s\n" "$name" "$(script_version "$d")" "$(script_desc "$d")"
-  done
+  printf "%-8s %-24s %-10s %s\n" "Kind" "Name" "Version" "Path / Manifest"
+  printf "%-8s %-24s %-10s %s\n" "----" "----" "-------" "---------------"
+  local line kind name ver path type scope target preview help manifest run display_path shown=0
+  while IFS=$'\t' read -r kind name ver path type scope target preview help manifest run; do
+    display_path="$path"
+    if [[ -z "$display_path" ]]; then
+      display_path="$manifest"
+    fi
+    [[ -n "$display_path" ]] || display_path="-"
+    printf "%-8s %-24s %-10s %s\n" "$kind" "$name" "$ver" "$display_path"
+    shown=1
+  done < <(__bm_list_tsv | sort -t $'\t' -k1,1 -k2,2)
+  (( shown )) || say "(no entries)"
 }
 
+TYPES=()
+NAMES=()
+VERS=()
+PATHS=()
+PREVIEWS=()
+HELPS=()
+FILES=()
+TARGETS=()
+RUNS=()
+SCOPES=()
+WTYPE=0
+WNAME=0
+WVER=0
+
+_calc_widths() {
+  local t n v max_name=0 len
+  WTYPE=3
+  WVER=7
+  for t in "${TYPES[@]}"; do
+    len=${#t}
+    (( len > WTYPE )) && WTYPE=$len
+  done
+  for n in "${NAMES[@]}"; do
+    len=${#n}
+    (( len > max_name )) && max_name=$len
+  done
+  (( max_name > 38 )) && max_name=38
+  (( max_name < 1 )) && max_name=1
+  WNAME=$max_name
+  for v in "${VERS[@]}"; do
+    len=${#v}
+    (( len > WVER )) && WVER=$len
+  done
+  (( WVER < 7 )) && WVER=7
+  debug "Left pane widths: type=${WTYPE} name=${WNAME} ver=${WVER}"
+}
+
+_fmt_left_line() {
+  local idx="$1" type name ver shown_name slice
+  type="${TYPES[idx]}"
+  name="${NAMES[idx]}"
+  ver="${VERS[idx]}"
+  if (( ${#name} > WNAME )); then
+    if (( WNAME <= 1 )); then
+      shown_name="…"
+    else
+      slice=$((WNAME - 1))
+      shown_name="${name:0:slice}…"
+    fi
+  else
+    shown_name="$name"
+  fi
+  printf "%-*s  %-*s  %s" "$WTYPE" "$type" "$WNAME" "$shown_name" "$ver"
+}
+
+_ensure_inventory_arrays() {
+  if [[ ${NAMES+x} == x && ${#NAMES[@]} -gt 0 ]]; then
+    return 0
+  fi
+  __bm_arrays_from_cache
+}
+
+_render_preview_for_idx() {
+  local idx="${1:-0}"
+  _ensure_inventory_arrays || return 0
+  [[ "$idx" =~ ^[0-9]+$ ]] || idx=0
+  if (( idx < 0 || idx >= ${#NAMES[@]} )); then
+    _ui_right_clear
+    _ui_right_header "[unknown]"
+    _ui_right_kv "Path:" "-"
+    _ui_right_kv "Type:" "-"
+    _ui_right_text "(no preview available)"
+    return 0
+  fi
+  local name="${NAMES[idx]}"
+  local type="${TYPES[idx]}"
+  local path="${PATHS[idx]}"
+  local text="${PREVIEWS[idx]:-${HELPS[idx]}}"
+  [[ -n "$text" ]] || text="(no preview available)"
+  _ui_right_clear
+  _ui_right_header "[${name:-unknown}]"
+  _ui_right_kv "Path:" "${path:-"-"}"
+  _ui_right_kv "Type:" "${type:-"-"}"
+  _ui_right_text "$text"
+}
+
+__bm_arrays_from_cache() {
+  [[ -n "${BINMAN_LIST_CACHE:-}" && -f "$BINMAN_LIST_CACHE" ]] || return 1
+  unset TYPES NAMES VERS PATHS PREVIEWS HELPS FILES TARGETS RUNS SCOPES
+  TYPES=(); NAMES=(); VERS=(); PATHS=(); PREVIEWS=(); HELPS=(); FILES=(); TARGETS=(); RUNS=(); SCOPES=()
+  while IFS=$'\t' read -r kind name ver path type scope target preview help manifest run || [[ -n "$kind" ]]; do
+    [[ -z "$kind" ]] && continue
+    TYPES+=("$kind")
+    NAMES+=("$name")
+    VERS+=("$ver")
+    PATHS+=("$path")
+    TARGETS+=("$target")
+    PREVIEWS+=("$(decode_field "$preview")")
+    HELPS+=("$(decode_field "$help")")
+    FILES+=("$manifest")
+    RUNS+=("$(decode_field "$run")")
+    SCOPES+=("$scope")
+  done < "$BINMAN_LIST_CACHE"
+  return 0
+}
+
+__bm_preview_line() {
+  local n="${1:-1}"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=1
+  __bm_arrays_from_cache || return 0
+  local idx=$(( n ))
+  (( idx < 0 || idx >= ${#NAMES[@]} )) && return 0
+  debug "PREVIEW: n=$n -> idx=$idx name=${NAMES[idx]:-}"
+  _render_preview_for_idx "$idx"
+}
+
+build_inventory() {
+  local old_nullglob
+  old_nullglob="$(shopt -p nullglob 2>/dev/null || true)"
+  shopt -s nullglob
+
+  unset lines
+  lines=()
+  : > "$BINMAN_LIST_CACHE"
+
+  debug "INV: BIN_DIR=$BIN_DIR SYSTEM_BIN=$SYSTEM_BIN"
+  debug "INV: APP_STORE=$APP_STORE SYSTEM_APPS=$SYSTEM_APPS"
+
+  local dir f scope_label kind name version path type preview line
+  local total=0
+
+  debug "INV: scan execs in $BIN_DIR"
+  debug "INV: scan execs in $SYSTEM_BIN"
+  for dir in "$BIN_DIR" "$SYSTEM_BIN"; do
+    [[ -d "$dir" ]] || continue
+    if [[ "$dir" == "$BIN_DIR" ]]; then
+      scope_label="user"
+    else
+      scope_label="system"
+    fi
+    for f in "$dir"/*; do
+      [[ -x "$f" && -f "$f" ]] || continue
+      kind="cmd"
+      name="$(basename "$f")"
+      version="$(script_version "$f")"
+      path="$(__bm_realpath "$f")"
+      type="cmd"
+      preview="$(script_desc "$f")"
+      printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+        "$kind" "$name" "$version" "$path" "$type" "$scope_label" "$path" \
+        "$(encode_field "$preview")" "$(encode_field "$preview")" "" ""
+      lines+=("$line")
+      ((total++))
+    done
+  done
+
+  debug "INV: scan apps in $APP_STORE"
+  debug "INV: scan apps in $SYSTEM_APPS"
+  for dir in "$APP_STORE" "$SYSTEM_APPS"; do
+    [[ -d "$dir" ]] || continue
+    if [[ "$dir" == "$APP_STORE" ]]; then
+      scope_label="user"
+    else
+      scope_label="system"
+    fi
+    for f in "$dir"/*; do
+      [[ -d "$f" || -L "$f" ]] || continue
+      kind="app"
+      name="$(basename "$f")"
+      version="$(script_version "$f")"
+      path="$(__bm_realpath "$f")"
+      type="app"
+      preview="$(script_desc "$f")"
+      printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+        "$kind" "$name" "$version" "$path" "$type" "$scope_label" "$path" \
+        "$(encode_field "$preview")" "$(encode_field "$preview")" "" ""
+      lines+=("$line")
+      ((total++))
+    done
+  done
+
+  debug "INV: scan manifests in $APP_STORE and $SYSTEM_APPS"
+  local file help manifest_path preview_text
+  for file in "$APP_STORE"/*.{app,cmd,manifest} "$SYSTEM_APPS"/*.{app,cmd,manifest}; do
+    [[ -f "$file" ]] || continue
+    if read_manifest "$file"; then
+      kind="${MF[type]:-app}"
+      name="${MF[name]:-$(basename "$file")}"
+      version="${MF[version]:-unknown}"
+      path="$(expand_path "${MF[path]:-}")"
+      type="${MF[type]:-app}"
+      if [[ "$file" == $APP_STORE/* ]]; then
+        scope_label="manifest-user"
+      else
+        scope_label="manifest-system"
+      fi
+      preview_text="${MF[preview]:-${MF[help]:-}}"
+      help="${MF[help]:-}"
+      run_val="${MF[run]:-${MF[run_raw]:-}}"
+      manifest_path="$(__bm_realpath "$file")"
+      printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+        "$kind" "$name" "$version" "$path" "$type" "$scope_label" "$path" \
+        "$(encode_field "$preview_text")" "$(encode_field "$help")" "$manifest_path" "$(encode_field "$run_val")"
+      lines+=("$line")
+      ((total++))
+    fi
+  done
+
+  printf '%s\n' "${lines[@]}" > "$BINMAN_LIST_CACHE"
+
+  [[ -n "$old_nullglob" ]] && eval "$old_nullglob" || shopt -u nullglob
+
+  __bm_arrays_from_cache || true
+
+  (( BINMAN_DEBUG_FLAG )) && echo "INV: total rows=$total"
+  (( total > 0 )) || return 1
+  return 0
+}
 
 op_list_ranger() {
   if ! command -v fzf >/dev/null 2>&1; then
@@ -1825,22 +2398,46 @@ op_list_ranger() {
     return 0
   fi
 
-  local out key row type name ver path preview_cmd bind_doctor bind_reload exec_target rc
+  if ! build_inventory; then
+    warn "No manifest entries found."
+    return 0
+  fi
 
-  preview_cmd="bash -c 'exec \"$BINMAN_SELF\" __internal:preview \"$@\"' _ {1} {2} {3} {4}"
-  bind_doctor="d:execute-silent(bash -c 'exec \"$BINMAN_SELF\" doctor \"$@\"' doctor {2})"
-  bind_reload="ctrl-r:reload(bash -c 'exec \"$BINMAN_SELF\" __internal:list' sh)"
+  local out key row idx kind name ver path type scope target preview help manifest run preview_cmd bind_doctor exec_target rc app_dir scope_is_manifest
+  local display_line
+  local -a formatted_rows=()
 
-  out="$(__bm_list_tsv | sort -t $'\t' -k1,1 -k2,2 |
+  _calc_widths
+  for idx in "${!NAMES[@]}"; do
+    kind="${TYPES[idx]}"
+    name="${NAMES[idx]}"
+    ver="${VERS[idx]}"
+    path="${PATHS[idx]}"
+    type="$kind"
+    scope="${SCOPES[idx]:-manifest-user}"
+    target="${TARGETS[idx]}"
+    [[ -n "$target" ]] || target="$path"
+    preview="$(encode_field "${PREVIEWS[idx]}")"
+    help="$(encode_field "${HELPS[idx]}")"
+    manifest="${FILES[idx]}"
+    run="${RUNS[idx]}"
+    formatted_rows+=("$(_fmt_left_line "$idx")"$'\t'"$kind"$'\t'"$name"$'\t'"$ver"$'\t'"$path"$'\t'"$type"$'\t'"$scope"$'\t'"$target"$'\t'"$preview"$'\t'"$help"$'\t'"$manifest"$'\t'"$run")
+  done
+
+  preview_cmd="bash -lc 'source \"${BINMAN_SELF}\"; __bm_preview_line {n}'"
+  bind_doctor="d:execute-silent(bash -c 'exec \"$BINMAN_SELF\" doctor \"$@\"' doctor {3})"
+  local bind_reload="ctrl-r:abort"
+
+  out="$(printf '%s\n' "${formatted_rows[@]}" |
     fzf --ansi --border --height=100% --layout=reverse \
-        --delimiter=$'\t' --with-nth=1,2,3 \
+        --delimiter=$'\t' --with-nth=1 \
         --preview "${preview_cmd}" \
         --preview-window=right,60%,wrap \
         --bind "${bind_doctor}" \
         --bind "${bind_reload}" \
         --bind esc:abort \
         --prompt='BinMan ▸ ' \
-        --header='↑↓ navigate • Enter=Back • d=Doctor • ctrl-r=Reload • Esc=Back' \
+        --header='↑↓ navigate • Enter=Run • d=Doctor • ctrl-r=Reload • Esc=Back' \
         --expect=enter,d,ctrl-r \
     || true)"
 
@@ -1848,7 +2445,9 @@ op_list_ranger() {
 
   key="$(printf '%s\n' "$out" | head -n1)"
   row="$(printf '%s\n' "$out" | tail -n1)"
-  IFS=$'\t' read -r type name ver path <<<"$row"
+  IFS=$'\t' read -r display_line kind name ver path type scope target preview help manifest run <<<"$row"
+  scope_is_manifest=0
+  [[ "$scope" == manifest-user || "$scope" == manifest-system ]] && scope_is_manifest=1
 
   case "$key" in
     d)
@@ -1858,23 +2457,40 @@ op_list_ranger() {
       op_list_ranger
       ;;
     enter|*)
-      exec_target="$path"
-      if [[ "$type" == "app" ]]; then
+      exec_target="$target"
+      app_dir="$path"
+      if [[ "$kind" == "app" && $scope_is_manifest -eq 0 ]]; then
         local shim
-        if (( SYSTEM_MODE )); then
+        if [[ "$scope" == system ]]; then
           shim="$SYSTEM_BIN/$name"
         else
           shim="$BIN_DIR/$name"
         fi
         if [[ -x "$shim" ]]; then
           exec_target="$shim"
-        elif [[ -x "$path/bin/$name" ]]; then
-          exec_target="$path/bin/$name"
+        elif [[ -x "$target" ]]; then
+          exec_target="$target"
+        elif [[ -n "$app_dir" ]]; then
+          if [[ -x "$app_dir/bin/$name" ]]; then
+            exec_target="$app_dir/bin/$name"
+          elif [[ -x "$app_dir/bin/run.sh" ]]; then
+            exec_target="$app_dir/bin/run.sh"
+          elif [[ -x "$app_dir/bin/start" ]]; then
+            exec_target="$app_dir/bin/start"
+          elif [[ -x "$app_dir/$name" ]]; then
+            exec_target="$app_dir/$name"
+          elif [[ -x "$app_dir/run.sh" ]]; then
+            exec_target="$app_dir/run.sh"
+          fi
         fi
       fi
 
       if [[ ! -x "$exec_target" ]]; then
-        warn "Not executable: $exec_target"
+        if [[ $scope_is_manifest -eq 1 && -n "$run" ]]; then
+          warn "Manifest entry has run command only (not executed automatically)."
+        else
+          warn "Not executable: ${exec_target:-<none>}"
+        fi
       else
         printf "\nRunning: %s\n\n" "$exec_target"
         "$exec_target"
@@ -1887,6 +2503,21 @@ op_list_ranger() {
   return 0
 }
 
+__fzf_common_opts() {
+  # One option per line; callers will mapfile into an array safely.
+  cat <<'EOF'
+--ansi
+--border
+--layout=reverse-list
+--height=90%
+--info=inline
+--prompt=› 
+--pointer=›
+--marker=»
+--cycle
+--bind=alt-q:abort
+EOF
+}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -2313,9 +2944,11 @@ EOF
     fi
 
     abs_out="$(realpath_f "$outfile")"
-    # Print a plain, parseable line (for scripts) and a pretty OK (for humans)
-    say "Backup created: ${abs_out}"
-    ok  "Backup created: ${abs_out}"
+    if (( JSON_MODE )); then
+      emit_json_object event=backup path="$abs_out" status=ok
+    else
+      ok "Backup created: ${abs_out}"
+    fi
   )
 }
 
@@ -2328,8 +2961,8 @@ _detect_extract_root(){
 
 op_restore(){
   ensure_bin; ensure_apps; maybe_snapshot
-  local archive="$1"
-  [[ -n "$archive" && -f "$archive" ]] || { err "restore requires an existing archive"; exit 2; }
+  local archive="${1:-}"
+  [[ -n "$archive" && -f "$archive" ]] || { err "restore requires an existing archive path"; return 2; }
 
   local tmp; tmp=$(mktemp -d)
   cleanup_restore(){ rm -rf "${tmp:-}"; }
@@ -3272,6 +3905,39 @@ EOF
     ok "README.md created → ${path}/README.md"
   fi
 
+  # == Manifest ==============================================================
+  local manifest_kind manifest_path manifest_file manifest_run manifest_ext manifest_desc
+  if [[ "$kind" == "single" ]]; then
+    manifest_kind="cmd"
+    manifest_ext="cmd"
+    manifest_path="$(realpath_f "${path}")"
+    manifest_run="$manifest_path"
+  else
+    manifest_kind="app"
+    manifest_ext="app"
+    manifest_path="$(realpath_f "${path}")"
+    manifest_run="${manifest_path}/bin/${name}"
+  fi
+  manifest_desc="$desc"
+  manifest_desc="${manifest_desc//\"/\\\"}"
+  ensure_apps
+  manifest_file="${APP_STORE%/}/${name}.${manifest_ext}"
+  if [[ -e "$manifest_file" ]]; then
+    warn "Manifest exists (skipped): ${manifest_file}"
+  else
+    cat >"$manifest_file" <<EOF
+# BinMan manifest (generated by wizard on $(iso_now))
+name = "${name}"
+type = "${manifest_kind}"
+version = "0.1.0"
+path = "${manifest_path}"
+run = "${manifest_run}"
+preview = "${manifest_desc}"
+help = "${manifest_desc}"
+EOF
+    ok "Manifest created → ${manifest_file}"
+  fi
+
   # == Install (optional) =====================================================
   echo; printf "%s==> Install%s\n" "$UI_GREEN" "$UI_RESET"
   local saved_mode="$COPY_MODE"
@@ -3415,6 +4081,21 @@ EOF
   ui_hr
 }
 
+__bm_menu_loop() {
+  maybe_warn_auto_backup_disabled
+  while true; do
+    local __chosen_action
+    __chosen_action="$(_bm_mainmenu_fzf)" || break            # aborted
+    [[ -n "${__chosen_action:-}" ]] || break                  # no selection
+    case "$__chosen_action" in
+      q|quit) break ;;                                        # explicit quit
+    esac
+    __bm_run_action_safe "$__chosen_action" || :              # run action, ignore non-zero
+    # after action returns, loop back to the menu
+  done
+}
+
+
 # Write guard for /usr/local
 ensure_system_write(){
   if [[ ! -w "$SYSTEM_BIN" || ! -w "$SYSTEM_APPS" ]]; then
@@ -3425,40 +4106,149 @@ ensure_system_write(){
     return 1
   fi
   return 0
+}  # <-- important: close this function
+
+__bm_mainmenu_build() {
+  local header preview_cmd tsv sel action
+  local -a _opts
+  mapfile -t _opts < <(__fzf_common_opts)
+
+  header="BinMan — choose an action (↑↓ to move, Enter to run, Alt-q to abort)"
+  preview_cmd='cut -f4'
+
+  # Columns: key \t label \t action \t preview  (real TSV)
+  tsv=$(
+    cat <<'TSV'
+1	Install	install	Install apps/scripts into your ~/bin or system bin.
+2	Uninstall	uninstall	Remove installed items and clean up stubs.
+3	List	list	Browse all items with live preview and quick actions.
+4	Doctor	doctor	Run diagnostics and environment checks.
+6	Wizard	wizard	Create a new app/cmd manifest via guided prompts.
+7	Backup	backup	Create a backup archive of installed items.
+8	Restore	restore	Restore from a backup archive.
+9	Self-Update	selfupdate	Update BinMan to the latest version.
+a	Rollback	rollback	Revert to a previous snapshot.
+b	Bundle	bundle	Bundle selected apps into a portable pack.
+c	Test	test	Run developer/test utilities.
+t	Toggle System Mode	toggle_system	Switch between user/system install targets.
+q	Quit	quit	Exit BinMan.
+TSV
+  )
+
+  # Drive fzf from TSV; show key+label, preview the 4th column.
+  FZF_DEFAULT_OPTS='' \
+  sel=$(printf "%s\n" "$tsv" \
+    | fzf "${_opts[@]}" \
+          --delimiter=$'\t' \
+          --with-nth=1,2 \
+          --header="$header" \
+          --preview "$preview_cmd" \
+          --preview-window=right:60%:wrap)
+
+  [[ -n "$sel" ]] || return 1
+  action=$(awk -F'\t' '{print $3}' <<<"$sel")
+  printf '%s\n' "$action"
 }
 
+# Back-compat shims: older call sites expect *_bm_mainmenu_fzf
+_bm_mainmenu_fzf() { __bm_mainmenu_build; }
+__bm_mainmenu_fzf() { __bm_mainmenu_build; }
 
+__bm_run_action_safe() {
+  local a="$1"
+  case "$a" in
+    install)
+      if [[ -n "$MANIFEST_FILE" ]]; then
+        op_install_manifest "$MANIFEST_FILE"
+      elif [[ -t 1 ]]; then
+        __bm_tui_install_flow
+      else
+        op_install
+      fi
+      ;;
+    uninstall)
+      if [[ -t 1 ]]; then
+        __bm_tui_uninstall_flow
+      else
+        op_uninstall
+      fi
+      ;;
+
+    verify)          op_verify ;;
+    list)
+      if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
+        op_list_ranger
+      else
+        op_list
+      fi
+      ;;
+    doctor)          cmd_doctor ;;
+    update)          op_update ;;
+    new)             new_cmd ;;
+    wizard)          new_wizard ;;
+    backup)          op_backup ;;
+    restore)
+      if [[ -t 1 ]]; then
+        local f; f="$(_tui_pick_archive)"
+        [[ -z "$f" ]] && { warn "Cancelled."; } || op_restore "$f"
+      else
+        op_restore "$@"
+      fi
+      ;;
+    self-update|selfupdate)
+                      op_self_update ;;
+    rollback)
+      id="$(latest_rollback_id || true)"
+      [[ -n "$id" ]] && apply_rollback "$id" || warn "No rollback snapshots yet"
+      ;;
+    prune-rollbacks) cmd_prune_rollbacks ;;
+    analyze)         cmd_analyze ;;
+    bundle)          op_bundle ;;
+    test)            op_test ;;
+    toggle_system|toggle_system_mode|toggle-system)
+                      toggle_system_mode ;;
+    quit|q|"")       : ;;        # explicit no-op
+    *)               return 1 ;; # unknown: let caller handle
+  esac
+}
 
 # --------------------------------------------------------------------------------------------------
 # Option parser (top-level flags). Special-cases --backup/--restore to run immediately.
 # --------------------------------------------------------------------------------------------------
-parse_common_opts(){
+
+# Parses only leading flags. Leaves first non-flag arg in ARGS_OUT.
+# Returns 0 if it handled a terminal request (like --help) and the main should exit.
+# Returns 1 for normal flow (continue dispatch with ARGS_OUT).
+# Parses only leading flags. Leaves first non-flag arg in ARGS_OUT.
+# Returns 0 if it handled a terminal action (help/version), 1 otherwise.
+parse_common_opts() {
+  OPTERR=0
   ARGS_OUT=()
+
+  # sanitize inputs first
+  __strip_empty_args "$@"
+  set -- "${ARGS_OUT[@]}"
+  ARGS_OUT=()
+
+  # nothing or first isn't a flag? nothing to parse
+  [[ $# -gt 0 && "${1:-}" == -* ]] || return 1
+
+  local handled=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --from) FROM_DIR="$2"; shift 2;;
-      --entry) ENTRY_CMD="$2"; shift 2;;
-      --workdir|--cwd) ENTRY_CWD="$2"; shift 2;;
-      --venv) VENV_MODE=1; shift;;
-      --req|--requirements) REQ_FILE="$2"; shift 2;;
-      --python) BOOT_PY="$2"; shift 2;;
-      --link) COPY_MODE="link"; shift;;
-      --force) FORCE=1; shift;;
-      --git) GIT_DIR="$2"; shift 2;;
-      --bin) BIN_DIR="$2"; shift 2;;
-      --apps) APP_STORE="$2"; shift 2;;
-      --system) SYSTEM_MODE=1; shift;;
-      --fix-path) FIX_PATH=1; shift;;
-      --manifest) MANIFEST_FILE="$2"; shift 2;;
-      --quiet) QUIET=1; shift;;
-      --json) JSON_MODE=1; QUIET=1; shift;;
-      --backup) shift || true; op_backup "${1:-}"; return 0;;
-      --restore) shift || true; op_restore "${1:-}"; return 0;;
-      --) shift; while [[ $# -gt 0 ]]; do ARGS_OUT+=("$1"); shift; done;;
-      *) ARGS_OUT+=("$1"); shift;;
+      --reindex) REINDEX_REQUEST=1; shift ;;
+      -q|--quiet) QUIET=1; shift ;;
+      -h|--help)  usage; handled=0; shift ;;
+      -v|--version) say "${SCRIPT_NAME} v${VERSION}"; handled=0; shift ;;
+      --) shift; while [[ $# -gt 0 ]]; do ARGS_OUT+=("$1"); shift; done; break ;;
+      -*) # unknown flag: stop parsing; push back for caller/usage
+          ARGS_OUT+=("$@"); break ;;
+      *)  # first non-flag: return remainder
+          while [[ $# -gt 0 ]]; do ARGS_OUT+=("$1"); shift; done; break ;;
     esac
   done
-  return 1
+
+  return $handled
 }
 
 
@@ -3733,32 +4523,144 @@ _cmd_binman_rollback(){
   cp -f "$pick" "${BIN_DIR%/}/binman" && chmod 0755 "${BIN_DIR%/}/binman" && ok "Rolled back to $(basename "$pick")"
 }
 
-__bm_list_tsv() {
-  # Reuse your existing collector if present; else inline it:
-  local dir adir f d
-  dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
-  adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
+__bm_realpath() {
+  local target="$1"
+  if [[ -z "$target" ]]; then
+    return 1
+  fi
 
-  for f in "$dir"/*; do
-    [[ -x "$f" && -f "$f" ]] || continue
-    printf "cmd\t%s\t%s\t%s\n" "$(basename "$f")" "$(script_version "$f")" "$f"
-  done
-  for d in "$adir"/*; do
-    [[ -d "$d" || -L "$d" ]] || continue
-    printf "app\t%s\t%s\t%s\n" "$(basename "$d")" "$(script_version "$d")" "$d"
-  done
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$target" 2>/dev/null && return 0
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$target" <<'PY' 2>/dev/null && return 0
+import os, sys
+try:
+    print(os.path.realpath(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+PY
+  fi
+
+  if [[ -d "$target" ]]; then
+    (cd "$target" 2>/dev/null && pwd -P) && return 0
+  fi
+
+  local dir base
+  dir="$(dirname "$target")"
+  base="$(basename "$target")"
+  (cd "$dir" 2>/dev/null && printf "%s/%s\n" "$(pwd -P)" "$base")
 }
 
-__bm_preview() {
+__bm_guess_app_target() {
+  local app_dir="$1" name="$2" candidate
+  [[ -n "$app_dir" && -d "$app_dir" ]] || return 1
+
+  local candidates=(
+    "$app_dir/bin/$name"
+    "$app_dir/bin/run.sh"
+    "$app_dir/bin/start"
+    "$app_dir/$name"
+    "$app_dir/run.sh"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    [[ -x "$candidate" ]] && { printf "%s\n" "$candidate"; return 0; }
+  done
+
+  candidate="$(find "$app_dir" -maxdepth 2 -type f -perm -u+x -print 2>/dev/null | head -n1)"
+  [[ -n "$candidate" ]] && printf "%s\n" "$candidate"
+}
+
+__bm_list_tsv() {
+  bm_ensure_inventory
+  [[ -n "${BINMAN_LIST_CACHE:-}" && -f "$BINMAN_LIST_CACHE" ]] || return 0
+  local line kind name ver path type scope target preview help manifest run
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    IFS=$'\t' read -r kind name ver path type scope target preview help manifest run <<<"$line"
+    if (( SYSTEM_MODE )); then
+      if [[ "$scope" == system || "$scope" == manifest-system ]]; then
+        printf "%s\n" "$line"
+      fi
+    else
+      if [[ "$scope" != system && "$scope" != manifest-system ]]; then
+        printf "%s\n" "$line"
+      fi
+    fi
+  done < "$BINMAN_LIST_CACHE"
+}
+
+bm_render_preview() {
+  if (( $# <= 4 )); then
+    local type="${1:-}" name="${2:-}" ver="${3:-}" path="${4:-}" root="${5:-}"
+    if declare -F _bm_preview >/dev/null; then
+      if [[ -n "$root" ]]; then
+        _bm_preview "$type" "$name" "$ver" "$path" "$root"
+      else
+        _bm_preview "$type" "$name" "$ver" "$path"
+      fi
+      return
+    fi
+    if declare -F bm_show_help >/dev/null; then
+      bm_show_help "$type" "$name" "$ver" "$path"
+      return
+    fi
+    if declare -F _bm_show_help >/dev/null; then
+      _bm_show_help "$type" "$name" "$ver" "$path"
+      return
+    fi
+    if [[ -n "$root" ]]; then
+      _bm_preview_fallback "$type" "$name" "$ver" "$path" "$root"
+    else
+      _bm_preview_fallback "$type" "$name" "$ver" "$path"
+    fi
+    return
+  fi
+
+  local type="${1:-}" name="${2:-}" ver="${3:-}" path="${4:-}"
+  local preview_enc="${5:-}" help_enc="${6:-}" manifest="${7:-}" scope="${8:-}" run_enc="${9:-}" target="${10:-}"
+  local preview_text help_text run_text display_path display_type
+  preview_text="$(decode_field "$preview_enc")"
+  help_text="$(decode_field "$help_enc")"
+  run_text="$(decode_field "$run_enc")"
+  [[ -n "$ver" ]] || ver="unknown"
+  display_path="${path:-"-"}"
+  display_type="${type:-unknown}"
+
+  printf "\033[1m%s\033[0m  [%s]\n" "$name" "$ver"
+  printf "\033[2mPath:\033[0m %s\n" "$display_path"
+  printf "\033[2mType:\033[0m %s\n" "$display_type"
+  [[ -n "$scope" ]] && printf "\033[2mScope:\033[0m %s\n" "$scope"
+  [[ -n "$manifest" ]] && printf "\033[2mManifest:\033[0m %s\n" "$manifest"
+  if [[ -n "$run_text" ]]; then
+    printf "\033[2mRun:\033[0m %s\n" "$run_text"
+  fi
+  if [[ -n "$target" && "$target" != "$display_path" ]]; then
+    printf "\033[2mTarget:\033[0m %s\n" "$target"
+  fi
+  printf "\n"
+
+  if [[ -n "$preview_text" ]]; then
+    printf "\033[1mPreview:\033[0m\n%s\n" "$preview_text"
+  elif [[ -n "$help_text" ]]; then
+    printf "\033[1mHelp:\033[0m\n%s\n" "$help_text"
+  else
+    printf "(no preview available)\n"
+  fi
+}
+
+_bm_preview() {
   # Args: TYPE NAME VERSION PATH  (we'll also accept a single TSV arg for safety)
-  local type name ver path line
+  local type name ver path root line
 
   if [[ $# -eq 1 && "$1" == *$'\t'* ]]; then
     # fallback: got one TSV-joined arg
     line="$1"
     IFS=$'\t' read -r type name ver path <<<"$line"
   else
-    type="${1:-}"; name="${2:-}"; ver="${3:-}"; path="${4:-}"
+    type="${1:-}"; name="${2:-}"; ver="${3:-}"; path="${4:-}"; root="${5:-}"
   fi
 
   # strip any wrapping single/double quotes that sneak in
@@ -3823,32 +4725,149 @@ __bm_preview() {
   fi
 }
 
-# Internal router for hidden subcommands used by fzf
+_bm_preview_fallback() {
+  local type="${1:-}" name="${2:-}" ver="${3:-}" path="${4:-}" root="${5:-}"
+  local script="$path" app_dir="" line key value resolved_path title version desc usage
+  local meta_app="" meta_title="" meta_version="" meta_desc="" meta_usage=""
+  local limit=40 found_header=0 wrap_width=70 type_label=""
 
-# Fast path for hidden internal calls (used by fzf preview/reload)
-if [[ "${1:-}" == __internal:* ]]; then
-  __bm_internal "$1" "${@:2}"
-  exit $?
-fi
+  if [[ -n "$root" && -d "$root" ]]; then
+    app_dir="$root"
+  elif [[ -n "$path" && -d "$path" ]]; then
+    app_dir="$path"
+  elif [[ -n "$script" ]]; then
+    local parent
+    parent="$(dirname "$script")"
+    [[ -d "$parent" ]] && app_dir="$parent"
+  fi
+
+  if [[ -z "$script" && -n "$app_dir" ]]; then
+    script="$(__bm_guess_app_target "$app_dir" "$name")"
+  fi
+  [[ -z "$script" && -n "$app_dir" ]] && script="$app_dir"
+  [[ -z "$script" ]] && script="$path"
+
+  resolved_path="$(__bm_realpath "$script")"
+  [[ -z "$resolved_path" ]] && resolved_path="$script"
+
+  # Capture metadata headers from the top of the script
+  if [[ -n "$script" && -f "$script" ]]; then
+    while IFS='' read -r line && (( limit-- > 0 )); do
+      line="${line%$'\r'}"
+      [[ "$line" =~ ^[[:space:]]*# ]] || continue
+      if [[ "$line" =~ ^[[:space:]]*#[[:space:]]*(App|Title|Version|Description|Usage):[[:space:]]*(.*)$ ]]; then
+        found_header=1
+        key="${BASH_REMATCH[1]}"
+        value="${BASH_REMATCH[2]}"
+        case "$key" in
+          App) meta_app="$value" ;;
+          Title) meta_title="$value" ;;
+          Version) meta_version="$value" ;;
+          Description) [[ -z "$meta_desc" ]] && meta_desc="$value" ;;
+          Usage) [[ -z "$meta_usage" ]] && meta_usage="$value" ;;
+        esac
+      fi
+    done < "$script"
+  fi
+
+  local version_source=""
+  if [[ -n "$meta_version" ]]; then
+    version="$meta_version"
+  else
+    version_source="${app_dir:-$script}"
+    if [[ -n "$ver" ]]; then
+      version="$ver"
+    else
+      version="$(script_version "$version_source")"
+    fi
+  fi
+
+  if [[ -n "$meta_desc" ]]; then
+    desc="$meta_desc"
+  else
+    desc="$(script_desc "${app_dir:-$script}")"
+  fi
+  title="${meta_title:-$name}"
+  usage="$meta_usage"
+
+  # Determine wrap width (approx 60% of terminal)
+  if [[ -n "${COLUMNS:-}" ]]; then
+    local guess=$(( (COLUMNS * 60) / 100 - 4 ))
+    if (( guess >= 30 )); then
+      wrap_width="$guess"
+    fi
+  fi
+
+  type_label="${type:-unknown}"
+
+  printf "\033[1m%s\033[0m  [%s]\n" "${title:-$name}" "${version:-unknown}"
+  printf "\033[2mPath:\033[0m %s\n" "${resolved_path:-$path}"
+  printf "\033[2mType:\033[0m %s\n" "${type_label:-unknown}"
+  [[ -n "$meta_app" ]] && printf "\033[2mApp:\033[0m %s\n" "$meta_app"
+
+  if (( found_header )); then
+    if [[ -n "$desc" ]]; then
+      printf "\n\033[1mDescription:\033[0m\n"
+      printf "%s\n" "$(printf "%s" "$desc" | fold -s -w "$wrap_width")"
+    fi
+    if [[ -n "$usage" ]]; then
+      printf "\n\033[1mUsage:\033[0m\n"
+      printf "%s\n" "$(printf "%s" "$usage" | fold -s -w "$wrap_width")"
+    fi
+    if [[ -z "$desc" && -z "$usage" ]]; then
+      printf "\n(no preview available)\n"
+    fi
+  else
+    printf "\n(no preview available)\n"
+  fi
+
+  printf "\n↑↓ navigate • Enter=Back • d=Doctor • ctrl-r=Reload • Esc=Back\n"
+}
 
 __bm_internal(){
     local sub="$1"; shift || true
   case "$sub" in
     __internal:list)
-      _bm_list_tsv
+      __bm_list_tsv
       return 0 ;;
     __internal:preview)
-      _bm_preview "$@"
+      bm_render_preview "$@"
       return 0 ;;
   esac
   return 1
 }
-# __BINMAN_INTERNAL_FASTPATH__
+
+if ! declare -F __bm_internal >/dev/null; then
+  __bm_internal() {
+    local action="${1:-}"
+    shift || true
+    case "$action" in
+      help|showhelp|listhelp)
+        if declare -F bm_show_help >/dev/null; then
+          bm_show_help "$@"
+        elif declare -F _bm_show_help >/dev/null; then
+          _bm_show_help "$@"
+        else
+          :  # no-op
+        fi
+        ;;
+      *)
+        :  # ignore any other internal legacy call
+        ;;
+    esac
+  }
+fi
+
 if [[ "${1:-}" == __internal:* ]]; then
   __bm_internal "$1" "${@:2}"
   exit $?
 fi
 
+# __BINMAN_INTERNAL_FASTPATH__
+if [[ "${1:-}" == __internal:* ]]; then
+  __bm_internal "$1" "${@:2}"
+  exit $?
+fi
 
 _exists(){
     command -v "$1" >/dev/null 2>&1;
@@ -3976,48 +4995,67 @@ _parse_version(){
 }
 
 
+
 # --------------------------------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------------------------------
-if parse_common_opts "$@"; then exit 0; fi
-set -- "${ARGS_OUT[@]}"
-maybe_warn_auto_backup_disabled
-if [[ $# -eq 0 ]]; then binman_tui; exit 0; fi
+clear
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  # FLAGS ONLY when first arg looks like a flag
+  if [[ "${1:-}" == -* ]]; then
+    if parse_common_opts "$@"; then exit 0; fi
+    set -- "${ARGS_OUT[@]}"
 
-ACTION="${1:-}"; shift || true
-# Handle hidden internal calls used by fzf list UI
-if [[ "${ACTION:-}" == __internal:* ]]; then
-  __bm_internal "$ACTION" "$@"
-  exit $?
-fi
-
-case "$ACTION" in
-  install)
-    if [[ -n "$MANIFEST_FILE" ]]; then op_install_manifest "$MANIFEST_FILE"; else op_install "$@"; fi;;
-  uninstall) op_uninstall "$@";;
-  verify) op_verify "$@";;
-  list)
-    if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
-      op_list_ranger
-    else
-      op_list
+    if (( REINDEX_REQUEST )); then
+      bm_force_reindex
+      if build_inventory; then
+        (( QUIET )) || ok "Inventory rebuilt."
+      else
+        warn "No manifest entries found."
+      fi
+      [[ $# -eq 0 ]] && exit 0
     fi
-    ;;
-  doctor) cmd_doctor "$@";;
-  update) op_update "$@";;
-  new) new_cmd "$@";;
-  wizard) new_wizard;;
-  backup) op_backup "${1:-}";;
-  restore) op_restore "${1:-}";;
-  self-update) op_self_update;;
-  rollback)
-    if [[ -n "${1:-}" ]]; then apply_rollback "$1"; else id="$(latest_rollback_id || true)"; [[ -n "$id" ]] && apply_rollback "$id" || warn "No rollback snapshots yet"; fi;;
-  prune-rollbacks) cmd_prune_rollbacks;;
-  analyze) cmd_analyze "$@";;
-  bundle) op_bundle "${1:-}";;
-  test) op_test "$@";;
-  tui|"") binman_tui;;
-  version) say "${SCRIPT_NAME} v${VERSION}";;
-  help) usage;;
-  *) usage >&2; exit 2;;
-esac
+
+    if [[ $# -eq 0 ]]; then
+      if __has_fzf && [[ -t 1 ]]; then
+        __bm_menu_loop
+        exit 0
+      else
+        binman_tui
+        exit 0
+      fi
+    fi
+
+  fi
+
+  # INTERACTIVE (no args)
+  if [[ $# -eq 0 ]]; then
+    if __has_fzf && [[ -t 1 ]]; then
+      __bm_menu_loop
+      exit 0
+    else
+      binman_tui
+      exit 0
+    fi
+  fi
+
+
+  # DIRECT / INTERNAL
+  ACTION="${1:-}"; shift || true
+  if [[ "${ACTION:-}" == __internal:* ]]; then
+    __bm_internal "$ACTION" "$@"
+    exit $?
+  fi
+  case "$ACTION" in
+    __preview_idx)
+      if ! _ensure_inventory_arrays; then build_inventory || true; fi
+      _render_preview_for_idx "${1:-0}"
+      ;;
+    __preview)
+      bm_render_preview "$@"
+      ;;
+    *)
+      __bm_run_action_safe "$ACTION" "$@" || :
+      ;;
+  esac
+fi
