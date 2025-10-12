@@ -32,6 +32,18 @@ esac
 BINMAN_LIST_SIG=""
 REINDEX_REQUEST=0
 
+EMIT_REHASH=0
+_rest=()
+for a in "$@"; do
+  if [[ "$a" == "--emit-rehash" ]]; then
+    EMIT_REHASH=1
+  else
+    _rest+=("$a")
+  fi
+done
+set -- "${_rest[@]}"
+
+
 # ===== Early, standalone preview handler (fields version) =====
 if [[ "${1:-}" == "--_preview_fields" ]]; then
   # Args: type name ver path desc  (5 separate args from fzf {1..5})
@@ -124,11 +136,67 @@ OPTERR=0
 # --------------------------------------------------------------------------------------------------
 # Prefer the project's fzf() checker if it exists; otherwise fall back to binary check.
 __has_fzf() {
-  if declare -F fzf >/dev/null 2>&1; then
-    fzf   # your function should return 0/1 without launching UI
-    return $?
-  fi
   command -v fzf >/dev/null 2>&1
+}
+
+# Back-compat alias for menu action name
+toggle_system_mode() { toggle_system "$@"; }
+
+# Toggle between user mode (default) and system mode (requires write access)
+toggle_system() {
+  # Flip the flag
+  if (( SYSTEM_MODE )); then
+    SYSTEM_MODE=0
+  else
+    SYSTEM_MODE=1
+  fi
+
+  # If enabling system mode, verify dirs and permissions
+  if (( SYSTEM_MODE )); then
+    ensure_system_dirs || {
+      SYSTEM_MODE=0
+      warn "Could not ensure system directories. Staying in user mode."
+      return 1
+    }
+    if ! ensure_system_write; then
+      SYSTEM_MODE=0
+      warn "No write access to ${SYSTEM_BIN} and/or ${SYSTEM_APPS}. Staying in user mode."
+      return 1
+    fi
+  fi
+
+  # UX: show targets so user knows where stuff will go now
+  local tgt_bin tgt_apps
+  if (( SYSTEM_MODE )); then
+    tgt_bin="$SYSTEM_BIN"
+    tgt_apps="$SYSTEM_APPS"
+  else
+    tgt_bin="$BIN_DIR"
+    tgt_apps="$APP_STORE"
+  fi
+
+  say "System mode is now: $([[ $SYSTEM_MODE -eq 1 ]] && echo 'ON' || echo 'OFF')"
+  say "Target bin:  ${tgt_bin}"
+  say "Target apps: ${tgt_apps}"
+  return 0
+}
+
+# Print the correct rehash command for the parent shell (best-effort)
+rehash_hint() {
+  local parent_shell
+  parent_shell="$(ps -p "${PPID}" -o comm= 2>/dev/null || true)"
+
+  case "$parent_shell" in
+    zsh|zsh-*)
+      say "${C_OK:-}[BinMan] -> run: ${BOLD:-}rehash${RESET:-} to refresh your shell."
+      ;;
+    bash|bash-*)
+      say "${C_OK:-}[BinMan] -> run: ${BOLD:-}hash -r${RESET:-} to refresh your shell."
+      ;;
+    *)
+      say "${C_OK:-}[BinMan] -> refresh your shell: ${BOLD:-}rehash${RESET:-} (zsh) or ${BOLD:-}hash -r${RESET:-} (bash)."
+      ;;
+  esac
 }
 
 # Remove zero-length/whitespace args from "$@"
@@ -285,7 +353,7 @@ strip_inline_comment(){
 
 __bm_tui_install_flow() {
   # Use fzf file/dir picker from CWD; supports manual multi-line entry too
-  if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
+  if __has_fzf && [[ -t 1 ]]; then
     mapfile -t items < <(find . -maxdepth 1 -mindepth 1 -printf '%P\n' 2>/dev/null | sort)
     items=("Type a path/URL…" "${items[@]}")
     sel="$(printf '%s\n' "${items[@]}" | fzf --prompt="Install > " --height=60% --reverse || true)"
@@ -294,6 +362,7 @@ __bm_tui_install_flow() {
     if [[ "$sel" == "Type a path/URL…" ]]; then
       printf "File/dir/URL (or --manifest FILE): "
       manual_lines=()
+
       if IFS= read -r line; then
         [[ -z "$line" ]] && { say "Cancelled."; return 0; }
         manual_lines+=("$line")
@@ -303,33 +372,54 @@ __bm_tui_install_flow() {
       fi
 
       targets=(); manifest=""
+
       for entry in "${manual_lines[@]}"; do
         [[ -z "$entry" ]] && continue
         if [[ "$entry" =~ ^--manifest[[:space:]]+ ]]; then
-          manifest="${entry#--manifest }"; continue
+          manifest="${entry#--manifest }"
+          continue
         fi
         entry="${entry%/}"
         if [[ "$entry" == /* ]]; then abs="$entry"; else abs="$PWD/$entry"; fi
-        if [[ -f "$abs" || -d "$abs" ]]; then targets+=("$abs"); else targets+=("$entry"); fi
+        if [[ -f "$abs" || -d "$abs" ]]; then
+          targets+=("$abs")
+        else
+          targets+=("$entry")
+        fi
       done
 
       if [[ -n "$manifest" ]]; then
         [[ "$manifest" != /* && -e "$manifest" ]] && manifest="$PWD/$manifest"
         op_install_manifest "$manifest"
+        rehash_hint
+        printf "%sPress Enter to return to BinMan…%s" "$UI_DIM" "$UI_RESET"; read -r
+        return 0
       elif (( ${#targets[@]} > 0 )); then
         op_install "${targets[@]}"
+        rehash_hint
+        printf "%sPress Enter to return to BinMan…%s" "$UI_DIM" "$UI_RESET"; read -r
+        return 0
       else
         say "Cancelled."
+        return 0
       fi
+
     else
       # Selected a visible item; pass absolute path
       pick="$sel"
       [[ "$pick" != /* ]] && pick="$PWD/$pick"
       op_install "$pick"
+      rehash_hint
+      printf "%sPress Enter to return to BinMan…%s" "$UI_DIM" "$UI_RESET"; read -r
+      return 0
     fi
+
   else
-    # No TTY/fzf → fall back to plain op_install (expects args)
+    # No TTY/fzf → fall back to plain op_install (expects args from caller)
     op_install
+    rehash_hint
+    printf "%sPress Enter to return to BinMan…%s" "$UI_DIM" "$UI_RESET"; read -r
+    return 0
   fi
 }
 
@@ -659,7 +749,78 @@ in_path(){ case ":$PATH:" in *":${BIN_DIR}:"*) return 0;; *) return 1;; esac; }
 ensure_dir(){ mkdir -p "$1"; }
 ensure_bin(){ ensure_dir "$BIN_DIR"; }
 ensure_apps(){ ensure_dir "$APP_STORE"; }
-ensure_system_dirs(){ ensure_dir "$SYSTEM_BIN"; ensure_dir "$SYSTEM_APPS"; }
+
+# Create system dirs if missing, escalating when required.
+# Returns 0 on success (dirs exist), 1 on failure (stay in user mode).
+ensure_system_dirs() {
+  : "${SYSTEM_BIN:=/usr/local/bin}"
+  : "${SYSTEM_APPS:=/usr/local/share/binman/apps}"
+
+  # Helper to run a command as root when needed
+  _as_root() {
+    if [[ $EUID -eq 0 ]]; then
+      "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo "$@"
+    elif command -v pkexec >/dev/null 2>&1; then
+      pkexec "$@"
+    else
+      return 126  # cannot escalate
+    fi
+  }
+
+  # Try to create parents first (install -d is atomic-ish and idempotent)
+  if [[ ! -d "$SYSTEM_APPS" ]]; then
+    if mkdir -p "$SYSTEM_APPS" 2>/dev/null; then
+      :
+    else
+      _as_root install -d -m 0755 "$SYSTEM_APPS" || return 1
+    fi
+  fi
+
+  if [[ ! -d "$SYSTEM_BIN" ]]; then
+    if mkdir -p "$SYSTEM_BIN" 2>/dev/null; then
+      :
+    else
+      _as_root install -d -m 0755 "$SYSTEM_BIN" || return 1
+    fi
+  fi
+
+  # Final sanity: both must be writable by whoever will perform writes
+  # If not root, ensure we *can* write via sudo/pkexec when needed.
+  if [[ -w "$SYSTEM_BIN" && -w "$SYSTEM_APPS" ]]; then
+    return 0
+  fi
+
+  # Probe that we can write with escalation (no-op temp touches)
+  _as_root test -w "$SYSTEM_BIN"  || return 1
+  _as_root test -w "$SYSTEM_APPS" || return 1
+
+  return 0
+}
+
+# Return 0 if we can write (directly or via sudo/pkexec), else 1
+ensure_system_write() {
+  : "${SYSTEM_BIN:=/usr/local/bin}"
+  : "${SYSTEM_APPS:=/usr/local/share/binman/apps}"
+
+  if [[ -w "$SYSTEM_BIN" && -w "$SYSTEM_APPS" ]]; then
+    return 0
+  fi
+  if [[ $EUID -eq 0 ]]; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    # sudo -n: non-interactive probe; if it fails, still allow interactive later
+    sudo -n true 2>/dev/null || true
+    return 0
+  fi
+  if command -v pkexec >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
 
 maybe_warn_path(){
   (( SYSTEM_MODE == 0 )) || return 0
@@ -756,6 +917,10 @@ apply_rollback(){
   _merge_dir "${src}/bin"  "$BIN_DIR"
   _merge_dir "${src}/apps" "$APP_STORE"
   rehash_shell
+  if (( EMIT_REHASH )); then
+    printf '[ -n "${ZSH_VERSION:-}" ] && rehash || { [ -n "${BASH_VERSION:-}" ] && hash -r; }%s' $'\n'
+    return 0
+  fi
   ok "Rollback applied: $id"
 }
 
@@ -1464,12 +1629,12 @@ EOF
 # Prompt helpers (TTY-safe; we always read/write via /dev/tty inside wizard/TUI)
 # --------------------------------------------------------------------------------------------------
 prompt_init(){ 
-	: "${UI_RESET:=}"; 
-	: "${UI_BOLD:=}"; 
-	: "${UI_DIM:=}"; 
-	: "${UI_CYAN:=}"; 
-	: "${UI_GREEN:=}"; 
-	: "${UI_YELLOW:=}"; 
+    : "${UI_RESET:=}"; 
+    : "${UI_BOLD:=}"; 
+    : "${UI_DIM:=}"; 
+    : "${UI_CYAN:=}"; 
+    : "${UI_GREEN:=}"; 
+    : "${UI_YELLOW:=}"; 
 }
 
 prompt_kv(){
@@ -1899,6 +2064,7 @@ EOF
 
   maybe_warn_path
   rehash_shell
+  rehash_hint
   (( JSON_MODE )) || say "$count item(s) installed."
   return $exit_code
 }
@@ -2003,8 +2169,10 @@ op_uninstall(){
   done
 
   rehash_shell
+  rehash_hint
   (( JSON_MODE )) || say "$count item(s) removed."
 }
+
 
 
 
@@ -2528,6 +2696,7 @@ EOF
 # Flags:
 #   --quiet      : suppress any pauses/handoffs; same as BINMAN_NONINTERACTIVE=1
 #   --fix-path   : attempt PATH patching in common shells
+
 op_doctor(){
   local QUIET=0
   FIX_PATH=${FIX_PATH:-0}
@@ -2839,6 +3008,9 @@ cmd_analyze(){
   printf "%sHint:%s Use sysclean for interactive cleanup.\n" "$UI_DIM" "$UI_RESET"
 }
 
+
+
+# --------------------------------------------------------------------------------------------------
 # UPDATE — reinstall with overwrite (optionally pull a git dir first)
 # --------------------------------------------------------------------------------------------------
 op_update(){
@@ -2989,8 +3161,13 @@ op_restore(){
 
   _chmod_bin_execs
   rehash_shell
+  if (( EMIT_REHASH )); then
+    printf '[ -n "${ZSH_VERSION:-}" ] && rehash || { [ -n "${BASH_VERSION:-}" ] && hash -r; }%s' $'\n'
+    return 0
+  fi
   ok "Restore complete."
 }
+
 
 
 
@@ -4095,19 +4272,6 @@ __bm_menu_loop() {
   done
 }
 
-
-# Write guard for /usr/local
-ensure_system_write(){
-  if [[ ! -w "$SYSTEM_BIN" || ! -w "$SYSTEM_APPS" ]]; then
-    if (( ! SYSTEM_WRITE_WARNED )); then
-      SYSTEM_WRITE_WARNED=1
-      err "System mode requires write access to ${SYSTEM_BIN} and ${SYSTEM_APPS}. Use 'Toggle System Mode' to install to user bin instead."
-    fi
-    return 1
-  fi
-  return 0
-}  # <-- important: close this function
-
 __bm_mainmenu_build() {
   local header preview_cmd tsv sel action
   local -a _opts
@@ -4116,9 +4280,8 @@ __bm_mainmenu_build() {
   header="BinMan — choose an action (↑↓ to move, Enter to run, Alt-q to abort)"
   preview_cmd='cut -f4'
 
-  # Columns: key \t label \t action \t preview  (real TSV)
-  tsv=$(
-    cat <<'TSV'
+tsv=$(
+  cat <<'TSV'
 1	Install	install	Install apps/scripts into your ~/bin or system bin.
 2	Uninstall	uninstall	Remove installed items and clean up stubs.
 3	List	list	Browse all items with live preview and quick actions.
@@ -4133,7 +4296,9 @@ c	Test	test	Run developer/test utilities.
 t	Toggle System Mode	toggle_system	Switch between user/system install targets.
 q	Quit	quit	Exit BinMan.
 TSV
-  )
+)
+
+
 
   # Drive fzf from TSV; show key+label, preview the 4th column.
   FZF_DEFAULT_OPTS='' \
@@ -4155,25 +4320,34 @@ _bm_mainmenu_fzf() { __bm_mainmenu_build; }
 __bm_mainmenu_fzf() { __bm_mainmenu_build; }
 
 __bm_run_action_safe() {
-  local a="$1"
+  local a="$1"; shift || true
   case "$a" in
     install)
-      if [[ -n "$MANIFEST_FILE" ]]; then
-        op_install_manifest "$MANIFEST_FILE"
+      # DO NOT shift here — outer dispatcher already shifted the action off.
+      if [[ -n "${MANIFEST_FILE:-}" ]]; then
+        op_install_manifest "$MANIFEST_FILE" "$@"
+      elif [[ $# -gt 0 ]]; then
+        # args present → install exactly what was passed (path/URL), no picker
+        op_install "$@"
       elif [[ -t 1 ]]; then
+        # interactive and no args → open TUI
         __bm_tui_install_flow
       else
-        op_install
+        err "No install target provided."
+        return 1
       fi
       ;;
     uninstall)
-      if [[ -t 1 ]]; then
+      # Use args if provided; only open TUI when no args and interactive
+      if [[ $# -gt 0 ]]; then
+        op_uninstall "$@"
+      elif [[ -t 1 ]]; then
         __bm_tui_uninstall_flow
       else
-        op_uninstall
+        err "No uninstall target provided."
+        return 1
       fi
       ;;
-
     verify)          op_verify ;;
     list)
       if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
@@ -4221,6 +4395,7 @@ __bm_run_action_safe() {
 # Returns 1 for normal flow (continue dispatch with ARGS_OUT).
 # Parses only leading flags. Leaves first non-flag arg in ARGS_OUT.
 # Returns 0 if it handled a terminal action (help/version), 1 otherwise.
+
 parse_common_opts() {
   OPTERR=0
   ARGS_OUT=()
