@@ -84,7 +84,7 @@ export BINMAN_SELF
 # Constants & defaults
 # --------------------------------------------------------------------------------------------------
 SCRIPT_NAME="binman"
-VERSION="1.7.3"
+VERSION="1.8.0"
 
 # User-scoped locations (XDG-ish)
 BIN_DIR="${HOME}/.local/bin"
