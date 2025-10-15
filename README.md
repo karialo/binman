@@ -63,7 +63,9 @@ So… do you keep pretending your system is “organized enough,” or do you le
 - **Uninstall**: rip out shims and app dirs in one shot, user or system scope, then auto-rehash your shell.
 - **Autodetect brains**: app installs sniff out entry points for bash, Python, Node/TS, Deno, Go, Rust, Ruby, PHP; fall back to `--entry`, `--workdir`, and friends when the repo is feral.
 - **Per-app venvs**: `--venv`, `--req`, and `--python` spin up a private `.venv`, upgrade the interpreter, and pip install quietly before every launch.
-- **List + TUI**: fuzzy-search with ANSI previews (`fzf` if you have it), neon dashboard when you run `binman`, and one-keystroke doctor/bundle/test bindings.
+- **List + TUI**: fuzzy-search with ANSI previews (`fzf` if you have it), neon dashboard when you run `binman`, and one-keystroke doctor/bundle/test bindings — apps shadow any duplicate shims so you only see what actually matters.
+- **System mode niceties**: system installs still land in `/usr/local/*`, and BinMan now refreshes a `/bin/<name>` symlink automatically so root-y shells can find your toys without mashing `$PATH`.
+- **sudo helper**: `binman sudo <name>` launches an installed tool under sudo without juggling PATH gymnastics.
 - **Update**: reinstall from file/dir, optionally `--git <repo>` pull first, or let `self-update` fetch the latest BinMan script.
 - **Backup/Restore**: archive everything (`zip` > `tar.gz`) and restore atomically; rollbacks are auto-created before every destructive move.
 - **Bundle export**: portable archives with a manifest so you can clone your toolbox onto new machines.
@@ -72,7 +74,7 @@ So… do you keep pretending your system is “organized enough,” or do you le
 - **Generator / Wizard**: `binman new` / `binman wizard` scaffold scripts/apps across Bash, Python, Node/TS, Deno, Go, Rust, Ruby, PHP—with optional git init and `gitprep` hand-off.
 - **Stress test**: `binman test stress` hammers installs in parallel (`--jobs`, `--verbose`, `--keep`, `--quick`).
 
-Version in this README: **v1.7.3**
+Version in this README: **v1.8.0**
 
 ---
 
@@ -193,6 +195,7 @@ binman install --manifest tools.txt
 ```
 
 Tip: for app installs, BinMan creates a tiny shim in your bin that `cd`s into the app, then runs the detected or provided entry. With `--venv`, Python apps get a local `.venv` that’s created on first run and quietly `pip install -r` if a requirements file is present.
+Flip on `--system` and the shim also gets a `/bin/<name>` symlink so root shells and cron jobs stop pretending they’ve never heard of your tools.
 
 ### Uninstall
 
@@ -200,12 +203,14 @@ Tip: for app installs, BinMan creates a tiny shim in your bin that `cd`s into th
 binman uninstall hello
 binman uninstall MyApp
 ```
+In system mode the matching `/bin/<name>` symlink is scrubbed automatically if it pointed at your shim, so no orphaned ghosts haunt `/bin`.
 
 ### List
 
 ```
 binman list
 ```
+Shows both apps and shims (with versions), automatically hiding any duplicate shim whose app twin already lives in the catalog. The TUI view mirrors this, so no more double vision.
 
 ### Update (with optional git pull)
 
@@ -261,6 +266,14 @@ binman test stress --jobs 8 --verbose --keep
 ```
 
 Plain tests run the command with `--help` (or whatever args you pass after `--`). `stress` spins up a scratch playground, installs examples in parallel, and lets you tune concurrency with `--jobs`, preserve artifacts with `--keep`, or speed-run with `--quick`.
+
+### sudo helper
+
+```
+binman sudo my-tool -- --flag
+```
+
+Runs an installed command via `sudo` while BinMan babysits the PATH. Handy when you toggled system mode or just need elevated antics without memorizing `/usr/local/bin`.
 
 ### New (scaffold) & Wizard
 
