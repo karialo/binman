@@ -1278,7 +1278,6 @@ _detect_entry(){
 
   # ---------- node / ts ----------
   if [[ "$lang" == "node" && -f "$d/package.json" ]]; then
-    # parse with python; print two lines to avoid nested here-doc tricks
     local __node=() node_bin="" node_start=""
     mapfile -t __node <<<"$(python3 - "$d" <<'PY'
 import json,sys,os
@@ -1301,7 +1300,6 @@ PY
     node_start="${__node[1]}"
     if [[ -n "$node_bin"   ]]; then echo "node $node_bin||";     return 0; fi
     if [[ -n "$node_start" ]]; then echo "npm run start||";       return 0; fi
-    # bare TS repo (best-effort if user installed tsx)
     [[ -f "$d/src/index.ts" ]] && { echo "tsx src/index.ts||"; return 0; }
   fi
 
@@ -1333,12 +1331,10 @@ PY
       < <(find "$d/cmd" -mindepth 2 -maxdepth 2 -type f -name main.go -print0 2>/dev/null)
     if ((${#mains[@]})); then
       local choose=""
-      # 1) exact cmd/<repo>/main.go
       for m in "${mains[@]}"; do
         local dir; dir="$(basename "$(dirname "$m")")"
         [[ "${dir,,}" == "$want" || "${dir,,}" == "$want_hy" ]] && { choose="$dir"; break; }
       done
-      # 2) first non-tool-ish dir
       if [[ -z "$choose" ]]; then
         for m in "${mains[@]}"; do
           local dir; dir="$(basename "$(dirname "$m")")"
@@ -1347,7 +1343,6 @@ PY
           choose="$dir"; break
         done
       fi
-      # 3) fallback: first
       [[ -z "$choose" ]] && choose="$(basename "$(dirname "${mains[0]}")")"
       echo "go run ./cmd/$choose||"; return 0
     fi
@@ -1356,22 +1351,16 @@ PY
 
   # ---------- ruby ----------
   if [[ "$lang" == "ruby" ]]; then
-    # only use bundler if it's installed; otherwise fall back to running directly
     local rb_prefix=""
     if [[ -f "$d/Gemfile" ]] && command -v bundle >/dev/null 2>&1; then
       rb_prefix="bundle exec "
     fi
-
-    # Prefer exe/<repo> (Ruby gem layout) then bin/<repo> (handle hyphen/underscore)
     if [[ -x "$d/exe/$want"    ]]; then echo "${rb_prefix}./exe/$want||";    return 0; fi
     if [[ -x "$d/exe/$want_hy" ]]; then echo "${rb_prefix}./exe/$want_hy||"; return 0; fi
     if [[ -x "$d/bin/$want"    ]]; then echo "${rb_prefix}./bin/$want||";    return 0; fi
     if [[ -x "$d/bin/$want_hy" ]]; then echo "${rb_prefix}./bin/$want_hy||"; return 0; fi
-
-    # Gem executables from *.gemspec (first listed)
     local gemspec; gemspec=$(ls "$d"/*.gemspec 2>/dev/null | head -n1 || true)
     if [[ -n "$gemspec" ]]; then
-      # crude parse handles: s.executables = ["colorls"]  / %w[colorls]
       local exe
       exe="$(grep -Eo 'executables\s*=\s*(\[.*\]|%w\[[^]]+\])' "$gemspec" \
             | head -n1 \
@@ -1381,8 +1370,6 @@ PY
       [[ -n "$exe" && -x "$d/exe/$exe" ]] && { echo "${rb_prefix}./exe/$exe||"; return 0; }
       [[ -n "$exe" && -x "$d/bin/$exe" ]] && { echo "${rb_prefix}./bin/$exe||"; return 0; }
     fi
-
-    # Loose ruby entry points
     [[ -f "$d/src/main.rb" ]] && { echo "ruby src/main.rb||"; return 0; }
     [[ -f "$d/main.rb"    ]] && { echo "ruby main.rb||";    return 0; }
   fi
@@ -1413,7 +1400,6 @@ PY
 
   # ---------- python ----------
   if [[ -f "$d/pyproject.toml" ]]; then
-    # poetry / PEP621 scripts → module
     local script
     script="$(
 python3 - "$d" <<'PY'
@@ -1437,12 +1423,11 @@ print(first_script(data))
 PY
 )"
     if [[ -n "$script" ]]; then
-      script="${script%%:*}"                     # pkg:func → pkg
+      script="${script%%:*}"
       echo "python -m $script||$req"; return 0
     fi
   fi
 
-  # setup.cfg console_scripts
   if [[ -f "$d/setup.cfg" ]]; then
     local cfg_script
     cfg_script="$(
@@ -1491,6 +1476,30 @@ PY
     done
   fi
 
+  # NEW: recursive hunt for package __main__.py (skip venvs/tox/direnv)
+  # Prefer parent dir matching normalized repo name; prefer src/ file execution.
+  local _hits=() _best="" rel="" parent=""
+  while IFS= read -r -d '' f; do _hits+=("$f"); done < <(
+    find "$d" -type f -name '__main__.py' \
+      -not -path '*/.venv/*' -not -path '*/venv/*' \
+      -not -path '*/env/*'   -not -path '*/.tox/*' \
+      -not -path '*/.direnv/*' -print0 2>/dev/null
+  )
+  if ((${#_hits[@]})); then
+    for h in "${_hits[@]}"; do
+      parent="$(basename "$(dirname "$h")")"
+      local pl="${parent,,}"; pl="${pl//-/_}"
+      if [[ "$pl" == "$want" || "$pl" == "$want_hy" ]]; then _best="$h"; break; fi
+    done
+    [[ -z "$_best" ]] && _best="${_hits[0]}"
+    rel="${_best#"$d/"}"; parent="$(basename "$(dirname "$_best")")"
+    if [[ "$rel" == src/* ]]; then
+      echo "python3 $rel||$req"; return 0
+    else
+      echo "python3 -m $parent||$req"; return 0
+    fi
+  fi
+
   # ---------- generic bin/ & exe/ fallbacks ----------
   if [[ -d "$d/exe" ]]; then
     mapfile -t _exes < <(find "$d/exe" -maxdepth 1 -type f -perm -u+x -printf '%f\n' 2>/dev/null | sort)
@@ -1518,7 +1527,6 @@ PY
         echo "./bin/$b||"; return 0
       fi
     done
-    # last-ditch: single shebangbed script in bin/
     local sheb=()
     for b in "${_bins[@]}"; do _has_shebang "$d/bin/$b" && sheb+=("$b"); done
     if ((${#sheb[@]}==1)); then echo "./bin/${sheb[0]}||"; return 0; fi
