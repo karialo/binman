@@ -426,13 +426,19 @@ __bm_tui_install_flow() {
 __bm_tui_uninstall_flow() {
   if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
     mapfile -t _cmds < <(_get_installed_cmd_names)
-    mapfile -t _apps < <(_get_installed_app_names)
+    _apps=()
+    # [Patch] Uninstall: only list shims unless BINMAN_INCLUDE_APPS=1
+    if [[ "${BINMAN_INCLUDE_APPS:-0}" == "1" ]]; then
+      mapfile -t _apps < <(_get_installed_app_names)
+    fi
     if ((${#_cmds[@]}==0 && ${#_apps[@]}==0)); then
       warn "Nothing to uninstall."; return 0
     fi
     _choices=()
     for c in "${_cmds[@]}"; do _choices+=("cmd  $c"); done
-    for a in "${_apps[@]}"; do _choices+=("app  $a"); done
+    if [[ "${BINMAN_INCLUDE_APPS:-0}" == "1" ]]; then
+      for a in "${_apps[@]}"; do _choices+=("app  $a"); done
+    fi
     sel="$(printf '%s\n' "${_choices[@]}" | fzf --multi --prompt="Uninstall > " --height=60% --reverse || true)"
     [[ -z "$sel" ]] && { say "Cancelled."; return 0; }
     names="$(echo "$sel" | awk '{print $2}' | tr '\n' ' ')"
@@ -516,9 +522,15 @@ _get_installed_app_names() {
 
 # Pretty print a compact list for uninstall prompt
 _print_uninstall_menu() {
-  local cmds apps
+  local cmds apps include_apps
+  include_apps="${BINMAN_INCLUDE_APPS:-0}"
   cmds=($(_get_installed_cmd_names))
-  apps=($(_get_installed_app_names))
+  # [Patch] Uninstall: only list shims unless BINMAN_INCLUDE_APPS=1
+  if [[ "$include_apps" == "1" ]]; then
+    apps=($(_get_installed_app_names))
+  else
+    apps=()
+  fi
 
   echo
   echo "Installed commands:"
@@ -527,12 +539,15 @@ _print_uninstall_menu() {
   else
     echo "  (none)"
   fi
-  echo
-  echo "Installed apps:"
-  if ((${#apps[@]})); then
-    printf "  %s\n" "${apps[@]}"
-  else
-    echo "  (none)"
+
+  if [[ "$include_apps" == "1" ]]; then
+    echo
+    echo "Installed apps:"
+    if ((${#apps[@]})); then
+      printf "  %s\n" "${apps[@]}"
+    else
+      echo "  (none)"
+    fi
   fi
   echo
 }
@@ -822,6 +837,51 @@ ensure_system_write() {
 }
 
 
+# [Patch] Create/update a /bin symlink to the system shim
+ensure_system_symlink() {
+  local name="$1"
+  local target="$SYSTEM_BIN/$name"
+  local link="/bin/$name"
+
+  if [[ ! -x "$target" ]]; then
+    debug "symlink: target missing or not executable: $target"
+    return 0
+  fi
+
+  if [[ ! -e "$link" ]]; then
+    ln -s "$target" "$link" && debug "symlink: created $link -> $target" || err "failed to create $link"
+    return 0
+  fi
+
+  if [[ -L "$link" ]]; then
+    local cur; cur="$(readlink -f "$link" 2>/dev/null || true)"
+    if [[ "$cur" == "$target" ]]; then
+      debug "symlink: already correct $link -> $target"
+    else
+      rm -f "$link" && ln -s "$target" "$link" && debug "symlink: updated $link -> $target" || err "failed to update $link"
+    fi
+    return 0
+  fi
+
+  err "refusing to overwrite existing /bin/$name (not a symlink)"
+  return 1
+}
+
+# [Patch] Remove /bin symlink if it points to the system shim
+remove_system_symlink_if_owned() {
+  local name="$1"
+  local target="$SYSTEM_BIN/$name"
+  local link="/bin/$name"
+
+  [[ -L "$link" ]] || { debug "symlink: no link at $link"; return 0; }
+  local cur; cur="$(readlink -f "$link" 2>/dev/null || true)"
+  if [[ "$cur" == "$target" ]]; then
+    rm -f "$link" && debug "symlink: removed $link" || err "failed to remove $link"
+  else
+    debug "symlink: $link points to $cur (not ours), leaving intact"
+  fi
+}
+
 maybe_warn_path(){
   (( SYSTEM_MODE == 0 )) || return 0
   (( PATH_WARNED )) && return 0
@@ -943,6 +1003,34 @@ script_version(){
   local v
   v=$(grep -m1 -E '^(VERSION=|# *Version:|__version__ *=)' "$f" 2>/dev/null || true)
   [[ -n "$v" ]] && echo "$v" | sed -E 's/^[# ]*Version:? *//; s/^VERSION=//; s/__version__ *= *//; s/[\"\x27]//g' || echo "unknown"
+}
+
+# [Patch] Better version detection for standalone shims/scripts
+shim_version() {
+  local f="$1"
+  local v
+
+  # Author-stamped tags inside shim:
+  #   # binman:version=1.2.3
+  #   BINMAN_VERSION=1.2.3
+  v="$(grep -E '^(#\s*binman:version=|BINMAN_VERSION=)' "$f" 2>/dev/null | head -n1 | sed 's/.*=//')" || true
+  [[ -n "$v" ]] && { printf '%s\n' "$v"; return 0; }
+
+  # If the shim is a symlink/wrapper into an app bin/, try to read ../VERSION
+  if [[ -L "$f" ]]; then
+    local t d
+    t="$(readlink -f "$f" 2>/dev/null)" || t=""
+    [[ -n "$t" ]] && d="$(dirname "$t")"
+    if [[ -n "$d" && -f "$d/../VERSION" ]]; then
+      cat "$d/../VERSION"; return 0
+    fi
+  fi
+
+  # Sidecar pattern: <shim>.version
+  [[ -f "$f.version" ]] && { cat "$f.version"; return 0; }
+
+  # Fallback to the existing implementation
+  script_version "$f"
 }
 
 script_desc(){
@@ -1454,6 +1542,8 @@ _make_shim_system(){
   local name="$1" entry="$2" shim="$SYSTEM_BIN/$name"
   printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"
   chmod +x "$shim"
+  # [Patch] Maintain /bin symlink for system shim
+  ensure_system_symlink "$name"
 }
 
 # --- user shim: custom entry (no venv) ---------------------------------------
@@ -1512,6 +1602,8 @@ eval "__ARR=( \$CMD_RAW )"
 exec "\${__ARR[@]}" "\$@"
 EOF
   chmod +x "$shim"
+  # [Patch] Maintain /bin symlink for system shim
+  ensure_system_symlink "$name"
 }
 
 # --- user shim: custom entry with Python venv --------------------------------
@@ -1621,6 +1713,8 @@ fi
 exec "\${__ARR[@]}" "\$@"
 EOF
   chmod +x "$shim"
+  # [Patch] Maintain /bin symlink for system shim
+  ensure_system_symlink "$name"
 }
 
 
@@ -1822,6 +1916,8 @@ _uninstall_app_system(){
   local shim_removed=0 dest_removed=0
   if [[ -e "$shim" ]]; then rm -f "$shim"; shim_removed=1; fi
   if [[ -e "$dest" ]]; then rm -rf "$dest"; dest_removed=1; fi
+  # [Patch] Drop /bin symlink if it pointed at our system shim
+  remove_system_symlink_if_owned "$name"
   printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$shim" "$dest" "$shim_removed" "$dest_removed"
 }
 
@@ -2059,6 +2155,11 @@ EOF
     fi
     # ------------------------------------------------------------------------
 
+    if (( SYSTEM_MODE )); then
+      # [Patch] Ensure system shim also lives in /bin for PATH compatibility
+      ensure_system_symlink "$name"
+    fi
+
     count=$((count+1))
   done
 
@@ -2105,9 +2206,12 @@ op_uninstall(){
       fi
 
       ensure_system_write
-      local dst="$target_bin/${name%.*}"
+      local shim_name="${name%.*}"
+      local dst="$target_bin/$shim_name"
       if [[ -e "$dst" ]]; then
         rm -f "$dst"
+        # [Patch] Remove /bin symlink when uninstalling system shim
+        remove_system_symlink_if_owned "$shim_name"
         emit_json_object \
           "action=uninstall" \
           "status=removed" \
@@ -2117,6 +2221,7 @@ op_uninstall(){
         (( ! JSON_MODE )) && ok "Removed: $dst"
         count=$((count+1))
       else
+        remove_system_symlink_if_owned "$shim_name"
         warn "Not found: $name"
         emit_json_object \
           "action=uninstall" \
@@ -2329,12 +2434,17 @@ op_list(){
   printf "%-8s %-24s %-10s %s\n" "Kind" "Name" "Version" "Path / Manifest"
   printf "%-8s %-24s %-10s %s\n" "----" "----" "-------" "---------------"
   local line kind name ver path type scope target preview help manifest run display_path shown=0
+  local include_apps="${BINMAN_INCLUDE_APPS:-0}"
   while IFS=$'\t' read -r kind name ver path type scope target preview help manifest run; do
     display_path="$path"
     if [[ -z "$display_path" ]]; then
       display_path="$manifest"
     fi
     [[ -n "$display_path" ]] || display_path="-"
+    # [Patch] Hide app dirs from list unless BINMAN_INCLUDE_APPS=1
+    if [[ "$kind" == "app" && "$include_apps" != "1" ]]; then
+      continue
+    fi
     printf "%-8s %-24s %-10s %s\n" "$kind" "$name" "$ver" "$display_path"
     shown=1
   done < <(__bm_list_tsv | sort -t $'\t' -k1,1 -k2,2)
@@ -2471,31 +2581,8 @@ build_inventory() {
 
   local dir f scope_label kind name version path type preview line
   local total=0
-
-  debug "INV: scan execs in $BIN_DIR"
-  debug "INV: scan execs in $SYSTEM_BIN"
-  for dir in "$BIN_DIR" "$SYSTEM_BIN"; do
-    [[ -d "$dir" ]] || continue
-    if [[ "$dir" == "$BIN_DIR" ]]; then
-      scope_label="user"
-    else
-      scope_label="system"
-    fi
-    for f in "$dir"/*; do
-      [[ -x "$f" && -f "$f" ]] || continue
-      kind="cmd"
-      name="$(basename "$f")"
-      version="$(script_version "$f")"
-      path="$(__bm_realpath "$f")"
-      type="cmd"
-      preview="$(script_desc "$f")"
-      printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-        "$kind" "$name" "$version" "$path" "$type" "$scope_label" "$path" \
-        "$(encode_field "$preview")" "$(encode_field "$preview")" "" ""
-      lines+=("$line")
-      ((total++))
-    done
-  done
+  # [Patch] Prefer apps; hide cmd when app exists; ensure cmd version via shim_version()
+  declare -A _apps_seen=()
 
   debug "INV: scan apps in $APP_STORE"
   debug "INV: scan apps in $SYSTEM_APPS"
@@ -2514,6 +2601,7 @@ build_inventory() {
       path="$(__bm_realpath "$f")"
       type="app"
       preview="$(script_desc "$f")"
+      _apps_seen["$name"]=1
       printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         "$kind" "$name" "$version" "$path" "$type" "$scope_label" "$path" \
         "$(encode_field "$preview")" "$(encode_field "$preview")" "" ""
@@ -2522,32 +2610,66 @@ build_inventory() {
     done
   done
 
-  debug "INV: scan manifests in $APP_STORE and $SYSTEM_APPS"
-  local file help manifest_path preview_text
-  for file in "$APP_STORE"/*.{app,cmd,manifest} "$SYSTEM_APPS"/*.{app,cmd,manifest}; do
-    [[ -f "$file" ]] || continue
-    if read_manifest "$file"; then
-      kind="${MF[type]:-app}"
-      name="${MF[name]:-$(basename "$file")}"
-      version="${MF[version]:-unknown}"
-      path="$(expand_path "${MF[path]:-}")"
-      type="${MF[type]:-app}"
-      if [[ "$file" == $APP_STORE/* ]]; then
-        scope_label="manifest-user"
-      else
-        scope_label="manifest-system"
+  debug "INV: scan execs in $BIN_DIR"
+  debug "INV: scan execs in $SYSTEM_BIN"
+  for dir in "$BIN_DIR" "$SYSTEM_BIN"; do
+    [[ -d "$dir" ]] || continue
+    if [[ "$dir" == "$BIN_DIR" ]]; then
+      scope_label="user"
+    else
+      scope_label="system"
+    fi
+    for f in "$dir"/*; do
+      [[ -x "$f" && -f "$f" ]] || continue
+      kind="cmd"
+      name="$(basename "$f")"
+      if [[ -n "${_apps_seen[$name]:-}" ]]; then
+        debug "INV: skip cmd '$name' (app exists)"
+        continue
       fi
-      preview_text="${MF[preview]:-${MF[help]:-}}"
-      help="${MF[help]:-}"
-      run_val="${MF[run]:-${MF[run_raw]:-}}"
-      manifest_path="$(__bm_realpath "$file")"
+      version="$(shim_version "$f")"
+      path="$(__bm_realpath "$f")"
+      type="cmd"
+      preview="$(script_desc "$f")"
       printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         "$kind" "$name" "$version" "$path" "$type" "$scope_label" "$path" \
-        "$(encode_field "$preview_text")" "$(encode_field "$help")" "$manifest_path" "$(encode_field "$run_val")"
+        "$(encode_field "$preview")" "$(encode_field "$preview")" "" ""
       lines+=("$line")
       ((total++))
-    fi
+    done
   done
+
+  # [Patch] Ignore .app/.manifest unless BINMAN_INCLUDE_MANIFESTS=1
+  local file help manifest_path preview_text run_val
+  if [[ "${BINMAN_INCLUDE_MANIFESTS:-0}" == "1" ]]; then
+    debug "INV: scan manifests in $APP_STORE and $SYSTEM_APPS (BINMAN_INCLUDE_MANIFESTS=1)"
+    for file in "$APP_STORE"/*.{app,cmd,manifest} "$SYSTEM_APPS"/*.{app,cmd,manifest}; do
+      [[ -f "$file" ]] || continue
+      if read_manifest "$file"; then
+        kind="${MF[type]:-app}"
+        name="${MF[name]:-$(basename "$file")}"
+        version="${MF[version]:-unknown}"
+        path="$(expand_path "${MF[path]:-}")"
+        type="${MF[type]:-app}"
+        if [[ "$file" == $APP_STORE/* ]]; then
+          scope_label="manifest-user"
+        else
+          scope_label="manifest-system"
+        fi
+        preview_text="${MF[preview]:-${MF[help]:-}}"
+        help="${MF[help]:-}"
+        run_val="${MF[run]:-${MF[run_raw]:-}}"
+        manifest_path="$(__bm_realpath "$file")"
+        printf -v line '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+          "$kind" "$name" "$version" "$path" "$type" "$scope_label" "$path" \
+          "$(encode_field "$preview_text")" "$(encode_field "$help")" "$manifest_path" "$(encode_field "$run_val")"
+        lines+=("$line")
+        ((total++))
+      fi
+    done
+  else
+    debug "INV: skip manifest scan (BINMAN_INCLUDE_MANIFESTS!=1)"
+  fi
 
   printf '%s\n' "${lines[@]}" > "$BINMAN_LIST_CACHE"
 
@@ -2669,6 +2791,39 @@ op_list_ranger() {
   esac
 
   return 0
+}
+
+# [Patch] Run installed tools via sudo helper
+op_sudo(){
+  local name="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  [[ -n "$name" ]] || { err "usage: binman sudo <name> [args...]"; return 2; }
+
+  local shim appdir
+  if (( SYSTEM_MODE )); then
+    shim="$SYSTEM_BIN/$name"
+    appdir="$SYSTEM_APPS/$name"
+  else
+    shim="$BIN_DIR/$name"
+    appdir="$APP_STORE/$name"
+  fi
+
+  if [[ ! -x "$shim" ]]; then
+    if [[ -x "$appdir/bin/$name" ]]; then
+      shim="$appdir/bin/$name"
+    fi
+  fi
+
+  [[ -x "$shim" ]] || { err "not installed or not executable: $name"; return 2; }
+
+  if command -v sudo >/dev/null 2>&1; then
+    exec sudo "$shim" "$@"
+  else
+    err "sudo not available"
+    return 2
+  fi
 }
 
 __fzf_common_opts() {
@@ -4379,6 +4534,7 @@ __bm_run_action_safe() {
     analyze)         cmd_analyze ;;
     bundle)          op_bundle ;;
     test)            op_test ;;
+    sudo)            op_sudo "$@" ;;
     toggle_system|toggle_system_mode|toggle-system)
                       toggle_system_mode ;;
     quit|q|"")       : ;;        # explicit no-op
@@ -4550,13 +4706,19 @@ binman_tui(){
       2)  # Uninstall — (unchanged; your fzf/multi workflow already in place)
         if exists fzf; then
           mapfile -t _cmds < <(_get_installed_cmd_names)
-          mapfile -t _apps < <(_get_installed_app_names)
+          _apps=()
+          # [Patch] Uninstall: only list shims unless BINMAN_INCLUDE_APPS=1
+          if [[ "${BINMAN_INCLUDE_APPS:-0}" == "1" ]]; then
+            mapfile -t _apps < <(_get_installed_app_names)
+          fi
           if ((${#_cmds[@]}==0 && ${#_apps[@]}==0)); then
             warn "Nothing to uninstall."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue
           fi
           _choices=()
           for c in "${_cmds[@]}"; do _choices+=("cmd  $c"); done
-          for a in "${_apps[@]}"; do _choices+=("app  $a"); done
+          if [[ "${BINMAN_INCLUDE_APPS:-0}" == "1" ]]; then
+            for a in "${_apps[@]}"; do _choices+=("app  $a"); done
+          fi
           sel="$(printf '%s\n' "${_choices[@]}" | fzf --multi --prompt="Uninstall > " --height=60% --reverse || true)"
           [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
           names="$(echo "$sel" | awk '{print $2}' | tr '\n' ' ')"
@@ -4749,22 +4911,34 @@ __bm_guess_app_target() {
 }
 
 __bm_list_tsv() {
-  bm_ensure_inventory
-  [[ -n "${BINMAN_LIST_CACHE:-}" && -f "$BINMAN_LIST_CACHE" ]] || return 0
-  local line kind name ver path type scope target preview help manifest run
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ -z "$line" ]] && continue
-    IFS=$'\t' read -r kind name ver path type scope target preview help manifest run <<<"$line"
-    if (( SYSTEM_MODE )); then
-      if [[ "$scope" == system || "$scope" == manifest-system ]]; then
-        printf "%s\n" "$line"
+  local dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
+  local adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
+
+  # [Patch] Prefer apps; hide cmd when app exists; ensure cmd version via shim_version()
+  declare -A _apps_seen=()
+
+  # Emit apps (and remember names)
+  if [[ -d "$adir" ]]; then
+    for d in "$adir"/*; do
+      [[ -d "$d" || -L "$d" ]] || continue
+      local aname; aname="$(basename "$d")"
+      _apps_seen["$aname"]=1
+      printf "app\t%s\t%s\t%s\n" "$aname" "$(script_version "$d")" "$d"
+    done
+  fi
+
+  # Emit shims only when no app of the same name exists
+  if [[ -d "$dir" ]]; then
+    for f in "$dir"/*; do
+      [[ -x "$f" && -f "$f" ]] || continue
+      local name; name="$(basename "$f")"
+      if [[ -n "${_apps_seen[$name]:-}" ]]; then
+        debug "list: skip cmd '$name' (app exists)"
+        continue
       fi
-    else
-      if [[ "$scope" != system && "$scope" != manifest-system ]]; then
-        printf "%s\n" "$line"
-      fi
-    fi
-  done < "$BINMAN_LIST_CACHE"
+      printf "cmd\t%s\t%s\t%s\n" "$name" "$(shim_version "$f")" "$f"
+    done
+  fi
 }
 
 bm_render_preview() {
@@ -5116,19 +5290,34 @@ _binman_preview() {
 }
 
 _collect_items_tsv() {
-  local dir adir f d
-  dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
-  adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
+  local dir="$BIN_DIR"; (( SYSTEM_MODE )) && dir="$SYSTEM_BIN"
+  local adir="$APP_STORE"; (( SYSTEM_MODE )) && adir="$SYSTEM_APPS"
 
-  for f in "$dir"/*; do
-    [[ -x "$f" && -f "$f" ]] || continue
-    printf "cmd\t%s\t%s\t%s\n" "$(basename "$f")" "$(script_version "$f")" "$f"
-  done
+  # [Patch] Prefer apps; hide cmd when app exists; ensure cmd version via shim_version()
+  declare -A _apps_seen=()
 
-  for d in "$adir"/*; do
-    [[ -d "$d" || -L "$d" ]] || continue
-    printf "app\t%s\t%s\t%s\n" "$(basename "$d")" "$(script_version "$d")" "$d"
-  done
+  # Apps first
+  if [[ -d "$adir" ]]; then
+    for d in "$adir"/*; do
+      [[ -d "$d" || -L "$d" ]] || continue
+      local aname; aname="$(basename "$d")"
+      _apps_seen["$aname"]=1
+      printf "app\t%s\t%s\t%s\n" "$aname" "$(script_version "$d")" "$d"
+    done
+  fi
+
+  # Cmds only if not shadowed by an app
+  if [[ -d "$dir" ]]; then
+    for f in "$dir"/*; do
+      [[ -x "$f" && -f "$f" ]] || continue
+      local name; name="$(basename "$f")"
+      if [[ -n "${_apps_seen[$name]:-}" ]]; then
+        debug "list: skip cmd '$name' (app exists)"
+        continue
+      fi
+      printf "cmd\t%s\t%s\t%s\n" "$name" "$(shim_version "$f")" "$f"
+    done
+  fi
 }
 
 _render_card_list(){
@@ -5150,19 +5339,21 @@ _render_card_list(){
     printf "%s\n" "$UI_DIM────────────────────────────────────────────────────────────────$UI_RESET"
   done
 
-  say ""
-  say "Apps in $adir"
-  ui_hr
-  for d in "$adir"/*; do
-    [[ -d "$d" || -L "$d" ]] || continue
-    local name ver desc
-    name="$(basename "$d")"
-    ver="$(script_version "$d")"
-    desc="$(script_desc "$d")"
-    printf "• %s %s[%s]%s\n" "$name" "$UI_DIM" "${ver:-unknown}" "$UI_RESET"
-    [[ -n "$desc" ]] && printf "  %s\n" "$desc"
-    printf "%s\n" "$UI_DIM────────────────────────────────────────────────────────────────$UI_RESET"
-  done
+  if [[ "${BINMAN_INCLUDE_APPS:-0}" == "1" ]]; then
+    say ""
+    say "Apps in $adir"
+    ui_hr
+    for d in "$adir"/*; do
+      [[ -d "$d" || -L "$d" ]] || continue
+      local name ver desc
+      name="$(basename "$d")"
+      ver="$(script_version "$d")"
+      desc="$(script_desc "$d")"
+      printf "• %s %s[%s]%s\n" "$name" "$UI_DIM" "${ver:-unknown}" "$UI_RESET"
+      [[ -n "$desc" ]] && printf "  %s\n" "$desc"
+      printf "%s\n" "$UI_DIM────────────────────────────────────────────────────────────────$UI_RESET"
+    done
+  fi
 }
 
 _parse_version(){
