@@ -2182,55 +2182,168 @@ EOF
 # --------------------------------------------------------------------------------------------------
 # UNINSTALL — remove scripts or apps (user/system)
 # --------------------------------------------------------------------------------------------------
+# Uninstall resolver rules (see _resolve_uninstall_target):
+# - If "$target_bin/$name" exists, remove exactly that path.
+# - If "$name" ends with ".bak", never strip the suffix; only remove "$target_bin/$name" when present.
+# - Otherwise, if "$name" contains a dot and "$target_bin/${name%.*}" exists, remove "${name%.*}" for legacy compatibility.
+# - If none of the above match, report the name as not found.
+_resolve_uninstall_target(){
+  local target_bin="$1" name="$2"
+  local candidate stripped legacy
+
+  candidate="$target_bin/$name"
+  if [[ -e "$candidate" || -L "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  if [[ "$name" == *.bak ]]; then
+    warn "Not found: $name"
+    return 1
+  fi
+
+  if [[ "$name" == *.* ]]; then
+    stripped="${name%.*}"
+    legacy="$target_bin/$stripped"
+    if [[ -e "$legacy" || -L "$legacy" ]]; then
+      printf '%s\n' "$legacy"
+      return 0
+    fi
+  fi
+
+  warn "Not found: $name"
+  return 1
+}
+
 op_uninstall(){
-  maybe_snapshot
-  local count=0
+  local dry_run=0
+  local args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run)
+        dry_run=1
+        shift
+        ;;
+      --)
+        shift
+        while [[ $# -gt 0 ]]; do
+          args+=("$1")
+          shift
+        done
+        break
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  local names=("${args[@]}")
+  if (( ${#names[@]} == 0 )); then
+    warn "Nothing to uninstall."
+    return 1
+  fi
+
+  local count=0 planned_count=0
+  (( dry_run == 0 )) && maybe_snapshot
   local target_bin="$BIN_DIR"
   local target_apps="$APP_STORE"
   (( SYSTEM_MODE )) && target_bin="$SYSTEM_BIN"
   (( SYSTEM_MODE )) && target_apps="$SYSTEM_APPS"
 
-  for name in "$@"; do
+  local name
+  for name in "${names[@]}"; do
     if (( SYSTEM_MODE )); then
       if [[ -e "$target_apps/$name" ]]; then
-        local info
-        info=$(_uninstall_app_system "$name")
-        IFS=$'\t' read -r _ shim_path dest_path shim_removed dest_removed <<<"$info"
-        local status="missing"
-        (( shim_removed || dest_removed )) && status="removed"
-        emit_json_object \
-          "action=uninstall" \
-          "status=$status" \
-          "type=app" \
-          "name=$name" \
-          "path=$dest_path" \
-          "shim=$shim_path" \
-          "shim_removed=$shim_removed" \
-          "app_removed=$dest_removed"
-        if (( shim_removed )); then (( ! JSON_MODE )) && ok "Removed shim: $shim_path"; fi
-        if (( dest_removed )); then (( ! JSON_MODE )) && ok "Removed app: $dest_path"; fi
-        (( shim_removed || dest_removed )) && count=$((count+1))
+        local shim_path="$SYSTEM_BIN/$name"
+        local dest_path="$target_apps/$name"
+        if (( dry_run )); then
+          local shim_exists=0 dest_exists=0
+          [[ -e "$shim_path" || -L "$shim_path" ]] && shim_exists=1
+          [[ -e "$dest_path" || -L "$dest_path" ]] && dest_exists=1
+          emit_json_object \
+            "action=uninstall" \
+            "status=planned" \
+            "type=app" \
+            "name=$name" \
+            "path=$dest_path" \
+            "shim=$shim_path" \
+            "shim_removed=$shim_exists" \
+            "app_removed=$dest_exists"
+          if (( ! JSON_MODE )); then
+            [[ $shim_exists -eq 1 ]] && say "DRY-RUN: would remove shim: $shim_path"
+            [[ $dest_exists -eq 1 ]] && say "DRY-RUN: would remove app: $dest_path"
+          fi
+          planned_count=$((planned_count+1))
+        else
+          local info
+          info=$(_uninstall_app_system "$name")
+          IFS=$'\t' read -r _ shim_path dest_path shim_removed dest_removed <<<"$info"
+          local status="missing"
+          (( shim_removed || dest_removed )) && status="removed"
+          emit_json_object \
+            "action=uninstall" \
+            "status=$status" \
+            "type=app" \
+            "name=$name" \
+            "path=$dest_path" \
+            "shim=$shim_path" \
+            "shim_removed=$shim_removed" \
+            "app_removed=$dest_removed"
+          if (( shim_removed )); then (( ! JSON_MODE )) && ok "Removed shim: $shim_path"; fi
+          if (( dest_removed )); then (( ! JSON_MODE )) && ok "Removed app: $dest_path"; fi
+          (( shim_removed || dest_removed )) && count=$((count+1))
+        fi
         continue
       fi
 
-      ensure_system_write
-      local shim_name="${name%.*}"
-      local dst="$target_bin/$shim_name"
-      if [[ -e "$dst" ]]; then
-        rm -f "$dst"
-        # [Patch] Remove /bin symlink when uninstalling system shim
-        remove_system_symlink_if_owned "$shim_name"
-        emit_json_object \
-          "action=uninstall" \
-          "status=removed" \
-          "type=cmd" \
-          "name=$name" \
-          "path=$dst"
-        (( ! JSON_MODE )) && ok "Removed: $dst"
-        count=$((count+1))
+      (( dry_run == 0 )) && ensure_system_write
+      local resolved resolved_base fallback_symlink=
+      if resolved="$(_resolve_uninstall_target "$target_bin" "$name")"; then
+        if (( dry_run )); then
+          emit_json_object \
+            "action=uninstall" \
+            "status=planned" \
+            "type=cmd" \
+            "name=$name" \
+            "path=$resolved"
+          if (( ! JSON_MODE )); then
+            if [[ "$resolved" == *.bak ]]; then
+              say "DRY-RUN: would remove backup: $resolved"
+            else
+              say "DRY-RUN: would remove: $resolved"
+            fi
+          fi
+          planned_count=$((planned_count+1))
+        else
+          rm -f "$resolved"
+          resolved_base="$(basename "$resolved")"
+          # [Patch] Remove /bin symlink when uninstalling system shim
+          remove_system_symlink_if_owned "$resolved_base"
+          emit_json_object \
+            "action=uninstall" \
+            "status=removed" \
+            "type=cmd" \
+            "name=$name" \
+            "path=$resolved"
+          if (( ! JSON_MODE )); then
+            if [[ "$resolved" == *.bak ]]; then
+              ok "Removed backup: $resolved"
+            else
+              ok "Removed: $resolved"
+            fi
+          fi
+          count=$((count+1))
+        fi
       else
-        remove_system_symlink_if_owned "$shim_name"
-        warn "Not found: $name"
+        if (( dry_run == 0 )) && [[ "$name" != *.bak ]]; then
+          fallback_symlink="$name"
+          if [[ "$fallback_symlink" == *.* ]]; then
+            fallback_symlink="${fallback_symlink%.*}"
+          fi
+          remove_system_symlink_if_owned "$fallback_symlink"
+        fi
         emit_json_object \
           "action=uninstall" \
           "status=missing" \
@@ -2239,39 +2352,83 @@ op_uninstall(){
       fi
     else
       if [[ -e "$target_apps/$name" ]]; then
-        local info
-        info=$(_uninstall_app "$name")
-        IFS=$'\t' read -r _ shim_path dest_path shim_removed dest_removed <<<"$info"
-        local status="missing"
-        (( shim_removed || dest_removed )) && status="removed"
-        emit_json_object \
-          "action=uninstall" \
-          "status=$status" \
-          "type=app" \
-          "name=$name" \
-          "path=$dest_path" \
-          "shim=$shim_path" \
-          "shim_removed=$shim_removed" \
-          "app_removed=$dest_removed"
-        if (( shim_removed )); then (( ! JSON_MODE )) && ok "Removed shim: $shim_path"; fi
-        if (( dest_removed )); then (( ! JSON_MODE )) && ok "Removed app: $dest_path"; fi
-        (( shim_removed || dest_removed )) && count=$((count+1))
+        local shim_path="$target_bin/$name"
+        local dest_path="$target_apps/$name"
+        if (( dry_run )); then
+          local shim_exists=0 dest_exists=0
+          [[ -e "$shim_path" || -L "$shim_path" ]] && shim_exists=1
+          [[ -e "$dest_path" || -L "$dest_path" ]] && dest_exists=1
+          emit_json_object \
+            "action=uninstall" \
+            "status=planned" \
+            "type=app" \
+            "name=$name" \
+            "path=$dest_path" \
+            "shim=$shim_path" \
+            "shim_removed=$shim_exists" \
+            "app_removed=$dest_exists"
+          if (( ! JSON_MODE )); then
+            [[ $shim_exists -eq 1 ]] && say "DRY-RUN: would remove shim: $shim_path"
+            [[ $dest_exists -eq 1 ]] && say "DRY-RUN: would remove app: $dest_path"
+          fi
+          planned_count=$((planned_count+1))
+        else
+          local info
+          info=$(_uninstall_app "$name")
+          IFS=$'\t' read -r _ shim_path dest_path shim_removed dest_removed <<<"$info"
+          local status="missing"
+          (( shim_removed || dest_removed )) && status="removed"
+          emit_json_object \
+            "action=uninstall" \
+            "status=$status" \
+            "type=app" \
+            "name=$name" \
+            "path=$dest_path" \
+            "shim=$shim_path" \
+            "shim_removed=$shim_removed" \
+            "app_removed=$dest_removed"
+          if (( shim_removed )); then (( ! JSON_MODE )) && ok "Removed shim: $shim_path"; fi
+          if (( dest_removed )); then (( ! JSON_MODE )) && ok "Removed app: $dest_path"; fi
+          (( shim_removed || dest_removed )) && count=$((count+1))
+        fi
         continue
       fi
 
-      local dst="$target_bin/${name%.*}"
-      if [[ -e "$dst" ]]; then
-        rm -f "$dst"
-        emit_json_object \
-          "action=uninstall" \
-          "status=removed" \
-          "type=cmd" \
-          "name=$name" \
-          "path=$dst"
-        (( ! JSON_MODE )) && ok "Removed: $dst"
-        count=$((count+1))
+      local resolved
+      if resolved="$(_resolve_uninstall_target "$target_bin" "$name")"; then
+        if (( dry_run )); then
+          emit_json_object \
+            "action=uninstall" \
+            "status=planned" \
+            "type=cmd" \
+            "name=$name" \
+            "path=$resolved"
+          if (( ! JSON_MODE )); then
+            if [[ "$resolved" == *.bak ]]; then
+              say "DRY-RUN: would remove backup: $resolved"
+            else
+              say "DRY-RUN: would remove: $resolved"
+            fi
+          fi
+          planned_count=$((planned_count+1))
+        else
+          rm -f "$resolved"
+          emit_json_object \
+            "action=uninstall" \
+            "status=removed" \
+            "type=cmd" \
+            "name=$name" \
+            "path=$resolved"
+          if (( ! JSON_MODE )); then
+            if [[ "$resolved" == *.bak ]]; then
+              ok "Removed backup: $resolved"
+            else
+              ok "Removed: $resolved"
+            fi
+          fi
+          count=$((count+1))
+        fi
       else
-        warn "Not found: $name"
         emit_json_object \
           "action=uninstall" \
           "status=missing" \
@@ -2280,6 +2437,11 @@ op_uninstall(){
       fi
     fi
   done
+
+  if (( dry_run )); then
+    (( JSON_MODE )) || say "DRY-RUN: would remove $planned_count item(s)."
+    return 0
+  fi
 
   rehash_shell
   rehash_hint
