@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # move — safe resumable move with progress (rsync + verify + remove)
 # Usage: move SRC... DEST
-VERSION="0.1.0"
+VERSION="0.1.1"
 
 set -euo pipefail
 
