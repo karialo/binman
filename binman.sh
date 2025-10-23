@@ -20,7 +20,19 @@
 set -Eeuo pipefail
 shopt -s nullglob
 
+: "${UI_BOLD:=}"
+: "${UI_DIM:=}"
+: "${UI_RESET:=}"
+: "${UI_CYAN:=}"
+: "${UI_GREEN:=}"
+: "${UI_YELLOW:=}"
+: "${UI_MAGENTA:=}"
+: "${UI_WIDTH:=80}"
+
 : "${BINMAN_DEBUG:=0}"
+
+# root-visible shim locations, in order of preference
+: "${ROOT_SHIM_DIRS:=/usr/bin /bin}"
 
 BINMAN_DEBUG_FLAG=0
 case "${BINMAN_DEBUG:-}" in
@@ -139,6 +151,19 @@ __has_fzf() {
   command -v fzf >/dev/null 2>&1
 }
 
+cleanup_root_shims() {
+  local name="$1"
+  local target="$SYSTEM_BIN/$name"
+  local d link
+  for d in $ROOT_SHIM_DIRS; do
+    link="$d/$name"
+    if [[ -L "$link" ]] && [[ "$(readlink -f "$link" 2>/dev/null || true)" == "$(readlink -f "$target" 2>/dev/null || true)" ]]; then
+      _as_root rm -f "$link" || true
+      debug "shim: removed $link"
+    fi
+  done
+}
+
 # Back-compat alias for menu action name
 toggle_system_mode() { toggle_system "$@"; }
 
@@ -228,6 +253,18 @@ ok(){
 debug(){
   (( BINMAN_DEBUG_FLAG )) || return 0
   printf '[binman] %s\n' "$*" >&2
+}
+
+_as_root() {
+  if [[ $EUID -eq 0 ]]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  elif command -v pkexec >/dev/null 2>&1; then
+    pkexec "$@"
+  else
+    return 126
+  fi
 }
 
 json_escape(){
@@ -352,6 +389,8 @@ strip_inline_comment(){
 }
 
 __bm_tui_install_flow() {
+  ui_init
+  prompt_init
   # Use fzf file/dir picker from CWD; supports manual multi-line entry too
   if __has_fzf && [[ -t 1 ]]; then
     mapfile -t items < <(find . -maxdepth 1 -mindepth 1 -printf '%P\n' 2>/dev/null | sort)
@@ -390,12 +429,12 @@ __bm_tui_install_flow() {
 
       if [[ -n "$manifest" ]]; then
         [[ "$manifest" != /* && -e "$manifest" ]] && manifest="$PWD/$manifest"
-        op_install_manifest "$manifest"
+        op_install_manifest "$manifest" || true
         rehash_hint
         printf "%sPress Enter to return to BinMan…%s" "$UI_DIM" "$UI_RESET"; read -r
         return 0
       elif (( ${#targets[@]} > 0 )); then
-        op_install "${targets[@]}"
+        op_install "${targets[@]}" || true
         rehash_hint
         printf "%sPress Enter to return to BinMan…%s" "$UI_DIM" "$UI_RESET"; read -r
         return 0
@@ -408,7 +447,7 @@ __bm_tui_install_flow() {
       # Selected a visible item; pass absolute path
       pick="$sel"
       [[ "$pick" != /* ]] && pick="$PWD/$pick"
-      op_install "$pick"
+      op_install "$pick" || true
       rehash_hint
       printf "%sPress Enter to return to BinMan…%s" "$UI_DIM" "$UI_RESET"; read -r
       return 0
@@ -416,7 +455,7 @@ __bm_tui_install_flow() {
 
   else
     # No TTY/fzf → fall back to plain op_install (expects args from caller)
-    op_install
+    op_install || true
     rehash_hint
     printf "%sPress Enter to return to BinMan…%s" "$UI_DIM" "$UI_RESET"; read -r
     return 0
@@ -424,6 +463,8 @@ __bm_tui_install_flow() {
 }
 
 __bm_tui_uninstall_flow() {
+  ui_init
+  prompt_init
   if command -v fzf >/dev/null 2>&1 && [[ -t 1 ]]; then
     mapfile -t _cmds < <(_get_installed_cmd_names)
     _apps=()
@@ -771,19 +812,6 @@ ensure_system_dirs() {
   : "${SYSTEM_BIN:=/usr/local/bin}"
   : "${SYSTEM_APPS:=/usr/local/share/binman/apps}"
 
-  # Helper to run a command as root when needed
-  _as_root() {
-    if [[ $EUID -eq 0 ]]; then
-      "$@"
-    elif command -v sudo >/dev/null 2>&1; then
-      sudo "$@"
-    elif command -v pkexec >/dev/null 2>&1; then
-      pkexec "$@"
-    else
-      return 126  # cannot escalate
-    fi
-  }
-
   # Try to create parents first (install -d is atomic-ish and idempotent)
   if [[ ! -d "$SYSTEM_APPS" ]]; then
     if mkdir -p "$SYSTEM_APPS" 2>/dev/null; then
@@ -837,46 +865,58 @@ ensure_system_write() {
 }
 
 
-# [Patch] Create/update a /bin symlink to the system shim
+# [Patch] Create/update a /usr/bin symlink to the system shim
 ensure_system_symlink() {
   local name="$1"
-  local target="$SYSTEM_BIN/$name"
-  local link="/bin/$name"
+  local target="$SYSTEM_BIN/$name"  # e.g. /usr/local/bin/<name>
+  [[ -x "$target" ]] || { debug "shim: missing target $target"; return 0; }
 
-  if [[ ! -x "$target" ]]; then
-    debug "symlink: target missing or not executable: $target"
-    return 0
-  fi
+  local d link cur tgt
+  for d in $ROOT_SHIM_DIRS; do
+    [[ -d "$d" ]] || continue
+    link="$d/$name"
 
-  if [[ ! -e "$link" ]]; then
-    ln -s "$target" "$link" && debug "symlink: created $link -> $target" || err "failed to create $link"
-    return 0
-  fi
-
-  if [[ -L "$link" ]]; then
-    local cur; cur="$(readlink -f "$link" 2>/dev/null || true)"
-    if [[ "$cur" == "$target" ]]; then
-      debug "symlink: already correct $link -> $target"
-    else
-      rm -f "$link" && ln -s "$target" "$link" && debug "symlink: updated $link -> $target" || err "failed to update $link"
+    # create
+    if [[ ! -e "$link" ]]; then
+      _as_root ln -s "$target" "$link" \
+        && debug "shim: created $link -> $target" \
+        || err "shim: failed to create $link"
+      continue
     fi
-    return 0
-  fi
 
-  err "refusing to overwrite existing /bin/$name (not a symlink)"
-  return 1
+    # update wrong symlink
+    if [[ -L "$link" ]]; then
+      cur="$(readlink -f "$link" 2>/dev/null || true)"
+      tgt="$(readlink -f "$target" 2>/dev/null || true)"
+      if [[ "$cur" != "$tgt" ]]; then
+        _as_root ln -sfn "$target" "$link" \
+          && debug "shim: updated $link -> $target" \
+          || err "shim: failed to update $link"
+      else
+        debug "shim: already correct $link -> $target"
+      fi
+      continue
+    fi
+
+    # do not overwrite real files or dirs
+    warn "shim: $link exists and is not a symlink, skipping"
+  done
 }
 
-# [Patch] Remove /bin symlink if it points to the system shim
+# [Patch] Remove /usr/bin symlink if it points to the system shim
 remove_system_symlink_if_owned() {
   local name="$1"
   local target="$SYSTEM_BIN/$name"
-  local link="/bin/$name"
+  local link="/usr/bin/$name"
 
   [[ -L "$link" ]] || { debug "symlink: no link at $link"; return 0; }
   local cur; cur="$(readlink -f "$link" 2>/dev/null || true)"
   if [[ "$cur" == "$target" ]]; then
-    rm -f "$link" && debug "symlink: removed $link" || err "failed to remove $link"
+    if _as_root rm -f "$link"; then
+      debug "symlink: removed $link"
+    else
+      err "failed to remove $link"
+    fi
   else
     debug "symlink: $link points to $cur (not ours), leaving intact"
   fi
@@ -1548,10 +1588,19 @@ _make_shim(){
 
 _make_shim_system(){
   local name="$1" entry="$2" shim="$SYSTEM_BIN/$name"
-  printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" > "$shim"
-  chmod +x "$shim"
-  # [Patch] Maintain /bin symlink for system shim
-  ensure_system_symlink "$name"
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/${name}.shim.XXXXXX")"
+  printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$entry" >"$tmp"
+  chmod +x "$tmp"
+  if _as_root install -m 0755 "$tmp" "$shim"; then
+    rm -f "$tmp"
+    ensure_system_symlink "$name"
+  else
+    local rc=$?
+    rm -f "$tmp"
+    err "Failed to write system shim $shim"
+    return $rc
+  fi
 }
 
 # --- user shim: custom entry (no venv) ---------------------------------------
@@ -1592,7 +1641,10 @@ _make_shim_cmd_system(){
   QCMD=$(printf %q "$cmd")
   QCWD=$(printf %q "$cwd")
 
-  cat > "$shim" <<EOF
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/${name}.shim.XXXXXX")"
+
+  cat > "$tmp" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
 APPDIR=$QAPP
@@ -1609,9 +1661,17 @@ declare -a __ARR=()
 eval "__ARR=( \$CMD_RAW )"
 exec "\${__ARR[@]}" "\$@"
 EOF
-  chmod +x "$shim"
-  # [Patch] Maintain /bin symlink for system shim
-  ensure_system_symlink "$name"
+  chmod +x "$tmp"
+
+  if _as_root install -m 0755 "$tmp" "$shim"; then
+    rm -f "$tmp"
+    ensure_system_symlink "$name"
+  else
+    local rc=$?
+    rm -f "$tmp"
+    err "Failed to write system shim $shim"
+    return $rc
+  fi
 }
 
 # --- user shim: custom entry with Python venv --------------------------------
@@ -1683,7 +1743,10 @@ _make_shim_cmd_venv_system(){
   QREQ=$(printf %q "$req")
   QBOOT=$(printf %q "$boot_py")
 
-  cat > "$shim" <<EOF
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/${name}.shim.XXXXXX")"
+
+  cat > "$tmp" <<EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
 APPDIR=$QAPP
@@ -1720,9 +1783,17 @@ fi
 
 exec "\${__ARR[@]}" "\$@"
 EOF
-  chmod +x "$shim"
-  # [Patch] Maintain /bin symlink for system shim
-  ensure_system_symlink "$name"
+  chmod +x "$tmp"
+
+  if _as_root install -m 0755 "$tmp" "$shim"; then
+    rm -f "$tmp"
+    ensure_system_symlink "$name"
+  else
+    local rc=$?
+    rm -f "$tmp"
+    err "Failed to write system shim $shim"
+    return $rc
+  fi
 }
 
 
@@ -1858,8 +1929,17 @@ _install_app_system(){
   local src="$1" name dest mode="copy"
   name=$(basename "$src"); dest="$SYSTEM_APPS/$name"
 
-  rm -rf "$dest"
-  cp -a "$src" "$dest"
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    if ! _as_root rm -rf "$dest"; then
+      err "Failed to remove existing $dest (permission denied?)"
+      return 1
+    fi
+  fi
+
+  if ! _as_root cp -a "$src" "$dest"; then
+    err "Failed to copy app into $dest"
+    return 1
+  fi
 
   local version entry entry_kind="default"
 
@@ -1921,12 +2001,27 @@ _uninstall_app(){
 _uninstall_app_system(){
   ensure_system_write
   local name="$1" dest="$SYSTEM_APPS/$name" shim="$SYSTEM_BIN/$name"
-  local shim_removed=0 dest_removed=0
-  if [[ -e "$shim" ]]; then rm -f "$shim"; shim_removed=1; fi
-  if [[ -e "$dest" ]]; then rm -rf "$dest"; dest_removed=1; fi
-  # [Patch] Drop /bin symlink if it pointed at our system shim
+  local shim_removed=0 dest_removed=0 rc=0
+  if [[ -e "$shim" || -L "$shim" ]]; then
+    if _as_root rm -f "$shim"; then
+      shim_removed=1
+    else
+      err "Failed to remove shim $shim"
+      rc=1
+    fi
+  fi
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    if _as_root rm -rf "$dest"; then
+      dest_removed=1
+    else
+      err "Failed to remove app directory $dest"
+      rc=1
+    fi
+  fi
+  # [Patch] Drop /usr/bin symlink if it pointed at our system shim
   remove_system_symlink_if_owned "$name"
   printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$shim" "$dest" "$shim_removed" "$dest_removed"
+  return $rc
 }
 
 
@@ -2068,6 +2163,19 @@ op_install(){
         ok "App installed: $name → $dest_path ${suffix}"
       fi
 
+      if (( SYSTEM_MODE )); then
+        local symlink_name="$name"
+        if [[ -n "${entry_cmd:-}" ]]; then
+          local entry_head="${entry_cmd%% *}"
+          [[ -n "$entry_head" ]] || entry_head="$entry_cmd"
+          symlink_name="$(basename "$entry_head")"
+          ensure_system_symlink "$symlink_name"
+          [[ "$symlink_name" == "$name" ]] || ensure_system_symlink "$name"
+        else
+          ensure_system_symlink "$name"
+        fi
+      fi
+
       count=$((count+1))
       continue
     fi
@@ -2138,15 +2246,34 @@ op_install(){
       fi
 
       # launcher always uses venv + stable payload
-      cat >"$dst" <<EOF
+      local launcher_tmp
+      launcher_tmp="$(mktemp "${TMPDIR:-/tmp}/${name}.launcher.XXXXXX")"
+      cat >"$launcher_tmp" <<EOF
 #!/usr/bin/env bash
 exec "$vdir/bin/python" "$payload" "\$@"
 EOF
-      chmod +x "$dst"
+      chmod +x "$launcher_tmp"
+
+      if (( SYSTEM_MODE )); then
+        if _as_root install -m 0755 "$launcher_tmp" "$dst"; then
+          rm -f "$launcher_tmp"
+        else
+          local rc=$?
+          rm -f "$launcher_tmp" 2>/dev/null || true
+          rm -f "$tmp"
+          err "Failed to install launcher for $name into $dst"
+          (( rc > exit_code )) && exit_code=$rc
+          continue
+        fi
+      else
+        mv -f "$launcher_tmp" "$dst"
+      fi
+
       mode="venv"
       version="$(script_version "$payload")"
 
       rm -f "$tmp"
+      rm -f "$launcher_tmp" 2>/dev/null || true
 
       emit_json_object \
         "action=install" "status=installed" "type=cmd" \
@@ -2154,7 +2281,19 @@ EOF
       (( ! JSON_MODE )) && ok "Installed: $name (venv @ $vdir)"
     else
       # non-Python: install checked file directly
-      mv -f "$tmp" "$dst"
+      if (( SYSTEM_MODE )); then
+        if _as_root install -m 0755 "$tmp" "$dst"; then
+          rm -f "$tmp"
+        else
+          local rc=$?
+          rm -f "$tmp" 2>/dev/null || true
+          err "Failed to install $name into $dst"
+          (( rc > exit_code )) && exit_code=$rc
+          continue
+        fi
+      else
+        mv -f "$tmp" "$dst"
+      fi
       version="$(script_version "$dst")"
       emit_json_object \
         "action=install" "status=installed" "type=cmd" \
@@ -2164,7 +2303,7 @@ EOF
     # ------------------------------------------------------------------------
 
     if (( SYSTEM_MODE )); then
-      # [Patch] Ensure system shim also lives in /bin for PATH compatibility
+      # [Patch] Ensure system shim also lives in /usr/bin for PATH compatibility
       ensure_system_symlink "$name"
     fi
 
@@ -2317,9 +2456,9 @@ op_uninstall(){
           fi
           planned_count=$((planned_count+1))
         else
-          rm -f "$resolved"
+          _as_root rm -f "$resolved"
           resolved_base="$(basename "$resolved")"
-          # [Patch] Remove /bin symlink when uninstalling system shim
+          # [Patch] Remove /usr/bin symlink when uninstalling system shim
           remove_system_symlink_if_owned "$resolved_base"
           emit_json_object \
             "action=uninstall" \
@@ -4445,7 +4584,7 @@ EOF
   local saved_mode="$COPY_MODE"
   if ask_yesno "Install now?" "y"; then
     ask_yesno "Use symlink instead of copy?" "n" && COPY_MODE="link" || COPY_MODE="copy"
-    op_install "$path"
+    op_install "$path" || true
   fi
   COPY_MODE="$saved_mode"
 
@@ -4584,6 +4723,8 @@ EOF
 }
 
 __bm_menu_loop() {
+  ui_init
+  prompt_init
   maybe_warn_auto_backup_disabled
   while true; do
     local __chosen_action
@@ -4758,6 +4899,8 @@ parse_common_opts() {
 # TUI loop
 # --------------------------------------------------------------------------------------------------
 binman_tui(){
+  ui_init
+  prompt_init
   while :; do
     print_banner
     printf "%sChoice:%s " "$UI_BOLD" "$UI_RESET"
@@ -4820,9 +4963,9 @@ binman_tui(){
 
           # Manifest convenience
           if (( ${#targets[@]} == 1 )) && [[ "${targets[0]}" =~ \.(txt|list|json)$ ]]; then
-            op_install_manifest "${targets[0]}"
+            op_install_manifest "${targets[0]}" || true
           else
-            op_install "${targets[@]}"
+            op_install "${targets[@]}" || true
           fi
         else
           printf "File/dir/URL (or --manifest FILE): "
@@ -4862,9 +5005,9 @@ binman_tui(){
             if [[ "$manifest" != /* && -e "$manifest" ]]; then
               manifest="$PWD/$manifest"
             fi
-            op_install_manifest "$manifest"
+            op_install_manifest "$manifest" || true
           elif (( ${#targets[@]} > 0 )); then
-            op_install "${targets[@]}"
+            op_install "${targets[@]}" || true
           else
             echo "Cancelled."
             continue
