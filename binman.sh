@@ -4823,7 +4823,7 @@ __bm_run_action_safe() {
       fi
       ;;
     doctor)          cmd_doctor ;;
-    update)          op_update ;;
+    update)          op_update "$@" ;;
     new)             new_cmd ;;
     wizard)          new_wizard ;;
     backup)          op_backup ;;
