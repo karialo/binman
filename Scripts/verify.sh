@@ -16,7 +16,7 @@
 #   3 = scan error (scanner failed)
 #   4 = no checksum available to verify (scan still ran)
 
-VERSION="0.5.0"
+VERSION="0.5.1"
 set -Eeuo pipefail
 
 PROG="verify"
@@ -281,15 +281,18 @@ verify_core() {
     fi
   fi
 
+  # --- FIXED: clamscan exit-code handling (works with set -e) ---
   if command -v clamscan >/dev/null 2>&1; then
-    if ! run_virus_scan "$V_TARGET"; then
-      rc=$?
-      if [[ $rc -eq 1 ]]; then V_SCAN_RC=1
-      elif [[ $rc -eq 2 ]]; then V_SCAN_RC=2
-      else V_SCAN_RC=2
-      fi
-    fi
+    local rc=0
+    run_virus_scan "$V_TARGET" || rc=$?
+    case "$rc" in
+      0) V_SCAN_RC=0 ;;  # clean
+      1) V_SCAN_RC=1 ;;  # infected
+      2) V_SCAN_RC=2 ;;  # scan error
+      *) V_SCAN_RC=2 ;;  # unknown -> error
+    esac
   fi
+  # ------------------------------------------------------------
 
   if (( V_VERIFIED == 1 )) && [[ "$V_ACTUAL" != "$V_EXPECTED" ]]; then
     return 1
