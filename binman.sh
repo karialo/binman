@@ -842,6 +842,58 @@ docker_slug(){
   printf '%s\n' "${s,,}"
 }
 
+_csv_to_lines(){
+  printf '%s\n' "${1:-}" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | sed '/^$/d'
+}
+
+_docker_is_port_valid(){
+  [[ "$1" =~ ^[0-9]+:[0-9]+(/(tcp|udp))?$ ]]
+}
+
+_docker_is_mount_valid(){
+  [[ "$1" == *:* ]] && [[ "${1%%:*}" != "" ]] && [[ "${1#*:}" != "" ]]
+}
+
+_docker_is_env_valid(){
+  [[ "$1" == *"="* ]] && [[ "${1%%=*}" != "" ]]
+}
+
+_docker_filter_ports_csv(){
+  local in="$1" out=() p
+  while IFS= read -r p; do
+    if _docker_is_port_valid "$p"; then
+      out+=("$p")
+    else
+      warn "Invalid port mapping (skipped): $p"
+    fi
+  done < <(_csv_to_lines "$in")
+  printf '%s\n' "${out[@]}" | paste -sd, -
+}
+
+_docker_filter_mounts_csv(){
+  local in="$1" out=() m
+  while IFS= read -r m; do
+    if _docker_is_mount_valid "$m"; then
+      out+=("$m")
+    else
+      warn "Invalid mount (skipped): $m"
+    fi
+  done < <(_csv_to_lines "$in")
+  printf '%s\n' "${out[@]}" | paste -sd, -
+}
+
+_docker_filter_env_csv(){
+  local in="$1" out=() kv
+  while IFS= read -r kv; do
+    if _docker_is_env_valid "$kv"; then
+      out+=("$kv")
+    else
+      warn "Invalid env (skipped): $kv"
+    fi
+  done < <(_csv_to_lines "$in")
+  printf '%s\n' "${out[@]}" | paste -sd, -
+}
+
 docker_meta_delete(){
   local app="$1" file
   file="$(docker_meta_path "$app")"
@@ -985,9 +1037,15 @@ docker_list_binman_containers(){
     image="$(docker_meta_get "$app" "image_tag")"
     eng_used="$(docker_engine_for_app "$app")"
     if [[ -n "$container" ]] && docker_container_exists "$container" "$eng_used"; then
-      status="$(docker_container_status "$container" "$eng_used")"
-      ports="$(docker_container_ports "$container" "$eng_used")"
-      health="$(docker_container_health "$container" "$eng_used")"
+      if docker_container_managed "$container" "$eng_used"; then
+        status="$(docker_container_status "$container" "$eng_used")"
+        ports="$(docker_container_ports "$container" "$eng_used")"
+        health="$(docker_container_health "$container" "$eng_used")"
+      else
+        status="conflict"
+        ports="-"
+        health="-"
+      fi
     else
       status="missing"
       ports="-"
@@ -1016,9 +1074,9 @@ docker_meta_write(){
   local created ports mounts env_pairs
   created="$(iso_now)"
 
-  mapfile -t ports < <(printf '%s\n' "$ports_raw" | sed '/^$/d')
-  mapfile -t mounts < <(printf '%s\n' "$mounts_raw" | sed '/^$/d')
-  mapfile -t env_pairs < <(printf '%s\n' "$env_raw" | sed '/^$/d')
+  mapfile -t ports < <(_csv_to_lines "$ports_raw")
+  mapfile -t mounts < <(_csv_to_lines "$mounts_raw")
+  mapfile -t env_pairs < <(_csv_to_lines "$env_raw")
 
   ensure_docker_dir
   local file; file="$(docker_meta_path "$app")"
@@ -1106,9 +1164,20 @@ docker_up(){
   args+=(--label "io.binman.mode=service")
   args+=(--restart "$restart")
 
-  while IFS= read -r p; do [[ -n "$p" ]] && args+=(-p "$p"); done < <(docker_meta_list "$app" "ports")
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    if _docker_is_port_valid "$p"; then
+      args+=(-p "$p")
+    else
+      warn "Invalid port mapping (skipped): $p"
+    fi
+  done < <(docker_meta_list "$app" "ports")
   while IFS= read -r m; do
     [[ -n "$m" ]] || continue
+    if ! _docker_is_mount_valid "$m"; then
+      warn "Invalid mount (skipped): $m"
+      continue
+    fi
     local host
     host="${m%%:*}"
     host="$(expand_path "$host")"
@@ -1185,6 +1254,132 @@ docker_logs(){
   engine_cmd logs --tail "$tail" "$cname"
 }
 
+docker_logs_follow(){
+  local app="$1" tail="${2:-200}"
+  [[ -n "$app" ]] || { err "docker logs: missing app name"; return 2; }
+  local eng cname
+  eng="$(docker_engine_for_app "$app")"
+  local ENGINE_ACTIVE="$eng"
+  cname="$(docker_meta_get "$app" "container_name")"
+  [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
+  if ! docker_container_exists "$cname" "$eng"; then
+    warn "Container not found: $cname"
+    return 1
+  fi
+  if ! docker_container_managed "$cname" "$eng"; then
+    warn "Refusing to read logs for non-BinMan container: $cname"
+    return 2
+  fi
+  engine_cmd logs -f --tail "$tail" "$cname"
+}
+
+docker_remove_container_only(){
+  local app="$1"
+  [[ -n "$app" ]] || { err "docker remove: missing app name"; return 2; }
+  local eng cname
+  eng="$(docker_engine_for_app "$app")"
+  local ENGINE_ACTIVE="$eng"
+  cname="$(docker_meta_get "$app" "container_name")"
+  [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
+  if ! docker_container_exists "$cname" "$eng"; then
+    warn "Container not found: $cname"
+    return 1
+  fi
+  if ! docker_container_managed "$cname" "$eng"; then
+    warn "Refusing to remove non-BinMan container: $cname"
+    return 2
+  fi
+  engine_cmd rm -f "$cname" >/dev/null 2>&1 && ok "Removed $cname" || err "Failed to remove $cname"
+}
+
+docker_build(){
+  local app="$1"
+  [[ -n "$app" ]] || { err "docker build: missing app name"; return 2; }
+  local eng image root
+  eng="$(docker_engine_for_app "$app")"
+  [[ -n "$eng" ]] || { err "No container engine available."; return 2; }
+  local ENGINE_ACTIVE="$eng"
+  image="$(docker_meta_get "$app" "image_tag")"
+  root="$(docker_meta_get "$app" "root")"
+  [[ -n "$image" ]] || image="binman/$(docker_slug "$app"):latest"
+  [[ -n "$root" && -d "$root" ]] || { err "Build root not found: $root"; return 2; }
+  engine_cmd build -t "$image" "$root"
+}
+
+docker_purge_metadata(){
+  local app="$1"
+  [[ -n "$app" ]] || { err "docker purge: missing app name"; return 2; }
+  ask_yesno "Purge metadata for ${app}?" "n" || return 1
+  docker_meta_delete "$app"
+}
+
+docker_shell(){
+  local app="$1" cmd="${2:-sh}"
+  [[ -n "$app" ]] || { err "docker shell: missing app name"; return 2; }
+  local eng cname
+  eng="$(docker_engine_for_app "$app")"
+  [[ -n "$eng" ]] || { err "No container engine available."; return 2; }
+  local ENGINE_ACTIVE="$eng"
+  cname="$(docker_meta_get "$app" "container_name")"
+  [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
+  if ! docker_container_exists "$cname" "$eng"; then
+    warn "Container not found: $cname"
+    return 1
+  fi
+  if ! docker_container_managed "$cname" "$eng"; then
+    warn "Refusing to exec into non-BinMan container: $cname"
+    return 2
+  fi
+  engine_cmd exec -it "$cname" "$cmd"
+}
+
+docker_edit(){
+  local app="$1"
+  [[ -n "$app" ]] || { err "docker edit: missing app name"; return 2; }
+  local file; file="$(docker_meta_path "$app")"
+  [[ -f "$file" ]] || { err "No metadata found for ${app}."; return 2; }
+
+  local cur_engine cur_image cur_cname cur_mode cur_root cur_restart cur_network
+  local cur_ports cur_mounts cur_env
+
+  cur_engine="$(docker_meta_get "$app" "engine")"
+  cur_image="$(docker_meta_get "$app" "image_tag")"
+  cur_cname="$(docker_meta_get "$app" "container_name")"
+  cur_mode="$(docker_meta_get "$app" "mode")"
+  cur_root="$(docker_meta_get "$app" "root")"
+  cur_restart="$(docker_meta_get "$app" "restart_policy")"
+  cur_network="$(docker_meta_get "$app" "network")"
+
+  cur_ports="$(docker_meta_list "$app" "ports" | paste -sd, -)"
+  cur_mounts="$(docker_meta_list "$app" "mounts" | paste -sd, -)"
+  cur_env="$(docker_meta_env "$app" | paste -sd, -)"
+
+  echo; printf "%s==> Docker Edit (%s)%s\n" "$UI_GREEN" "$app" "$UI_RESET"
+  cur_engine="$(ask "Engine (docker/podman/blank=auto)" "$cur_engine")"
+  cur_image="$(ask "Image tag" "$cur_image")"
+  cur_cname="$(ask "Container name" "$cur_cname")"
+  cur_restart="$(ask "Restart policy" "${cur_restart:-unless-stopped}")"
+  cur_network="$(ask "Network (blank=default)" "$cur_network")"
+  cur_ports="$(ask_csv_validated "Ports host:container" "$cur_ports" "ports" "e.g. 8080:8080,2222:22")"
+  cur_mounts="$(ask_csv_validated "Mounts host:container" "$cur_mounts" "mounts" "e.g. /home/user/app:/app")"
+  cur_env="$(ask_csv_validated "Env KEY=VAL" "$cur_env" "env" "e.g. KEY=VALUE,DEBUG=1")"
+
+  local app_slug; app_slug="$(docker_slug "$app")"
+  [[ -n "$cur_image" ]] || cur_image="binman/${app_slug}:latest"
+  cur_image="$(docker_slug "$cur_image")"
+  [[ -n "$cur_cname" ]] || cur_cname="binman-${app_slug}"
+  cur_cname="$(docker_slug "$cur_cname")"
+
+  docker_meta_write "$app" "$cur_engine" "$cur_image" "$cur_cname" "$cur_mode" "$cur_root" "$cur_restart" \
+    "$cur_ports" "$cur_mounts" "$cur_env" "$cur_network"
+
+  local eng; eng="$(docker_engine_for_app "$app")"
+  if [[ -n "$eng" ]] && docker_container_exists "$cur_cname" "$eng"; then
+    ask_yesno "Recreate container to apply changes now?" "y" || return 0
+    docker_remove_container_only "$app" || true
+    docker_up "$app" || true
+  fi
+}
 docker_remove(){
   local app="$1"
   [[ -n "$app" ]] || { err "docker remove: missing app name"; return 2; }
@@ -1391,13 +1586,13 @@ docker_screen(){
     fi
 
     echo
-    printf "%sActions:%s [u]p  [d]own  [r]estart  [l]ogs  [x]remove  [n]uke  [p]rune  [o]rphans  [q]uit\n" \
+    printf "%sActions:%s [u]p  [d]own  [r]estart  [l]ogs  [f]ollow  [s]hell  [e]dit  [b]uild  [x]remove  [n]uke  [m]purge  [p]rune  [o]rphans  [q]uit\n" \
       "$UI_CYAN" "$UI_RESET"
     printf "%sChoice:%s " "$UI_BOLD" "$UI_RESET"
     IFS= read -r c
 
     case "$c" in
-      u|U|d|D|r|R|l|L|x|X|n|N)
+      u|U|d|D|r|R|l|L|f|F|s|S|e|E|b|B|x|X|n|N|m|M)
         if ((${#_rows[@]} == 0)); then
           warn "No containers available."; sleep 0.7; continue
         fi
@@ -1413,8 +1608,13 @@ docker_screen(){
           d|D) docker_down "$app" ;;
           r|R) docker_restart "$app" ;;
           l|L) docker_logs "$app" ;;
+          f|F) docker_logs_follow "$app" ;;
+          s|S) docker_shell "$app" ;;
+          e|E) docker_edit "$app" ;;
+          b|B) docker_build "$app" ;;
           x|X) docker_remove "$app" ;;
           n|N) docker_nuke "$app" ;;
+          m|M) docker_purge_metadata "$app" ;;
         esac
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
@@ -1456,9 +1656,15 @@ __bm_docker_preview(){
   fi
 
   if docker_container_managed "$cname" "$eng"; then
-    local started
+    local started exitc restarts err
     started="$(engine_cmd inspect -f '{{.State.StartedAt}}' "$cname" 2>/dev/null || true)"
+    exitc="$(engine_cmd inspect -f '{{.State.ExitCode}}' "$cname" 2>/dev/null || true)"
+    restarts="$(engine_cmd inspect -f '{{.RestartCount}}' "$cname" 2>/dev/null || true)"
+    err="$(engine_cmd inspect -f '{{.State.Error}}' "$cname" 2>/dev/null || true)"
     [[ -n "$started" ]] && printf "%s\n" "Started: ${started}"
+    [[ -n "$exitc" ]] && printf "%s\n" "Exit: ${exitc}"
+    [[ -n "$restarts" ]] && printf "%s\n" "Restarts: ${restarts}"
+    [[ -n "$err" && "$err" != "<no value>" ]] && printf "%s\n" "Error: ${err}"
   else
     printf "%s\n" "Warning: container is NOT BinMan-managed."
   fi
@@ -1468,7 +1674,7 @@ docker_screen_fzf(){
   ui_init; prompt_init
   local eng="$1"
   local preview_cmd
-  preview_cmd="bash -lc 'source \"${BINMAN_SELF}\"; __bm_docker_preview {1} {2} {3} {4} {5} {6} {7}'"
+  preview_cmd="bash -c 'source \"${BINMAN_SELF}\"; __bm_docker_preview {1} {2} {3} {4} {5} {6} {7}'"
 
   while :; do
     mapfile -t rows < <(docker_list_binman_containers "$eng" | sort || true)
@@ -1488,7 +1694,7 @@ docker_screen_fzf(){
     IFS=$'\t' read -r app status eng_used image ports health cname <<<"$sel"
 
     echo
-    printf "%sActions:%s [u]p  [d]own  [r]estart  [l]ogs  [x]remove  [n]uke  [p]rune  [o]rphans  [q]uit\n" \
+    printf "%sActions:%s [u]p  [d]own  [r]estart  [l]ogs  [f]ollow  [s]hell  [e]dit  [b]uild  [x]remove  [n]uke  [m]purge  [p]rune  [o]rphans  [q]uit\n" \
       "$UI_CYAN" "$UI_RESET"
     printf "%sChoice:%s " "$UI_BOLD" "$UI_RESET"
     IFS= read -r c
@@ -1498,8 +1704,13 @@ docker_screen_fzf(){
       d|D) docker_down "$app" ;;
       r|R) docker_restart "$app" ;;
       l|L) docker_logs "$app" ;;
+      f|F) docker_logs_follow "$app" ;;
+      s|S) docker_shell "$app" ;;
+      e|E) docker_edit "$app" ;;
+      b|B) docker_build "$app" ;;
       x|X) docker_remove "$app" ;;
       n|N) docker_nuke "$app" ;;
+      m|M) docker_purge_metadata "$app" ;;
       p|P) docker_prune_binman_images "$eng" ;;
       o|O) docker_find_orphans "$eng" ;;
       q|Q|"") return 0 ;;
@@ -1525,10 +1736,20 @@ op_docker(){
       [[ "${1:-}" == "--tail" ]] && { tail="${2:-200}"; shift 2; }
       docker_logs "$app" "$tail"
       ;;
+    follow)
+      local app="${1:-}"; shift || true
+      local tail=200
+      [[ "${1:-}" == "--tail" ]] && { tail="${2:-200}"; shift 2; }
+      docker_logs_follow "$app" "$tail"
+      ;;
+    shell)       docker_shell "${1:-}" "${2:-sh}" ;;
+    edit)        docker_edit "${1:-}" ;;
+    build)       docker_build "${1:-}" ;;
     remove)      docker_remove "${1:-}" ;;
     nuke)        docker_nuke "${1:-}" ;;
     prune)       docker_prune_binman_images ;;
     orphans)     docker_find_orphans ;;
+    purge)       docker_purge_metadata "${1:-}" ;;
     -h|--help)
       cat <<EOF
 binman docker [command]
@@ -1537,11 +1758,16 @@ binman docker [command]
   down <app>     Stop managed container
   restart <app>  Restart managed container
   logs <app>     Show logs (add --tail N)
+  follow <app>   Follow logs (add --tail N)
+  shell <app>    Exec into container (default: sh)
+  edit <app>     Edit container metadata (ports/mounts/env/etc)
+  build <app>    Build image from metadata root
   remove <app>   Remove managed container
   nuke <app>     Remove container + image
   prune          Remove unused BinMan images
   orphans        List BinMan containers with no installed app
   run <app>      Run one-shot container (mode=oneshot)
+  purge <app>    Remove BinMan metadata for app
 EOF
       ;;
     *)
@@ -2023,6 +2249,37 @@ if ! declare -F _ui_right_clear >/dev/null 2>&1; then
   _ui_right_kv(){ printf "%-6s %s\n" "$1" "$2"; }
   _ui_right_text(){ printf "%s\n" "$1"; }
 fi
+
+_app_readme_author(){
+  local d="$1" f line
+  for f in "$d/README.md" "$d/README" "$d/README.txt"; do
+    [[ -f "$f" ]] || continue
+    if command -v rg >/dev/null 2>&1; then
+      line="$(rg -n --no-heading -m1 '^Author:' "$f" 2>/dev/null || true)"
+    else
+      line="$(grep -m1 -n '^Author:' "$f" 2>/dev/null || true)"
+    fi
+    [[ -n "$line" ]] || continue
+    printf '%s\n' "${line#*:}" | sed 's/^ *Author:[[:space:]]*//; s/^ *//'
+    return 0
+  done
+  return 0
+}
+
+_app_readme_usage(){
+  local d="$1" f
+  for f in "$d/README.md" "$d/README" "$d/README.txt"; do
+    [[ -f "$f" ]] || continue
+    awk '
+      BEGIN{in=0}
+      /^##[[:space:]]+Usage/ {in=1; next}
+      /^##[[:space:]]+/ {if(in){exit} }
+      {if(in) print}
+    ' "$f" 2>/dev/null | sed '/^[[:space:]]*$/d' | sed -n '1,12p'
+    return 0
+  done
+  return 0
+}
 
 
 
@@ -2599,6 +2856,32 @@ ask_yesno(){
   [[ "${out,,}" =~ ^y ]]
 }
 
+ask_csv_validated(){
+  local label="$1" def="$2" kind="$3" hint="$4" out cleaned
+  while :; do
+    if [[ -n "$hint" ]]; then
+      printf "  %s?%s %s %s(%s)%s %s[%s]%s: " \
+        "$UI_CYAN" "$UI_RESET" "$label" "$UI_DIM" "$hint" "$UI_RESET" "$UI_DIM" "$def" "$UI_RESET" > /dev/tty
+    else
+      printf "  %s?%s %s %s[%s]%s: " \
+        "$UI_CYAN" "$UI_RESET" "$label" "$UI_DIM" "$def" "$UI_RESET" > /dev/tty
+    fi
+    IFS= read -r out < /dev/tty
+    [[ -z "$out" ]] && out="$def"
+    case "$kind" in
+      ports)  cleaned="$(_docker_filter_ports_csv "$out")" ;;
+      mounts) cleaned="$(_docker_filter_mounts_csv "$out")" ;;
+      env)    cleaned="$(_docker_filter_env_csv "$out")" ;;
+      *) cleaned="$out" ;;
+    esac
+    if [[ -n "$out" && -z "$cleaned" ]]; then
+      warn "Input invalid. Try again or leave blank."
+      continue
+    fi
+    printf '%s\n' "$cleaned"
+    return 0
+  done
+}
 
 
 # --------------------------------------------------------------------------------------------------
@@ -3582,13 +3865,29 @@ _render_preview_for_idx() {
   local name="${NAMES[idx]}"
   local type="${TYPES[idx]}"
   local path="${PATHS[idx]}"
+  local ver="${VERS[idx]}"
   local text="${PREVIEWS[idx]:-${HELPS[idx]}}"
   [[ -n "$text" ]] || text="(no preview available)"
   _ui_right_clear
   _ui_right_header "[${name:-unknown}]"
-  _ui_right_kv "Path:" "${path:-"-"}"
   _ui_right_kv "Type:" "${type:-"-"}"
-  _ui_right_text "$text"
+  _ui_right_kv "Version:" "${ver:-"-"}"
+  _ui_right_kv "Path:" "${path:-"-"}"
+  if [[ "$type" == "app" && -d "$path" ]]; then
+    local author usage
+    author="$(_app_readme_author "$path")"
+    usage="$(_app_readme_usage "$path")"
+    [[ -n "$author" ]] && _ui_right_kv "Author:" "$author"
+    if [[ -n "$usage" ]]; then
+      _ui_right_text "Usage:"
+      _ui_right_text "$usage"
+    fi
+  fi
+  if [[ -n "$text" && "$text" != "(no preview available)" ]]; then
+    _ui_right_text ""
+    _ui_right_text "Info:"
+    _ui_right_text "$text"
+  fi
 }
 
 __bm_arrays_from_cache() {
@@ -3615,7 +3914,7 @@ __bm_preview_line() {
   local n="${1:-1}"
   [[ "$n" =~ ^[0-9]+$ ]] || n=1
   __bm_arrays_from_cache || return 0
-  local idx=$(( n ))
+  local idx=$(( n - 1 ))
   (( idx < 0 || idx >= ${#NAMES[@]} )) && return 0
   debug "PREVIEW: n=$n -> idx=$idx name=${NAMES[idx]:-}"
   _render_preview_for_idx "$idx"
@@ -3768,7 +4067,7 @@ op_list_ranger() {
     formatted_rows+=("$(_fmt_left_line "$idx")"$'\t'"$kind"$'\t'"$name"$'\t'"$ver"$'\t'"$path"$'\t'"$type"$'\t'"$scope"$'\t'"$target"$'\t'"$preview"$'\t'"$help"$'\t'"$manifest"$'\t'"$run")
   done
 
-  preview_cmd="bash -lc 'source \"${BINMAN_SELF}\"; __bm_preview_line {n}'"
+  preview_cmd="bash -c 'source \"${BINMAN_SELF}\"; __bm_preview_line {n}'"
   bind_doctor="d:execute-silent(bash -c 'exec \"$BINMAN_SELF\" doctor \"$@\"' doctor {3})"
   local bind_reload="ctrl-r:abort"
 
@@ -5506,9 +5805,11 @@ EOF
           ask_yesno "Dockerfile/compose exists. Overwrite Dockerfile/.dockerignore?" "n" && docker_force=1
         fi
 
+        local keepalive=0
+        if [[ "${container_choice,,}" == "service" ]]; then
+          ask_yesno "Keep container alive if entry exits?" "y" && keepalive=1 || keepalive=0
+        fi
         if [[ ! -f "$dockerfile" || $docker_force -eq 1 ]]; then
-          local keepalive=0
-          [[ "${container_choice,,}" == "service" ]] && keepalive=1
           docker_scaffold_dockerfile "$projdir" "$lang" "$entry_cmd" "$keepalive"
           ok "Dockerfile created → ${dockerfile}"
         else
@@ -5520,7 +5821,7 @@ EOF
           ok ".dockerignore created → ${dockerignore}"
         fi
 
-        local eng image cname root restart ports_raw mounts_raw env_raw network app_slug
+        local eng image cname root restart ports_raw mounts_raw env_raw network app_slug extra_mounts use_defaults
         app_slug="$(docker_slug "$name")"
         eng="$(detect_engine)"
         image="binman/${app_slug}:latest"
@@ -5531,11 +5832,26 @@ EOF
         env_raw=""
         network=""
 
+        ports_raw="$(ask_csv_validated "Ports host:container" "" "ports" "e.g. 8080:8080,2222:22")"
+        env_raw="$(ask_csv_validated "Env KEY=VAL" "" "env" "e.g. KEY=VALUE,DEBUG=1")"
+        network="$(ask "Network (blank=default)" "")"
+
         if [[ "${container_choice,,}" == "service" ]]; then
-          mounts_raw="$(printf '%s\n' \
-            "$HOME/.config/${name}:/config" \
-            "$HOME/.local/share/${name}:/data" \
-            "$HOME/.cache/${name}:/cache")"
+          use_defaults=1
+          ask_yesno "Use default mounts (~/.config, ~/.local/share, ~/.cache)?" "y" && use_defaults=1 || use_defaults=0
+          mounts_raw=""
+          if (( use_defaults )); then
+            mounts_raw="$HOME/.config/${name}:/config,$HOME/.local/share/${name}:/data,$HOME/.cache/${name}:/cache"
+          fi
+          extra_mounts="$(ask_csv_validated "Extra mounts host:container" "" "mounts" "e.g. /home/user/app:/app")"
+          if [[ -n "$extra_mounts" ]]; then
+            if [[ -n "$mounts_raw" ]]; then
+              mounts_raw="${mounts_raw},${extra_mounts}"
+            else
+              mounts_raw="$extra_mounts"
+            fi
+          fi
+          restart="$(ask "Restart policy" "${restart}")"
           docker_meta_write "$name" "$eng" "$image" "$cname" "service" "$root" "$restart" \
             "$ports_raw" "$mounts_raw" "$env_raw" "$network"
 
@@ -5548,7 +5864,7 @@ EOF
             docker_up "$name" || true
           fi
         else
-          mounts_raw=""
+          mounts_raw="$(ask_csv_validated "Mounts host:container" "" "mounts" "e.g. /home/user/app:/app")"
           docker_meta_write "$name" "$eng" "$image" "$cname" "oneshot" "$root" "" \
             "$ports_raw" "$mounts_raw" "$env_raw" "$network"
           say "One-shot ready. Run: binman docker run ${name} -- [args]"

@@ -190,8 +190,13 @@ binman docker up MyApp
 binman docker down MyApp
 binman docker restart MyApp
 binman docker logs MyApp --tail 200
+binman docker follow MyApp --tail 200
+binman docker shell MyApp
+binman docker edit MyApp
+binman docker build MyApp
 binman docker remove MyApp
 binman docker nuke MyApp
+binman docker purge MyApp
 
 # One-shot runner
 binman docker run MyTool -- --help
@@ -200,6 +205,8 @@ binman docker run MyTool -- --help
 binman docker prune
 binman docker orphans
 ```
+
+`binman docker edit <app>` lets you tweak ports, mounts, env, restart policy, and network after setup.
 
 ### Backup and Restore
 
