@@ -1,18 +1,18 @@
-# TESTING
+# tester
 
-testing
+tester
 
 Author: kari
 
 ## Layout
 ```
-TESTING/
-├─ bin/TESTING
+tester/
+├─ bin/tester
 ├─ src/
 └─ VERSION
 ```
 
 ## Run
 ```
-TESTING [args]
+tester [args]
 ```
