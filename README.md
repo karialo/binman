@@ -114,7 +114,7 @@ You can roll back any time. So yes, you can un-break things without crying.
 The full command list:
 
 ```
-binman <install|uninstall|verify|list|update|doctor|new|wizard|tui|backup|restore|self-update|rollback|prune-rollbacks|analyze|bundle|test|version|help>
+binman <install|uninstall|verify|list|update|doctor|docker|new|wizard|tui|backup|restore|self-update|rollback|prune-rollbacks|analyze|bundle|test|version|help>
 ```
 
 ### Install
@@ -177,6 +177,28 @@ binman doctor
 binman doctor --fix-path
 binman doctor MyApp
 binman doctor --all --python 3.11
+```
+
+### Docker / Podman management
+
+```bash
+# Open the Docker TUI (shows only BinMan-managed containers)
+binman docker
+
+# Managed service actions
+binman docker up MyApp
+binman docker down MyApp
+binman docker restart MyApp
+binman docker logs MyApp --tail 200
+binman docker remove MyApp
+binman docker nuke MyApp
+
+# One-shot runner
+binman docker run MyTool -- --help
+
+# Maintenance
+binman docker prune
+binman docker orphans
 ```
 
 ### Backup and Restore
@@ -570,6 +592,7 @@ BinMan is Bash-only, but it integrates with optional tools:
 - `zip`/`unzip` or `tar` for backup/restore
 - `jq` for JSON manifests
 - `git` and `gh` for self-update and repo workflows
+- `docker` or `podman` for container management
 - Language runtimes for apps (python, node, deno, go, rust, ruby, php)
 
 If you do not have them, BinMan simply downgrades politely and keeps working.

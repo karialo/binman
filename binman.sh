@@ -111,6 +111,9 @@ BINMAN_STATE_DIR="${BINMAN_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/binm
 mkdir -p "$BINMAN_STATE_DIR" 2>/dev/null || true
 BINMAN_LIST_CACHE="${BINMAN_LIST_CACHE:-$BINMAN_STATE_DIR/inventory.tsv}"
 
+# Docker/Podman metadata
+DOCKER_STATE_DIR="${BINMAN_DOCKER_DIR:-$HOME/.local/share/binman/docker}"
+
 # Runtime flags (influenced by CLI options)
 COPY_MODE="copy"   # copy | link
 FORCE=0            # overwrite on conflicts
@@ -121,6 +124,7 @@ SYSTEM_MODE=0      # target system dirs
 MANIFEST_FILE=""   # bulk install manifest
 QUIET=0            # less noisy
 JSON_MODE=0        # machine-readable output flag
+ENGINE_OVERRIDE="" # --engine docker|podman override
 
 ENTRY_CMD=""      # custom entry command for apps
 ENTRY_CWD=""      # optional subdir to cd into before running entry
@@ -744,7 +748,7 @@ usage(){ cat <<USAGE
 ${SCRIPT_NAME} v${VERSION}
 Manage personal CLI scripts in ${BIN_DIR} and apps in ${APP_STORE}
 
-USAGE: ${SCRIPT_NAME} <install|uninstall|verify|list|update|doctor|new|wizard|tui|backup|restore|self-update|rollback|prune-rollbacks|analyze|bundle|test|version|help> [args] [options]
+USAGE: ${SCRIPT_NAME} <install|uninstall|verify|list|update|doctor|docker|new|wizard|tui|backup|restore|self-update|rollback|prune-rollbacks|analyze|bundle|test|version|help> [args] [options]
        ${SCRIPT_NAME} --backup [FILE]
        ${SCRIPT_NAME} --restore FILE [--force]
 
@@ -758,6 +762,7 @@ Options:
   --system           Target system dirs (/usr/local/*) (requires write perms/sudo)
   --fix-path         (doctor) Add ~/.local/bin to zsh PATH (~/.zshrc & ~/.zprofile)
   --manifest FILE    For bulk install (line list or JSON array if jq available)
+  --engine NAME      Prefer container engine (docker|podman)
   --reindex          Rebuild manifest index before running command
   --quiet            Less chatty
 Backup/Restore convenience:
@@ -805,6 +810,746 @@ in_path(){ case ":$PATH:" in *":${BIN_DIR}:"*) return 0;; *) return 1;; esac; }
 ensure_dir(){ mkdir -p "$1"; }
 ensure_bin(){ ensure_dir "$BIN_DIR"; }
 ensure_apps(){ ensure_dir "$APP_STORE"; }
+ensure_docker_dir(){ mkdir -p "$DOCKER_STATE_DIR"; }
+
+# --------------------------------------------------------------------------------------------------
+# Docker/Podman helpers (BinMan-managed containers only)
+# --------------------------------------------------------------------------------------------------
+detect_engine(){
+  if [[ -n "${ENGINE_OVERRIDE:-}" ]]; then
+    printf '%s\n' "$ENGINE_OVERRIDE"
+    return 0
+  fi
+  command -v docker >/dev/null 2>&1 && { echo docker; return 0; }
+  command -v podman >/dev/null 2>&1 && { echo podman; return 0; }
+  echo ""
+}
+
+engine_cmd(){
+  local engine="${ENGINE_ACTIVE:-}"
+  [[ -z "$engine" ]] && engine="$(detect_engine)"
+  [[ -n "$engine" ]] || { err "No container engine found (docker/podman)."; return 127; }
+  "$engine" "$@"
+}
+
+docker_meta_path(){
+  local app="$1"
+  printf '%s/%s.json\n' "$DOCKER_STATE_DIR" "$app"
+}
+
+docker_slug(){
+  local s="$1"
+  printf '%s\n' "${s,,}"
+}
+
+docker_meta_delete(){
+  local app="$1" file
+  file="$(docker_meta_path "$app")"
+  [[ -f "$file" ]] || return 0
+  rm -f "$file" && ok "Docker metadata removed → $file"
+}
+
+docker_meta_get(){
+  local app="$1" key="$2" file
+  file="$(docker_meta_path "$app")"
+  [[ -f "$file" ]] || return 0
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" "$key" <<'PY' 2>/dev/null || true
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(path))
+except Exception:
+    sys.exit(0)
+val = data.get(key, "")
+if isinstance(val, (list, dict)) or val is None:
+    sys.exit(0)
+print(str(val))
+PY
+  else
+    sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$file" | head -n1
+  fi
+}
+
+docker_meta_list(){
+  local app="$1" key="$2" file
+  file="$(docker_meta_path "$app")"
+  [[ -f "$file" ]] || return 0
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" "$key" <<'PY' 2>/dev/null || true
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(path))
+except Exception:
+    sys.exit(0)
+val = data.get(key, [])
+if isinstance(val, list):
+    for item in val:
+        print(str(item))
+PY
+  fi
+}
+
+docker_meta_env(){
+  local app="$1" key="env" file
+  file="$(docker_meta_path "$app")"
+  [[ -f "$file" ]] || return 0
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" "$key" <<'PY' 2>/dev/null || true
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(path))
+except Exception:
+    sys.exit(0)
+val = data.get(key, {})
+if isinstance(val, dict):
+    for k, v in val.items():
+        print(f"{k}={v}")
+PY
+  fi
+}
+
+docker_engine_for_app(){
+  local app="$1"
+  local eng
+  eng="$(docker_meta_get "$app" "engine")"
+  if [[ -n "$eng" ]] && ! command -v "$eng" >/dev/null 2>&1; then
+    warn "Engine not found for ${app}: ${eng}"
+    eng=""
+  fi
+  [[ -z "$eng" ]] && eng="${ENGINE_OVERRIDE:-}"
+  [[ -z "$eng" ]] && eng="$(detect_engine)"
+  printf '%s\n' "$eng"
+}
+
+docker_container_exists(){
+  local name="$1" eng="${2:-}"
+  local ENGINE_ACTIVE="$eng"
+  engine_cmd inspect "$name" >/dev/null 2>&1
+}
+
+docker_container_managed(){
+  local name="$1" eng="${2:-}"
+  local ENGINE_ACTIVE="$eng"
+  local label
+  label="$(engine_cmd inspect -f '{{index .Config.Labels "io.binman.managed"}}' "$name" 2>/dev/null || true)"
+  [[ "$label" == "true" ]]
+}
+
+docker_container_status(){
+  local name="$1" eng="${2:-}"
+  local ENGINE_ACTIVE="$eng"
+  engine_cmd inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo "missing"
+}
+
+docker_container_ports(){
+  local name="$1" eng="${2:-}"
+  local ENGINE_ACTIVE="$eng"
+  local out
+  out="$(engine_cmd inspect -f '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{$p}}->{{.HostPort}} {{end}}{{end}}' "$name" 2>/dev/null || true)"
+  out="${out%% }"
+  [[ -n "$out" ]] && printf '%s\n' "$out" || printf '%s\n' "-"
+}
+
+docker_container_health(){
+  local name="$1" eng="${2:-}"
+  local ENGINE_ACTIVE="$eng"
+  engine_cmd inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}}' "$name" 2>/dev/null || echo "-"
+}
+
+docker_list_engine_binman_containers(){
+  local eng="$1"
+  local ENGINE_ACTIVE="$eng"
+  engine_cmd ps -a --filter label=io.binman.managed=true \
+    --format '{{.Names}}\t{{.Label "io.binman.app"}}\t{{.Image}}' 2>/dev/null || true
+}
+
+docker_list_binman_containers(){
+  local eng="$1"
+  [[ -n "$eng" ]] || eng="$(detect_engine)"
+  [[ -n "$eng" ]] || return 1
+
+  local ENGINE_ACTIVE="$eng"
+  local f app mode container image status ports health eng_used
+  declare -A seen=()
+
+  ensure_docker_dir
+  for f in "$DOCKER_STATE_DIR"/*.json; do
+    [[ -f "$f" ]] || continue
+    app="$(basename "$f" .json)"
+    mode="$(docker_meta_get "$app" "mode")"
+    [[ "$mode" != "service" ]] && continue
+    container="$(docker_meta_get "$app" "container_name")"
+    image="$(docker_meta_get "$app" "image_tag")"
+    eng_used="$(docker_engine_for_app "$app")"
+    if [[ -n "$container" ]] && docker_container_exists "$container" "$eng_used"; then
+      status="$(docker_container_status "$container" "$eng_used")"
+      ports="$(docker_container_ports "$container" "$eng_used")"
+      health="$(docker_container_health "$container" "$eng_used")"
+    else
+      status="missing"
+      ports="-"
+      health="-"
+    fi
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+      "$app" "$status" "${eng_used:-$eng}" "${image:-"-"}" "$ports" "$health" "${container:-"binman-$app"}"
+    seen["$app"]=1
+  done
+
+  while IFS=$'\t' read -r cname app_label image; do
+    [[ -z "$cname" ]] && continue
+    app="${app_label:-$cname}"
+    [[ -n "${seen[$app]:-}" ]] && continue
+    status="$(docker_container_status "$cname" "$eng")"
+    ports="$(docker_container_ports "$cname" "$eng")"
+    health="$(docker_container_health "$cname" "$eng")"
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+      "$app" "$status" "$eng" "${image:-"-"}" "$ports" "$health" "$cname"
+  done < <(docker_list_engine_binman_containers "$eng")
+}
+
+docker_meta_write(){
+  local app="$1" engine="$2" image="$3" cname="$4" mode="$5" root="$6" restart="$7"
+  local ports_raw="${8:-}" mounts_raw="${9:-}" env_raw="${10:-}" network="${11:-}"
+  local created ports mounts env_pairs
+  created="$(iso_now)"
+
+  mapfile -t ports < <(printf '%s\n' "$ports_raw" | sed '/^$/d')
+  mapfile -t mounts < <(printf '%s\n' "$mounts_raw" | sed '/^$/d')
+  mapfile -t env_pairs < <(printf '%s\n' "$env_raw" | sed '/^$/d')
+
+  ensure_docker_dir
+  local file; file="$(docker_meta_path "$app")"
+
+  {
+    printf '{\n'
+    printf '  "engine": "%s",\n' "$(json_escape "$engine")"
+    printf '  "image_tag": "%s",\n' "$(json_escape "$image")"
+    printf '  "container_name": "%s",\n' "$(json_escape "$cname")"
+    printf '  "ports": ['
+    if ((${#ports[@]})); then
+      local i=0
+      for p in "${ports[@]}"; do
+        ((i++))
+        printf '%s"%s"' "$([[ $i -gt 1 ]] && echo ", " || echo "")" "$(json_escape "$p")"
+      done
+    fi
+    printf '],\n'
+    printf '  "mounts": ['
+    if ((${#mounts[@]})); then
+      local i=0
+      for m in "${mounts[@]}"; do
+        ((i++))
+        printf '%s"%s"' "$([[ $i -gt 1 ]] && echo ", " || echo "")" "$(json_escape "$m")"
+      done
+    fi
+    printf '],\n'
+    printf '  "env": {'
+    if ((${#env_pairs[@]})); then
+      local i=0 key val
+      for pair in "${env_pairs[@]}"; do
+        key="${pair%%=*}"
+        val="${pair#*=}"
+        ((i++))
+        printf '%s"%s": "%s"' \
+          "$([[ $i -gt 1 ]] && echo ", " || echo "")" \
+          "$(json_escape "$key")" "$(json_escape "$val")"
+      done
+    fi
+    printf '},\n'
+    printf '  "network": "%s",\n' "$(json_escape "$network")"
+    printf '  "restart_policy": "%s",\n' "$(json_escape "$restart")"
+    printf '  "mode": "%s",\n' "$(json_escape "$mode")"
+    printf '  "root": "%s",\n' "$(json_escape "$root")"
+    printf '  "created_at": "%s"\n' "$(json_escape "$created")"
+    printf '}\n'
+  } > "$file"
+  ok "Docker metadata saved → $file"
+}
+
+docker_up(){
+  local app="$1"
+  [[ -n "$app" ]] || { err "docker up: missing app name"; return 2; }
+  local mode; mode="$(docker_meta_get "$app" "mode")"
+  [[ "$mode" == "service" ]] || { warn "No managed service metadata for '$app'."; return 2; }
+
+  local eng image cname root restart network
+  eng="$(docker_engine_for_app "$app")"
+  [[ -n "$eng" ]] || { err "No container engine available."; return 2; }
+  local ENGINE_ACTIVE="$eng"
+
+  image="$(docker_meta_get "$app" "image_tag")"
+  cname="$(docker_meta_get "$app" "container_name")"
+  root="$(docker_meta_get "$app" "root")"
+  restart="$(docker_meta_get "$app" "restart_policy")"
+  network="$(docker_meta_get "$app" "network")"
+  [[ -n "$restart" ]] || restart="unless-stopped"
+  [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
+  [[ -n "$image" ]] || image="binman/$(docker_slug "$app"):latest"
+
+  if docker_container_exists "$cname" "$eng"; then
+    if ! docker_container_managed "$cname" "$eng"; then
+      warn "Container name conflict: $cname exists but is not BinMan-managed."
+      return 2
+    fi
+    engine_cmd start "$cname" >/dev/null 2>&1 && ok "Started $cname" || err "Failed to start $cname"
+    return 0
+  fi
+
+  local -a args=()
+  args+=(run -d --name "$cname")
+  args+=(--label "io.binman.managed=true")
+  args+=(--label "io.binman.app=$app")
+  args+=(--label "io.binman.root=$root")
+  args+=(--label "io.binman.mode=service")
+  args+=(--restart "$restart")
+
+  while IFS= read -r p; do [[ -n "$p" ]] && args+=(-p "$p"); done < <(docker_meta_list "$app" "ports")
+  while IFS= read -r m; do
+    [[ -n "$m" ]] || continue
+    local host
+    host="${m%%:*}"
+    host="$(expand_path "$host")"
+    [[ -n "$host" ]] && mkdir -p "$host" 2>/dev/null || true
+    args+=(-v "${host}:${m#*:}")
+  done < <(docker_meta_list "$app" "mounts")
+  while IFS= read -r kv; do [[ -n "$kv" ]] && args+=(-e "$kv"); done < <(docker_meta_env "$app")
+  [[ -n "$network" ]] && args+=(--network "$network")
+
+  args+=("$image")
+
+  if engine_cmd "${args[@]}" >/dev/null 2>&1; then
+    ok "Created and started $cname"
+  else
+    err "Failed to create $cname (is the image built: $image?)"
+    return 2
+  fi
+}
+
+docker_down(){
+  local app="$1"
+  [[ -n "$app" ]] || { err "docker down: missing app name"; return 2; }
+  local eng cname
+  eng="$(docker_engine_for_app "$app")"
+  local ENGINE_ACTIVE="$eng"
+  cname="$(docker_meta_get "$app" "container_name")"
+  [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
+  if ! docker_container_exists "$cname" "$eng"; then
+    warn "Container not found: $cname"
+    return 1
+  fi
+  if ! docker_container_managed "$cname" "$eng"; then
+    warn "Refusing to stop non-BinMan container: $cname"
+    return 2
+  fi
+  engine_cmd stop "$cname" >/dev/null 2>&1 && ok "Stopped $cname" || err "Failed to stop $cname"
+}
+
+docker_restart(){
+  local app="$1"
+  [[ -n "$app" ]] || { err "docker restart: missing app name"; return 2; }
+  local eng cname
+  eng="$(docker_engine_for_app "$app")"
+  local ENGINE_ACTIVE="$eng"
+  cname="$(docker_meta_get "$app" "container_name")"
+  [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
+  if ! docker_container_exists "$cname" "$eng"; then
+    warn "Container not found: $cname"
+    return 1
+  fi
+  if ! docker_container_managed "$cname" "$eng"; then
+    warn "Refusing to restart non-BinMan container: $cname"
+    return 2
+  fi
+  engine_cmd restart "$cname" >/dev/null 2>&1 && ok "Restarted $cname" || err "Failed to restart $cname"
+}
+
+docker_logs(){
+  local app="$1" tail="${2:-200}"
+  [[ -n "$app" ]] || { err "docker logs: missing app name"; return 2; }
+  local eng cname
+  eng="$(docker_engine_for_app "$app")"
+  local ENGINE_ACTIVE="$eng"
+  cname="$(docker_meta_get "$app" "container_name")"
+  [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
+  if ! docker_container_exists "$cname" "$eng"; then
+    warn "Container not found: $cname"
+    return 1
+  fi
+  if ! docker_container_managed "$cname" "$eng"; then
+    warn "Refusing to read logs for non-BinMan container: $cname"
+    return 2
+  fi
+  engine_cmd logs --tail "$tail" "$cname"
+}
+
+docker_remove(){
+  local app="$1"
+  [[ -n "$app" ]] || { err "docker remove: missing app name"; return 2; }
+  local eng cname
+  eng="$(docker_engine_for_app "$app")"
+  local ENGINE_ACTIVE="$eng"
+  cname="$(docker_meta_get "$app" "container_name")"
+  [[ -n "$cname" ]] || cname="binman-$app"
+  if ! docker_container_exists "$cname" "$eng"; then
+    warn "Container not found: $cname"
+    return 1
+  fi
+  if ! docker_container_managed "$cname" "$eng"; then
+    warn "Refusing to remove non-BinMan container: $cname"
+    return 2
+  fi
+  ask_yesno "Remove container ${cname}?" "n" || return 1
+  if engine_cmd rm -f "$cname" >/dev/null 2>&1; then
+    ok "Removed $cname"
+    docker_meta_delete "$app"
+  else
+    err "Failed to remove $cname"
+  fi
+}
+
+docker_nuke(){
+  local app="$1"
+  [[ -n "$app" ]] || { err "docker nuke: missing app name"; return 2; }
+  local eng cname image
+  eng="$(docker_engine_for_app "$app")"
+  local ENGINE_ACTIVE="$eng"
+  cname="$(docker_meta_get "$app" "container_name")"
+  [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
+  image="$(docker_meta_get "$app" "image_tag")"
+  [[ -n "$image" ]] || image="binman/$(docker_slug "$app"):latest"
+
+  ask_yesno "Nuke ${app}: remove container + image ${image}?" "n" || return 1
+  if docker_container_exists "$cname" "$eng"; then
+    if docker_container_managed "$cname" "$eng"; then
+      engine_cmd rm -f "$cname" >/dev/null 2>&1 || true
+    else
+      warn "Skipping non-BinMan container: $cname"
+    fi
+  fi
+  if engine_cmd image rm -f "$image" >/dev/null 2>&1; then
+    ok "Removed image $image"
+  else
+    warn "Image not removed: $image"
+  fi
+  docker_meta_delete "$app"
+}
+
+docker_prune_binman_images(){
+  local eng="$1"
+  [[ -n "$eng" ]] || eng="$(detect_engine)"
+  [[ -n "$eng" ]] || { err "No container engine available."; return 2; }
+  local ENGINE_ACTIVE="$eng"
+
+  local used_images
+  used_images="$(engine_cmd ps -a --format '{{.Image}}' 2>/dev/null | sort -u)"
+
+  mapfile -t imgs < <(engine_cmd images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | awk -F: '$1 ~ /^binman\\// {print $1 ":" $2}' | sort -u)
+  if ((${#imgs[@]} == 0)); then
+    say "No BinMan images found."
+    return 0
+  fi
+
+  local to_remove=()
+  for img in "${imgs[@]}"; do
+    if ! grep -qx "$img" <<< "$used_images"; then
+      to_remove+=("$img")
+    fi
+  done
+  if ((${#to_remove[@]} == 0)); then
+    say "No unused BinMan images to prune."
+    return 0
+  fi
+
+  say "Images to prune:"
+  printf "  %s\n" "${to_remove[@]}"
+  ask_yesno "Prune these images?" "n" || return 1
+  engine_cmd image rm -f "${to_remove[@]}" >/dev/null 2>&1 && ok "Pruned ${#to_remove[@]} image(s)." || warn "Some images could not be removed."
+}
+
+docker_find_orphans(){
+  local eng="$1"
+  [[ -n "$eng" ]] || eng="$(detect_engine)"
+  [[ -n "$eng" ]] || { err "No container engine available."; return 2; }
+  local ENGINE_ACTIVE="$eng"
+
+  declare -A installed=()
+  while IFS= read -r n; do [[ -n "$n" ]] && installed["$n"]=1; done < <(_get_installed_app_names)
+
+  local out=()
+  while IFS=$'\t' read -r cname app_label image; do
+    [[ -n "$app_label" ]] || continue
+    if [[ -z "${installed[$app_label]:-}" ]]; then
+      out+=("$app_label ($cname) - $image")
+    fi
+  done < <(docker_list_engine_binman_containers "$eng")
+
+  if ((${#out[@]} == 0)); then
+    say "No orphaned BinMan containers found."
+  else
+    say "Orphaned BinMan containers:"
+    printf "  %s\n" "${out[@]}"
+  fi
+}
+
+docker_run_oneshot(){
+  local app="$1"; shift || true
+  [[ -n "$app" ]] || { err "docker run: missing app name"; return 2; }
+  local mode; mode="$(docker_meta_get "$app" "mode")"
+  [[ "$mode" == "oneshot" ]] || { warn "No one-shot metadata for '$app'."; return 2; }
+
+  local eng image root
+  eng="$(docker_engine_for_app "$app")"
+  [[ -n "$eng" ]] || { err "No container engine available."; return 2; }
+  local ENGINE_ACTIVE="$eng"
+
+  image="$(docker_meta_get "$app" "image_tag")"
+  root="$(docker_meta_get "$app" "root")"
+  [[ -n "$image" ]] || image="binman/$(docker_slug "$app"):latest"
+
+  local cname="binman-$(docker_slug "$app")-oneshot-$$"
+  local -a args=()
+  args+=(run --rm --name "$cname")
+  args+=(--label "io.binman.managed=true")
+  args+=(--label "io.binman.app=$app")
+  args+=(--label "io.binman.root=$root")
+  args+=(--label "io.binman.mode=oneshot")
+
+  if [[ -n "${PWD:-}" ]]; then
+    args+=(-v "$PWD:/work" -w /work)
+  fi
+
+  while IFS= read -r p; do [[ -n "$p" ]] && args+=(-p "$p"); done < <(docker_meta_list "$app" "ports")
+  while IFS= read -r m; do [[ -n "$m" ]] && args+=(-v "$m"); done < <(docker_meta_list "$app" "mounts")
+  while IFS= read -r kv; do [[ -n "$kv" ]] && args+=(-e "$kv"); done < <(docker_meta_env "$app")
+
+  args+=("$image")
+  if [[ $# -gt 0 ]]; then
+    args+=("$@")
+  fi
+
+  engine_cmd "${args[@]}"
+}
+
+docker_offer_install(){
+  local engine
+  engine="$(detect_engine)"
+  [[ -n "$engine" ]] && return 0
+
+  warn "No container engine found (docker/podman)."
+  ask_yesno "Install one now?" "n" || return 1
+
+  local choice script_dir installer
+  choice="$(ask_choice "Install engine" "docker/podman/none" "docker")"
+  choice="${choice,,}"
+  [[ "$choice" == "none" ]] && return 1
+
+  script_dir="$(cd "$(dirname "$BINMAN_SELF")" && pwd)"
+  installer="${script_dir}/Scripts/kari-install.sh"
+  if [[ ! -x "$installer" ]]; then
+    warn "Installer not found: $installer"
+    return 1
+  fi
+
+  bash "$installer" "$choice"
+  return $?
+}
+
+docker_screen(){
+  ui_init; prompt_init
+  local eng
+  eng="$(detect_engine)"
+  if [[ -z "$eng" ]]; then
+    docker_offer_install || return 1
+    eng="$(detect_engine)"
+    [[ -z "$eng" ]] && { warn "No container engine available."; return 1; }
+  fi
+
+  if exists fzf; then
+    docker_screen_fzf "$eng"
+    return $?
+  fi
+
+  while :; do
+    tput clear 2>/dev/null || clear
+    printf "%sDocker Manager%s (engine: %s)\n" "$UI_BOLD" "$UI_RESET" "$eng"
+    ui_hr
+    printf "%-18s %-9s %-8s %-22s %-16s %-8s\n" "App" "Status" "Engine" "Image" "Ports" "Health"
+    printf "%-18s %-9s %-8s %-22s %-16s %-8s\n" "----" "------" "------" "-----" "-----" "------"
+
+    mapfile -t _rows < <(docker_list_binman_containers "$eng" | sort || true)
+    if ((${#_rows[@]} == 0)); then
+      printf "%s\n" "(no BinMan-managed containers)"
+    else
+      for row in "${_rows[@]}"; do
+        IFS=$'\t' read -r app status eng_used image ports health cname <<<"$row"
+        printf "%-18s %-9s %-8s %-22s %-16s %-8s\n" \
+          "${app:0:18}" "${status:0:9}" "${eng_used:0:8}" "${image:0:22}" "${ports:0:16}" "${health:0:8}"
+      done
+    fi
+
+    echo
+    printf "%sActions:%s [u]p  [d]own  [r]estart  [l]ogs  [x]remove  [n]uke  [p]rune  [o]rphans  [q]uit\n" \
+      "$UI_CYAN" "$UI_RESET"
+    printf "%sChoice:%s " "$UI_BOLD" "$UI_RESET"
+    IFS= read -r c
+
+    case "$c" in
+      u|U|d|D|r|R|l|L|x|X|n|N)
+        if ((${#_rows[@]} == 0)); then
+          warn "No containers available."; sleep 0.7; continue
+        fi
+        local app
+        if exists fzf; then
+          app="$(printf "%s\n" "${_rows[@]}" | awk -F'\t' '{print $1}' | fzf --prompt="App > " --height=60% --reverse || true)"
+        else
+          printf "App name: "; read -r app
+        fi
+        [[ -z "$app" ]] && { echo "Cancelled."; sleep 0.5; continue; }
+        case "$c" in
+          u|U) docker_up "$app" ;;
+          d|D) docker_down "$app" ;;
+          r|R) docker_restart "$app" ;;
+          l|L) docker_logs "$app" ;;
+          x|X) docker_remove "$app" ;;
+          n|N) docker_nuke "$app" ;;
+        esac
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+        ;;
+      p|P)
+        docker_prune_binman_images "$eng"
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+        ;;
+      o|O)
+        docker_find_orphans "$eng"
+        printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+        ;;
+      q|Q|"") break ;;
+      *) warn "Unknown choice: $c"; sleep 0.7 ;;
+    esac
+  done
+}
+
+__bm_docker_preview(){
+  local app="${1:-}" status="${2:-}" eng="${3:-}" image="${4:-}" ports="${5:-}" health="${6:-}" cname="${7:-}"
+  local ENGINE_ACTIVE="$eng"
+  local root mode
+  root="$(docker_meta_get "$app" "root")"
+  mode="$(docker_meta_get "$app" "mode")"
+
+  printf "%s\n" "App: ${app}"
+  printf "%s\n" "Status: ${status}"
+  printf "%s\n" "Engine: ${eng}"
+  printf "%s\n" "Image: ${image}"
+  printf "%s\n" "Ports: ${ports}"
+  printf "%s\n" "Health: ${health}"
+  printf "%s\n" "Container: ${cname}"
+  [[ -n "$mode" ]] && printf "%s\n" "Mode: ${mode}"
+  [[ -n "$root" ]] && printf "%s\n" "Root: ${root}"
+  echo
+
+  if [[ "$status" == "missing" ]]; then
+    printf "%s\n" "Container is missing. Use action: up"
+    return 0
+  fi
+
+  if docker_container_managed "$cname" "$eng"; then
+    local started
+    started="$(engine_cmd inspect -f '{{.State.StartedAt}}' "$cname" 2>/dev/null || true)"
+    [[ -n "$started" ]] && printf "%s\n" "Started: ${started}"
+  else
+    printf "%s\n" "Warning: container is NOT BinMan-managed."
+  fi
+}
+
+docker_screen_fzf(){
+  ui_init; prompt_init
+  local eng="$1"
+  local preview_cmd
+  preview_cmd="bash -lc 'source \"${BINMAN_SELF}\"; __bm_docker_preview {1} {2} {3} {4} {5} {6} {7}'"
+
+  while :; do
+    mapfile -t rows < <(docker_list_binman_containers "$eng" | sort || true)
+    if ((${#rows[@]} == 0)); then
+      warn "No BinMan-managed containers."
+      printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+      return 0
+    fi
+
+    sel="$(printf "%s\n" "${rows[@]}" \
+      | fzf --prompt="Docker > " --height=70% --reverse \
+            --delimiter=$'\t' --with-nth=1,2,3,4 \
+            --preview "$preview_cmd" --preview-window=right:60%:wrap \
+            --header="Select a container; enter to manage; esc to exit")" || return 0
+
+    [[ -n "$sel" ]] || return 0
+    IFS=$'\t' read -r app status eng_used image ports health cname <<<"$sel"
+
+    echo
+    printf "%sActions:%s [u]p  [d]own  [r]estart  [l]ogs  [x]remove  [n]uke  [p]rune  [o]rphans  [q]uit\n" \
+      "$UI_CYAN" "$UI_RESET"
+    printf "%sChoice:%s " "$UI_BOLD" "$UI_RESET"
+    IFS= read -r c
+
+    case "$c" in
+      u|U) docker_up "$app" ;;
+      d|D) docker_down "$app" ;;
+      r|R) docker_restart "$app" ;;
+      l|L) docker_logs "$app" ;;
+      x|X) docker_remove "$app" ;;
+      n|N) docker_nuke "$app" ;;
+      p|P) docker_prune_binman_images "$eng" ;;
+      o|O) docker_find_orphans "$eng" ;;
+      q|Q|"") return 0 ;;
+      *) warn "Unknown choice: $c" ;;
+    esac
+    printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
+  done
+}
+
+op_docker(){
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    "" )
+      if [[ -t 1 ]]; then docker_screen; else err "Docker TUI requires a TTY."; return 1; fi
+      ;;
+    run|oneshot) docker_run_oneshot "$@" ;;
+    up)          docker_up "${1:-}" ;;
+    down)        docker_down "${1:-}" ;;
+    restart)     docker_restart "${1:-}" ;;
+    logs)
+      local app="${1:-}"; shift || true
+      local tail=200
+      [[ "${1:-}" == "--tail" ]] && { tail="${2:-200}"; shift 2; }
+      docker_logs "$app" "$tail"
+      ;;
+    remove)      docker_remove "${1:-}" ;;
+    nuke)        docker_nuke "${1:-}" ;;
+    prune)       docker_prune_binman_images ;;
+    orphans)     docker_find_orphans ;;
+    -h|--help)
+      cat <<EOF
+binman docker [command]
+  (no args)      Open Docker TUI
+  up <app>       Create/start managed container
+  down <app>     Stop managed container
+  restart <app>  Restart managed container
+  logs <app>     Show logs (add --tail N)
+  remove <app>   Remove managed container
+  nuke <app>     Remove container + image
+  prune          Remove unused BinMan images
+  orphans        List BinMan containers with no installed app
+  run <app>      Run one-shot container (mode=oneshot)
+EOF
+      ;;
+    *)
+      err "Unknown docker subcommand: $sub"
+      return 2
+      ;;
+  esac
+}
 
 # Create system dirs if missing, escalating when required.
 # Returns 0 on success (dirs exist), 1 on failure (stay in user mode).
@@ -4432,6 +5177,70 @@ PHP
 #       - We print exactly what to run for SSH or HTTPS, and recommend SSH.
 #       - If the user enters a remote URL, we just wire it; otherwise we leave instructions.
 # --------------------------------------------------------------------------------------------------
+# Dockerfile scaffolding helpers (wizard only)
+docker_scaffold_dockerignore(){
+  local dir="$1"
+  cat > "${dir}/.dockerignore" <<'EOF'
+.git
+.gitignore
+.DS_Store
+.venv
+venv
+__pycache__
+node_modules
+dist
+build
+*.log
+EOF
+}
+
+docker_scaffold_dockerfile(){
+  local dir="$1" lang="$2" entry="$3" keepalive="${4:-0}"
+  local cmd="$entry"
+  if [[ "$keepalive" == "1" ]]; then
+    cmd="${entry}; tail -f /dev/null"
+  fi
+  case "$lang" in
+    python)
+      cat > "${dir}/Dockerfile" <<EOF
+FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; \\
+    elif [ -f pyproject.toml ]; then pip install --no-cache-dir .; \\
+    fi
+CMD ["bash", "-lc", "$(json_escape "$cmd")"]
+EOF
+      ;;
+    node|typescript)
+      cat > "${dir}/Dockerfile" <<EOF
+FROM node:20-alpine
+WORKDIR /app
+COPY . .
+RUN if [ -f package.json ]; then npm install --omit=dev; fi
+CMD ["bash", "-lc", "$(json_escape "$cmd")"]
+EOF
+      ;;
+    go|rust)
+      cat > "${dir}/Dockerfile" <<EOF
+FROM alpine:3.19
+WORKDIR /app
+COPY . .
+# TODO: add build steps for ${lang} before running the binary.
+CMD ["sh", "-lc", "$(json_escape "$cmd")"]
+EOF
+      ;;
+    *)
+      cat > "${dir}/Dockerfile" <<EOF
+FROM alpine:3.19
+WORKDIR /app
+COPY . .
+CMD ["sh", "-lc", "$(json_escape "$cmd")"]
+EOF
+      ;;
+  esac
+}
+
 new_wizard(){
   ui_init; prompt_init
   tput clear 2>/dev/null || clear
@@ -4486,7 +5295,7 @@ new_wizard(){
   echo; ok "Generating…"
 
   # == Generate ===============================================================
-  local filename path
+  local filename path entry_cmd
   if [[ "$kind" == "single" ]]; then
     # choose extension by language if the user didn't provide one
     case "$lang" in
@@ -4504,6 +5313,7 @@ new_wizard(){
 
     new_cmd "$filename" --lang "$lang" --dir "$target_dir"
     path="${target_dir}/${filename}"
+    entry_cmd="./${filename}"
 
     cat > "${target_dir}/README.md" <<EOF
 # ${name}
@@ -4522,6 +5332,7 @@ EOF
     local vflag=(); [[ "${with_venv,,}" == "y" ]] && vflag+=(--venv)
     new_cmd "$name" --app --lang "$lang" --dir "$target_dir" "${vflag[@]}"
     path="${target_dir}/${name}"
+    entry_cmd="./bin/${name}"
 
     cat > "${path}/README.md" <<EOF
 # ${name}
@@ -4676,6 +5487,77 @@ EOF
     ok "Git repository initialized."
   fi
 
+  # == Containerize ==========================================================
+  echo; printf "%s==> Containerize%s\n" "$UI_GREEN" "$UI_RESET"
+  local container_choice
+  container_choice="$(ask_choice "Containerization" "none/oneshot/service" "none")"
+  case "${container_choice,,}" in
+    none|"") : ;;
+    oneshot|service)
+      if ! docker_offer_install; then
+        warn "Skipping containerization (no engine available)."
+      else
+        local projdir dockerfile dockerignore docker_force=0
+        [[ "$kind" == "app" ]] && projdir="$path" || projdir="$target_dir"
+        dockerfile="${projdir}/Dockerfile"
+        dockerignore="${projdir}/.dockerignore"
+
+        if [[ -f "$dockerfile" || -f "${projdir}/docker-compose.yml" || -f "${projdir}/compose.yml" ]]; then
+          ask_yesno "Dockerfile/compose exists. Overwrite Dockerfile/.dockerignore?" "n" && docker_force=1
+        fi
+
+        if [[ ! -f "$dockerfile" || $docker_force -eq 1 ]]; then
+          local keepalive=0
+          [[ "${container_choice,,}" == "service" ]] && keepalive=1
+          docker_scaffold_dockerfile "$projdir" "$lang" "$entry_cmd" "$keepalive"
+          ok "Dockerfile created → ${dockerfile}"
+        else
+          warn "Dockerfile exists (skipped): ${dockerfile}"
+        fi
+
+        if [[ ! -f "$dockerignore" || $docker_force -eq 1 ]]; then
+          docker_scaffold_dockerignore "$projdir"
+          ok ".dockerignore created → ${dockerignore}"
+        fi
+
+        local eng image cname root restart ports_raw mounts_raw env_raw network app_slug
+        app_slug="$(docker_slug "$name")"
+        eng="$(detect_engine)"
+        image="binman/${app_slug}:latest"
+        cname="binman-${app_slug}"
+        root="$projdir"
+        restart="unless-stopped"
+        ports_raw=""
+        env_raw=""
+        network=""
+
+        if [[ "${container_choice,,}" == "service" ]]; then
+          mounts_raw="$(printf '%s\n' \
+            "$HOME/.config/${name}:/config" \
+            "$HOME/.local/share/${name}:/data" \
+            "$HOME/.cache/${name}:/cache")"
+          docker_meta_write "$name" "$eng" "$image" "$cname" "service" "$root" "$restart" \
+            "$ports_raw" "$mounts_raw" "$env_raw" "$network"
+
+          if ask_yesno "Build image now?" "y"; then
+            local ENGINE_ACTIVE="$eng"
+            engine_cmd build -t "$image" "$projdir" || warn "Image build failed."
+          fi
+
+          if ask_yesno "Create and start managed container now?" "y"; then
+            docker_up "$name" || true
+          fi
+        else
+          mounts_raw=""
+          docker_meta_write "$name" "$eng" "$image" "$cname" "oneshot" "$root" "" \
+            "$ports_raw" "$mounts_raw" "$env_raw" "$network"
+          say "One-shot ready. Run: binman docker run ${name} -- [args]"
+        fi
+      fi
+      ;;
+    *) warn "Unknown choice (skipping): $container_choice" ;;
+  esac
+
   echo
   ok "Wizard complete. Happy hacking, ${author}! ✨"
 }
@@ -4716,6 +5598,9 @@ EOF
   printf "%s6)%s Wizard    %s7)%s Backup    %s8)%s Restore     %s9)%s Self-Update   %sa)%s Rollback   %sb)%s Bundle   %sc)%s Test\n" \
     "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET"
 
+  printf "%sd)%s Docker\n" \
+    "$UI_CYAN" "$UI_RESET"
+
   printf "%ss)%s Toggle System Mode %s(currently: %s)%s    %sq)%s Quit\n" \
     "$UI_CYAN" "$UI_RESET" "$UI_DIM" "$([[ $SYSTEM_MODE -eq 1 ]] && echo "ON" || echo "OFF")" "$UI_RESET" "$UI_CYAN" "$UI_RESET"
     
@@ -4752,6 +5637,7 @@ tsv=$(
 2	Uninstall	uninstall	Remove installed items and clean up stubs.
 3	List	list	Browse all items with live preview and quick actions.
 4	Doctor	doctor	Run diagnostics and environment checks.
+d	Docker	docker	Manage BinMan-managed containers (Docker/Podman).
 6	Wizard	wizard	Create a new app/cmd manifest via guided prompts.
 7	Backup	backup	Create a backup archive of installed items.
 8	Restore	restore	Restore from a backup archive.
@@ -4823,6 +5709,7 @@ __bm_run_action_safe() {
       fi
       ;;
     doctor)          cmd_doctor ;;
+    docker)          op_docker "$@" ;;
     update)          op_update "$@" ;;
     new)             new_cmd ;;
     wizard)          new_wizard ;;
@@ -4880,6 +5767,13 @@ parse_common_opts() {
     case "$1" in
       --reindex) REINDEX_REQUEST=1; shift ;;
       -q|--quiet) QUIET=1; shift ;;
+      --engine)
+          ENGINE_OVERRIDE="${2:-}"; shift 2
+          case "${ENGINE_OVERRIDE,,}" in
+            docker|podman) ;;
+            *) err "Invalid --engine (use docker or podman)"; exit 2 ;;
+          esac
+          ;;
       -h|--help)  usage; handled=0; shift ;;
       -v|--version) say "${SCRIPT_NAME} v${VERSION}"; handled=0; shift ;;
       --) shift; while [[ $# -gt 0 ]]; do ARGS_OUT+=("$1"); shift; done; break ;;
@@ -5151,6 +6045,8 @@ binman_tui(){
         fi
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
+
+      d|D) docker_screen; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
 
       s|S) SYSTEM_MODE=$((1-SYSTEM_MODE)); ok "System mode: $([[ $SYSTEM_MODE -eq 1 ]] && echo ON || echo OFF)"; sleep 0.5;;
       q|Q) exit 0;;
