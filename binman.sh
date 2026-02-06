@@ -155,6 +155,32 @@ __has_fzf() {
   command -v fzf >/dev/null 2>&1
 }
 
+_bm_fzf_shell() {
+  local sh=""
+  if [[ -n "${BINMAN_FZF_SHELL:-}" ]]; then
+    sh="$BINMAN_FZF_SHELL"
+  else
+    sh="$(command -v bash 2>/dev/null || true)"
+  fi
+  if [[ -z "$sh" || ! -x "$sh" ]]; then
+    sh="/bin/sh"
+  fi
+  if [[ -x "$sh" ]]; then
+    printf '%s\n' "$sh"
+    return 0
+  fi
+  sh="$(command -v sh 2>/dev/null || true)"
+  [[ -n "$sh" ]] && printf '%s\n' "$sh" && return 0
+  err "fzf: no usable shell found for preview/execute."
+  return 127
+}
+
+fzf_run() {
+  local sh
+  sh="$(_bm_fzf_shell)" || return $?
+  env SHELL="$sh" fzf "$@"
+}
+
 cleanup_root_shims() {
   local name="$1"
   local target="$SYSTEM_BIN/$name"
@@ -399,7 +425,7 @@ __bm_tui_install_flow() {
   if __has_fzf && [[ -t 1 ]]; then
     mapfile -t items < <(find . -maxdepth 1 -mindepth 1 -printf '%P\n' 2>/dev/null | sort)
     items=("Type a path/URL…" "${items[@]}")
-    sel="$(printf '%s\n' "${items[@]}" | fzf --prompt="Install > " --height=60% --reverse || true)"
+    sel="$(printf '%s\n' "${items[@]}" | fzf_run --prompt="Install > " --height=60% --reverse || true)"
     [[ -z "$sel" ]] && { warn "Nothing to install"; return 0; }
 
     if [[ "$sel" == "Type a path/URL…" ]]; then
@@ -484,7 +510,7 @@ __bm_tui_uninstall_flow() {
     if [[ "${BINMAN_INCLUDE_APPS:-0}" == "1" ]]; then
       for a in "${_apps[@]}"; do _choices+=("app  $a"); done
     fi
-    sel="$(printf '%s\n' "${_choices[@]}" | fzf --multi --prompt="Uninstall > " --height=60% --reverse || true)"
+    sel="$(printf '%s\n' "${_choices[@]}" | fzf_run --multi --prompt="Uninstall > " --height=60% --reverse || true)"
     [[ -z "$sel" ]] && { say "Cancelled."; return 0; }
     names="$(echo "$sel" | awk '{print $2}' | tr '\n' ' ')"
     # shellcheck disable=SC2086
@@ -610,7 +636,7 @@ _pick_installed_cmd(){
 
   # fzf path
   if exists fzf; then
-    printf "%s\n" "${names[@]}" | fzf --prompt="Test > " --height=60% --reverse || true
+    printf "%s\n" "${names[@]}" | fzf_run --prompt="Test > " --height=60% --reverse || true
     return 0
   fi
 
@@ -635,7 +661,7 @@ _pick_test_target(){
     {
       printf "stress (gauntlet)\n"
       printf "%s\n" "${names[@]}"
-    } | fzf --prompt="Test > " --height=60% --reverse || return 1
+    } | fzf_run --prompt="Test > " --height=60% --reverse || return 1
     return 0
   fi
 
@@ -668,7 +694,7 @@ _tui_pick_install_target(){
     sel="$(printf "%s\n" "${items[@]}" \
       | sed 's#^\./##' \
       | while read -r p; do [[ -d "$p" ]] && echo "dir  $p" || echo "file $p"; done \
-      | fzf --prompt="Install > " --height=60% --reverse --expect=enter --ansi  --bind 'esc:abort'\
+      | fzf_run --prompt="Install > " --height=60% --reverse --expect=enter --ansi  --bind 'esc:abort'\
       | tail -n +2 | sed 's/^.... //')"
     [[ -n "$sel" ]] && printf "%s\n" "$sel"
     return
@@ -691,7 +717,7 @@ _tui_pick_archive(){
   local files=() idx=1 sel
   while IFS= read -r -d '' f; do files+=("${f#./}"); done < <(find . -maxdepth 1 -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.tgz' \) -print0 | sort -z)
   if _fzf; then
-    sel="$(printf "%s\n" "${files[@]}" | fzf --prompt="Restore > " --height=60% --reverse)"
+    sel="$(printf "%s\n" "${files[@]}" | fzf_run --prompt="Restore > " --height=60% --reverse)"
     [[ -n "$sel" ]] && printf "%s\n" "$sel"
     return
   fi
@@ -717,7 +743,7 @@ _tui_pick_cmd_or_app_multi(){
   for a in "${app[@]}"; do rows+=("app  $a"); done
 
   if _fzf; then
-    printf "%s\n" "${rows[@]}" | fzf --multi --prompt="Select (TAB=multi, Enter=done) > " --height=60% --reverse
+    printf "%s\n" "${rows[@]}" | fzf_run --multi --prompt="Select (TAB=multi, Enter=done) > " --height=60% --reverse
     return
   fi
 
@@ -765,6 +791,7 @@ Options:
   --engine NAME      Prefer container engine (docker|podman)
   --reindex          Rebuild manifest index before running command
   --quiet            Less chatty
+  --no-clear         Never clear the screen (same as BINMAN_NO_CLEAR=1)
 Backup/Restore convenience:
   --backup [FILE]    Create archive (.zip if zip/unzip exist else .tar.gz)
   --restore FILE     Restore archive into target dirs (merge; --force to clobber)
@@ -788,6 +815,7 @@ Examples:
 
 Environment:
   BINMAN_DEBUG=1      Verbose logging (manifest parsing, index rebuild)
+  BINMAN_NO_CLEAR=1   Never clear the screen (including TUI)
 USAGE
 }
 
@@ -1011,6 +1039,86 @@ docker_container_health(){
   engine_cmd inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}}' "$name" 2>/dev/null || echo "-"
 }
 
+docker_state_style(){
+  case "${1:-}" in
+    running) printf "%s" "$UI_GREEN" ;;
+    exited) printf "%s" "$UI_YELLOW" ;;
+    missing) printf "%s" "$UI_YELLOW" ;;
+    conflict) printf "%s" "$UI_MAGENTA" ;;
+    *) printf "%s" "$UI_RESET" ;;
+  esac
+}
+
+docker_set_status(){
+  DOCKER_STATUS_LINE="${1:-}"
+}
+
+docker_orphans_list(){
+  local eng="$1"
+  [[ -n "$eng" ]] || eng="$(detect_engine)"
+  [[ -n "$eng" ]] || return 0
+  local ENGINE_ACTIVE="$eng"
+
+  declare -A installed=()
+  while IFS= read -r n; do [[ -n "$n" ]] && installed["$n"]=1; done < <(_get_installed_app_names)
+
+  local out=()
+  while IFS=$'\t' read -r cname app_label image; do
+    [[ -n "$app_label" ]] || continue
+    if [[ -z "${installed[$app_label]:-}" ]]; then
+      out+=("$app_label ($cname) - $image")
+    fi
+  done < <(docker_list_engine_binman_containers "$eng")
+
+  printf '%s\n' "${out[@]}"
+}
+
+docker_render_header(){
+  local eng="$1" managed="$2" orphans="$3"
+  printf "%sDocker%s | Engine: %s | Managed: %s | Orphans: %s\n" \
+    "$UI_BOLD" "$UI_RESET" "$eng" "$managed" "$orphans"
+}
+
+docker_inspect_summary(){
+  local cname="$1" eng="$2"
+  local ENGINE_ACTIVE="$eng"
+  if command -v python3 >/dev/null 2>&1; then
+    engine_cmd inspect "$cname" 2>/dev/null | python3 - "$cname" <<'PY' || true
+import json, sys
+name = sys.argv[1]
+try:
+    data = json.load(sys.stdin)[0]
+except Exception:
+    sys.exit(0)
+state = data.get("State", {}) or {}
+status = state.get("Status", "-")
+health = "-"
+health_obj = state.get("Health")
+if isinstance(health_obj, dict):
+    health = health_obj.get("Status", "-") or "-"
+hostcfg = data.get("HostConfig", {}) or {}
+restart = (hostcfg.get("RestartPolicy", {}) or {}).get("Name", "-") or "-"
+networks = data.get("NetworkSettings", {}).get("Networks", {}) or {}
+net_str = " ".join(sorted(networks.keys())) if networks else "-"
+mounts = data.get("Mounts", []) or []
+mount_str = " ".join([f"{m.get('Source','')}:{m.get('Destination','')}" for m in mounts if m.get("Source") and m.get("Destination")]) or "-"
+ports = data.get("NetworkSettings", {}).get("Ports", {}) or {}
+port_items = []
+for k, v in ports.items():
+    if not v:
+        continue
+    for conf in v:
+        host = conf.get("HostPort", "")
+        if host:
+            port_items.append(f"{k}->{host}")
+port_str = " ".join(port_items) or "-"
+print("\t".join([status, health, restart, net_str, mount_str, port_str]))
+PY
+  else
+    engine_cmd inspect -f '{{.State.Status}}	{{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}}	{{.HostConfig.RestartPolicy.Name}}	{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}	{{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}	{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{$p}}->{{.HostPort}} {{end}}{{end}}' "$cname" 2>/dev/null || true
+  fi
+}
+
 docker_list_engine_binman_containers(){
   local eng="$1"
   local ENGINE_ACTIVE="$eng"
@@ -1130,6 +1238,12 @@ docker_meta_write(){
 docker_up(){
   local app="$1"
   [[ -n "$app" ]] || { err "docker up: missing app name"; return 2; }
+  local meta_file; meta_file="$(docker_meta_path "$app")"
+  if [[ ! -f "$meta_file" ]]; then
+    docker_set_status "No metadata found; rebuild or re-run wizard."
+    warn "No metadata found for ${app}."
+    return 2
+  fi
   local mode; mode="$(docker_meta_get "$app" "mode")"
   [[ "$mode" == "service" ]] || { warn "No managed service metadata for '$app'."; return 2; }
 
@@ -1150,9 +1264,16 @@ docker_up(){
   if docker_container_exists "$cname" "$eng"; then
     if ! docker_container_managed "$cname" "$eng"; then
       warn "Container name conflict: $cname exists but is not BinMan-managed."
+      docker_set_status "Conflict: $cname exists but is not BinMan-managed."
       return 2
     fi
-    engine_cmd start "$cname" >/dev/null 2>&1 && ok "Started $cname" || err "Failed to start $cname"
+    if engine_cmd start "$cname" >/dev/null 2>&1; then
+      ok "Started $cname"
+      docker_set_status "Started $cname."
+    else
+      err "Failed to start $cname"
+      docker_set_status "Failed to start $cname."
+    fi
     return 0
   fi
 
@@ -1191,8 +1312,10 @@ docker_up(){
 
   if engine_cmd "${args[@]}" >/dev/null 2>&1; then
     ok "Created and started $cname"
+    docker_set_status "Created and started $cname."
   else
     err "Failed to create $cname (is the image built: $image?)"
+    docker_set_status "Failed to create $cname."
     return 2
   fi
 }
@@ -1207,13 +1330,21 @@ docker_down(){
   [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
   if ! docker_container_exists "$cname" "$eng"; then
     warn "Container not found: $cname"
+    docker_set_status "Container not found: $cname."
     return 1
   fi
   if ! docker_container_managed "$cname" "$eng"; then
     warn "Refusing to stop non-BinMan container: $cname"
+    docker_set_status "Refusing to stop non-BinMan container: $cname."
     return 2
   fi
-  engine_cmd stop "$cname" >/dev/null 2>&1 && ok "Stopped $cname" || err "Failed to stop $cname"
+  if engine_cmd stop "$cname" >/dev/null 2>&1; then
+    ok "Stopped $cname"
+    docker_set_status "Stopped $cname."
+  else
+    err "Failed to stop $cname"
+    docker_set_status "Failed to stop $cname."
+  fi
 }
 
 docker_restart(){
@@ -1226,13 +1357,21 @@ docker_restart(){
   [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
   if ! docker_container_exists "$cname" "$eng"; then
     warn "Container not found: $cname"
+    docker_set_status "Container not found: $cname."
     return 1
   fi
   if ! docker_container_managed "$cname" "$eng"; then
     warn "Refusing to restart non-BinMan container: $cname"
+    docker_set_status "Refusing to restart non-BinMan container: $cname."
     return 2
   fi
-  engine_cmd restart "$cname" >/dev/null 2>&1 && ok "Restarted $cname" || err "Failed to restart $cname"
+  if engine_cmd restart "$cname" >/dev/null 2>&1; then
+    ok "Restarted $cname"
+    docker_set_status "Restarted $cname."
+  else
+    err "Failed to restart $cname"
+    docker_set_status "Failed to restart $cname."
+  fi
 }
 
 docker_logs(){
@@ -1245,12 +1384,15 @@ docker_logs(){
   [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
   if ! docker_container_exists "$cname" "$eng"; then
     warn "Container not found: $cname"
+    docker_set_status "Container not found: $cname."
     return 1
   fi
   if ! docker_container_managed "$cname" "$eng"; then
     warn "Refusing to read logs for non-BinMan container: $cname"
+    docker_set_status "Refusing to read logs for non-BinMan container: $cname."
     return 2
   fi
+  docker_set_status "Showing last ${tail} lines for $cname."
   engine_cmd logs --tail "$tail" "$cname"
 }
 
@@ -1264,13 +1406,20 @@ docker_logs_follow(){
   [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
   if ! docker_container_exists "$cname" "$eng"; then
     warn "Container not found: $cname"
+    docker_set_status "Container not found: $cname."
     return 1
   fi
   if ! docker_container_managed "$cname" "$eng"; then
     warn "Refusing to read logs for non-BinMan container: $cname"
+    docker_set_status "Refusing to read logs for non-BinMan container: $cname."
     return 2
   fi
-  engine_cmd logs -f --tail "$tail" "$cname"
+  docker_set_status "Following logs for $cname (press q/esc/ctrl+c to exit)."
+  if command -v less >/dev/null 2>&1; then
+    engine_cmd logs -f --tail "$tail" "$cname" | less -R +F
+  else
+    engine_cmd logs -f --tail "$tail" "$cname"
+  fi
 }
 
 docker_remove_container_only(){
@@ -1283,13 +1432,21 @@ docker_remove_container_only(){
   [[ -n "$cname" ]] || cname="binman-$(docker_slug "$app")"
   if ! docker_container_exists "$cname" "$eng"; then
     warn "Container not found: $cname"
+    docker_set_status "Container not found: $cname."
     return 1
   fi
   if ! docker_container_managed "$cname" "$eng"; then
     warn "Refusing to remove non-BinMan container: $cname"
+    docker_set_status "Refusing to remove non-BinMan container: $cname."
     return 2
   fi
-  engine_cmd rm -f "$cname" >/dev/null 2>&1 && ok "Removed $cname" || err "Failed to remove $cname"
+  if engine_cmd rm -f "$cname" >/dev/null 2>&1; then
+    ok "Removed $cname"
+    docker_set_status "Removed $cname."
+  else
+    err "Failed to remove $cname"
+    docker_set_status "Failed to remove $cname."
+  fi
 }
 
 docker_build(){
@@ -1310,7 +1467,11 @@ docker_purge_metadata(){
   local app="$1"
   [[ -n "$app" ]] || { err "docker purge: missing app name"; return 2; }
   ask_yesno "Purge metadata for ${app}?" "n" || return 1
-  docker_meta_delete "$app"
+  if docker_meta_delete "$app"; then
+    docker_set_status "Purged metadata for $app."
+  else
+    docker_set_status "No metadata to purge for $app."
+  fi
 }
 
 docker_shell(){
@@ -1390,18 +1551,22 @@ docker_remove(){
   [[ -n "$cname" ]] || cname="binman-$app"
   if ! docker_container_exists "$cname" "$eng"; then
     warn "Container not found: $cname"
+    docker_set_status "Container not found: $cname."
     return 1
   fi
   if ! docker_container_managed "$cname" "$eng"; then
     warn "Refusing to remove non-BinMan container: $cname"
+    docker_set_status "Refusing to remove non-BinMan container: $cname."
     return 2
   fi
   ask_yesno "Remove container ${cname}?" "n" || return 1
   if engine_cmd rm -f "$cname" >/dev/null 2>&1; then
     ok "Removed $cname"
     docker_meta_delete "$app"
+    docker_set_status "Removed $cname."
   else
     err "Failed to remove $cname"
+    docker_set_status "Failed to remove $cname."
   fi
 }
 
@@ -1417,19 +1582,26 @@ docker_nuke(){
   [[ -n "$image" ]] || image="binman/$(docker_slug "$app"):latest"
 
   ask_yesno "Nuke ${app}: remove container + image ${image}?" "n" || return 1
+  local removed_any=0
   if docker_container_exists "$cname" "$eng"; then
     if docker_container_managed "$cname" "$eng"; then
-      engine_cmd rm -f "$cname" >/dev/null 2>&1 || true
+      engine_cmd rm -f "$cname" >/dev/null 2>&1 && removed_any=1 || true
     else
       warn "Skipping non-BinMan container: $cname"
     fi
   fi
   if engine_cmd image rm -f "$image" >/dev/null 2>&1; then
     ok "Removed image $image"
+    removed_any=1
   else
     warn "Image not removed: $image"
   fi
   docker_meta_delete "$app"
+  if (( removed_any )); then
+    docker_set_status "Nuked $app ($cname / $image)."
+  else
+    docker_set_status "Nuke failed or nothing removed for $app."
+  fi
 }
 
 docker_prune_binman_images(){
@@ -1468,18 +1640,8 @@ docker_find_orphans(){
   local eng="$1"
   [[ -n "$eng" ]] || eng="$(detect_engine)"
   [[ -n "$eng" ]] || { err "No container engine available."; return 2; }
-  local ENGINE_ACTIVE="$eng"
-
-  declare -A installed=()
-  while IFS= read -r n; do [[ -n "$n" ]] && installed["$n"]=1; done < <(_get_installed_app_names)
-
   local out=()
-  while IFS=$'\t' read -r cname app_label image; do
-    [[ -n "$app_label" ]] || continue
-    if [[ -z "${installed[$app_label]:-}" ]]; then
-      out+=("$app_label ($cname) - $image")
-    fi
-  done < <(docker_list_engine_binman_containers "$eng")
+  mapfile -t out < <(docker_orphans_list "$eng")
 
   if ((${#out[@]} == 0)); then
     say "No orphaned BinMan containers found."
@@ -1557,6 +1719,9 @@ docker_screen(){
   local eng
   eng="$(detect_engine)"
   if [[ -z "$eng" ]]; then
+    bm_clear_screen
+    docker_render_header "none" "0" "0"
+    warn "No container engine found (docker/podman)."
     docker_offer_install || return 1
     eng="$(detect_engine)"
     [[ -z "$eng" ]] && { warn "No container engine available."; return 1; }
@@ -1568,24 +1733,29 @@ docker_screen(){
   fi
 
   while :; do
-    tput clear 2>/dev/null || clear
-    printf "%sDocker Manager%s (engine: %s)\n" "$UI_BOLD" "$UI_RESET" "$eng"
+    bm_clear_screen
+    mapfile -t _rows < <(docker_list_binman_containers "$eng" | sort || true)
+    mapfile -t _orphans < <(docker_orphans_list "$eng")
+    docker_render_header "$eng" "${#_rows[@]}" "${#_orphans[@]}"
     ui_hr
     printf "%-18s %-9s %-8s %-22s %-16s %-8s\n" "App" "Status" "Engine" "Image" "Ports" "Health"
     printf "%-18s %-9s %-8s %-22s %-16s %-8s\n" "----" "------" "------" "-----" "-----" "------"
 
-    mapfile -t _rows < <(docker_list_binman_containers "$eng" | sort || true)
     if ((${#_rows[@]} == 0)); then
       printf "%s\n" "(no BinMan-managed containers)"
     else
       for row in "${_rows[@]}"; do
         IFS=$'\t' read -r app status eng_used image ports health cname <<<"$row"
-        printf "%-18s %-9s %-8s %-22s %-16s %-8s\n" \
-          "${app:0:18}" "${status:0:9}" "${eng_used:0:8}" "${image:0:22}" "${ports:0:16}" "${health:0:8}"
+        printf "%-18s %s%-9s%s %-8s %-22s %-16s %-8s\n" \
+          "${app:0:18}" "$(docker_state_style "$status")" "${status:0:9}" "$UI_RESET" \
+          "${eng_used:0:8}" "${image:0:22}" "${ports:0:16}" "${health:0:8}"
       done
     fi
 
     echo
+    if [[ -n "${DOCKER_STATUS_LINE:-}" ]]; then
+      printf "%sStatus:%s %s\n" "$UI_DIM" "$UI_RESET" "$DOCKER_STATUS_LINE"
+    fi
     printf "%sActions:%s [u]p  [d]own  [r]estart  [l]ogs  [f]ollow  [s]hell  [e]dit  [b]uild  [x]remove  [n]uke  [m]purge  [p]rune  [o]rphans  [q]uit\n" \
       "$UI_CYAN" "$UI_RESET"
     printf "%sChoice:%s " "$UI_BOLD" "$UI_RESET"
@@ -1598,7 +1768,7 @@ docker_screen(){
         fi
         local app
         if exists fzf; then
-          app="$(printf "%s\n" "${_rows[@]}" | awk -F'\t' '{print $1}' | fzf --prompt="App > " --height=60% --reverse || true)"
+          app="$(printf "%s\n" "${_rows[@]}" | awk -F'\t' '{print $1}' | fzf_run --prompt="App > " --height=60% --reverse || true)"
         else
           printf "App name: "; read -r app
         fi
@@ -1634,24 +1804,59 @@ docker_screen(){
 
 __bm_docker_preview(){
   local app="${1:-}" status="${2:-}" eng="${3:-}" image="${4:-}" ports="${5:-}" health="${6:-}" cname="${7:-}"
+  local _stripq
+  _stripq(){ 
+    local s="$1"
+    [[ ${#s} -ge 2 && ( "${s:0:1}" == "'" && "${s: -1}" == "'" ) ]] && s="${s:1:-1}"
+    [[ ${#s} -ge 2 && ( "${s:0:1}" == '"' && "${s: -1}" == '"' ) ]] && s="${s:1:-1}"
+    printf "%s" "$s"
+  }
+  app="$(_stripq "$app")"
+  status="$(_stripq "$status")"
+  eng="$(_stripq "$eng")"
+  image="$(_stripq "$image")"
+  ports="$(_stripq "$ports")"
+  health="$(_stripq "$health")"
+  cname="$(_stripq "$cname")"
   local ENGINE_ACTIVE="$eng"
-  local root mode
+  local root mode meta_file meta_state restart network mounts
   root="$(docker_meta_get "$app" "root")"
   mode="$(docker_meta_get "$app" "mode")"
+  restart="$(docker_meta_get "$app" "restart_policy")"
+  network="$(docker_meta_get "$app" "network")"
+  mounts="$(docker_meta_list "$app" "mounts" | paste -sd' ' -)"
+  [[ -n "$mounts" ]] || mounts="(none)"
+  meta_file="$(docker_meta_path "$app")"
+  [[ -f "$meta_file" ]] && meta_state="present" || meta_state="missing"
+
+  local i_status="$status" i_health="$health" i_restart="$restart" i_networks="$network" i_mounts="$mounts" i_ports="$ports"
+  if [[ "$status" != "missing" ]] && docker_container_exists "$cname" "$eng"; then
+    local inspect_line
+    inspect_line="$(docker_inspect_summary "$cname" "$eng")"
+    if [[ -n "$inspect_line" ]]; then
+      IFS=$'\t' read -r i_status i_health i_restart i_networks i_mounts i_ports <<<"$inspect_line"
+      [[ -n "$i_mounts" && "$i_mounts" != "-" ]] || i_mounts="$mounts"
+    fi
+  fi
 
   printf "%s\n" "App: ${app}"
-  printf "%s\n" "Status: ${status}"
   printf "%s\n" "Engine: ${eng}"
-  printf "%s\n" "Image: ${image}"
-  printf "%s\n" "Ports: ${ports}"
-  printf "%s\n" "Health: ${health}"
   printf "%s\n" "Container: ${cname}"
+  printf "%s\n" "Image: ${image}"
+  printf "%s\n" "Status: ${i_status}"
+  printf "%s\n" "Health: ${i_health}"
+  printf "%s\n" "Ports: ${i_ports}"
+  printf "%s\n" "Restart: ${i_restart:-"-"}"
+  printf "%s\n" "Networks: ${i_networks:-"-"}"
+  printf "%s\n" "Mounts: ${i_mounts}"
+  printf "%s\n" "Metadata: ${meta_file} (${meta_state})"
   [[ -n "$mode" ]] && printf "%s\n" "Mode: ${mode}"
   [[ -n "$root" ]] && printf "%s\n" "Root: ${root}"
   echo
 
   if [[ "$status" == "missing" ]]; then
-    printf "%s\n" "Container is missing. Use action: up"
+    printf "%s\n" "Container metadata exists but container is missing. Press [u] to recreate."
+    printf "%s\n" "Keys: [u]p [d]own [r]estart [l]ogs [f]ollow [s]hell [e]dit [b]uild [x]remove [n]uke [m]purge [p]rune [o]rphans"
     return 0
   fi
 
@@ -1666,18 +1871,20 @@ __bm_docker_preview(){
     [[ -n "$restarts" ]] && printf "%s\n" "Restarts: ${restarts}"
     [[ -n "$err" && "$err" != "<no value>" ]] && printf "%s\n" "Error: ${err}"
   else
-    printf "%s\n" "Warning: container is NOT BinMan-managed."
+    printf "%s\n" "Container exists but is NOT BinMan-managed. Destructive actions are disabled."
   fi
+  printf "%s\n" "Keys: [u]p [d]own [r]estart [l]ogs [f]ollow [s]hell [e]dit [b]uild [x]remove [n]uke [m]purge [p]rune [o]rphans"
 }
 
 docker_screen_fzf(){
   ui_init; prompt_init
   local eng="$1"
   local preview_cmd
-  preview_cmd="bash -c 'source \"${BINMAN_SELF}\"; __bm_docker_preview {1} {2} {3} {4} {5} {6} {7}'"
+  preview_cmd="source \"${BINMAN_SELF}\"; __bm_docker_preview \"{1}\" \"{2}\" \"{3}\" \"{4}\" \"{5}\" \"{6}\" \"{7}\""
 
   while :; do
     mapfile -t rows < <(docker_list_binman_containers "$eng" | sort || true)
+    mapfile -t _orphans < <(docker_orphans_list "$eng")
     if ((${#rows[@]} == 0)); then
       warn "No BinMan-managed containers."
       printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
@@ -1685,10 +1892,10 @@ docker_screen_fzf(){
     fi
 
     sel="$(printf "%s\n" "${rows[@]}" \
-      | fzf --prompt="Docker > " --height=70% --reverse \
+      | fzf_run --prompt="Docker > " --height=70% --reverse \
             --delimiter=$'\t' --with-nth=1,2,3,4 \
             --preview "$preview_cmd" --preview-window=right:60%:wrap \
-            --header="Select a container; enter to manage; esc to exit")" || return 0
+            --header="Docker | Engine: ${eng} | Managed: ${#rows[@]} | Orphans: ${#_orphans[@]}  (Enter to manage; Esc to exit)")" || return 0
 
     [[ -n "$sel" ]] || return 0
     IFS=$'\t' read -r app status eng_used image ports health cname <<<"$sel"
@@ -1716,6 +1923,9 @@ docker_screen_fzf(){
       q|Q|"") return 0 ;;
       *) warn "Unknown choice: $c" ;;
     esac
+    if [[ -n "${DOCKER_STATUS_LINE:-}" ]]; then
+      printf "%sStatus:%s %s\n" "$UI_DIM" "$UI_RESET" "$DOCKER_STATUS_LINE"
+    fi
     printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
   done
 }
@@ -2217,6 +2427,11 @@ ui_init(){
     UI_BOLD=""; UI_DIM=""; UI_RESET=""; UI_CYAN=""; UI_GREEN=""; UI_YELLOW=""; UI_MAGENTA=""
   fi
   UI_WIDTH=${COLUMNS:-80}
+}
+
+bm_clear_screen(){
+  [[ "${BINMAN_NO_CLEAR:-0}" == "1" ]] && return 0
+  tput clear 2>/dev/null || clear
 }
 
 ui_hr(){ 
@@ -4067,12 +4282,13 @@ op_list_ranger() {
     formatted_rows+=("$(_fmt_left_line "$idx")"$'\t'"$kind"$'\t'"$name"$'\t'"$ver"$'\t'"$path"$'\t'"$type"$'\t'"$scope"$'\t'"$target"$'\t'"$preview"$'\t'"$help"$'\t'"$manifest"$'\t'"$run")
   done
 
-  preview_cmd="bash -c 'source \"${BINMAN_SELF}\"; __bm_preview_line {n}'"
+  # Use row fields (post-filter/sort) to avoid index mismatches in preview.
+  preview_cmd="source \"${BINMAN_SELF}\"; bm_render_preview \"{2}\" \"{3}\" \"{4}\" \"{5}\" \"{9}\" \"{10}\" \"{11}\" \"{7}\" \"{12}\" \"{8}\""
   bind_doctor="d:execute-silent(bash -c 'exec \"$BINMAN_SELF\" doctor \"$@\"' doctor {3})"
   local bind_reload="ctrl-r:abort"
 
   out="$(printf '%s\n' "${formatted_rows[@]}" |
-    fzf --ansi --border --height=100% --layout=reverse \
+    fzf_run --ansi --border --height=100% --layout=reverse \
         --delimiter=$'\t' --with-nth=1 \
         --preview "${preview_cmd}" \
         --preview-window=right,60%,wrap \
@@ -4287,7 +4503,7 @@ _pick_app(){
   local items; items="$(_list_apps)"
   [[ -n "$items" ]] || { err "No apps installed."; return 1; }
   if exists fzf; then
-    printf "%s\n" "$items" | fzf --prompt="Doctor → "
+    printf "%s\n" "$items" | fzf_run --prompt="Doctor → "
   else
     warn "Tip: install 'fzf' for fuzzy picking."
     local i=1 arr; mapfile -t arr < <(printf "%s\n" "$items")
@@ -5542,7 +5758,7 @@ EOF
 
 new_wizard(){
   ui_init; prompt_init
-  tput clear 2>/dev/null || clear
+  bm_clear_screen
   echo
   printf "%s🧙  BinMan Project Wizard%s\n" "$UI_BOLD" "$UI_RESET"
   printf "%sPress Enter to accept defaults in %s[brackets]%s.%s\n\n" "$UI_DIM" "$UI_BOLD" "$UI_RESET" "$UI_RESET"
@@ -5885,7 +6101,7 @@ EOF
 # --------------------------------------------------------------------------------------------------
 print_banner(){
   ui_init
-  tput clear 2>/dev/null || clear
+  bm_clear_screen
   cat <<'EOF'
 
 $$$$$$$\  $$\           $$\      $$\                     
@@ -5971,7 +6187,7 @@ TSV
   # Drive fzf from TSV; show key+label, preview the 4th column.
   FZF_DEFAULT_OPTS='' \
   sel=$(printf "%s\n" "$tsv" \
-    | fzf "${_opts[@]}" \
+    | fzf_run "${_opts[@]}" \
           --delimiter=$'\t' \
           --with-nth=1,2 \
           --header="$header" \
@@ -6083,6 +6299,7 @@ parse_common_opts() {
     case "$1" in
       --reindex) REINDEX_REQUEST=1; shift ;;
       -q|--quiet) QUIET=1; shift ;;
+      --no-clear) BINMAN_NO_CLEAR=1; shift ;;
       --engine)
           ENGINE_OVERRIDE="${2:-}"; shift 2
           case "${ENGINE_OVERRIDE,,}" in
@@ -6135,7 +6352,7 @@ binman_tui(){
           # Show only the path column; keep selections exactly as typed (spaces safe)
           mapfile -t selections < <(
             { printf '%s\n' "${items[@]}" \
-                | fzf --multi --prompt="Install > " --height=60% --reverse \
+                | fzf_run --multi --prompt="Install > " --height=60% --reverse \
                       --delimiter=$'\t' --with-nth=2 \
                 | cut -f2; } || true
           )
@@ -6242,7 +6459,7 @@ binman_tui(){
           if [[ "${BINMAN_INCLUDE_APPS:-0}" == "1" ]]; then
             for a in "${_apps[@]}"; do _choices+=("app  $a"); done
           fi
-          sel="$(printf '%s\n' "${_choices[@]}" | fzf --multi --prompt="Uninstall > " --height=60% --reverse || true)"
+          sel="$(printf '%s\n' "${_choices[@]}" | fzf_run --multi --prompt="Uninstall > " --height=60% --reverse || true)"
           [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
           names="$(echo "$sel" | awk '{print $2}' | tr '\n' ' ')"
           # shellcheck disable=SC2086
@@ -6284,7 +6501,7 @@ binman_tui(){
           for c in "${_cmds[@]}"; do choices+=("cmd  $c"); done
           for a in "${_apps[@]}"; do choices+=("app  $a"); done
 
-          sel="$(printf '%s\n' "${choices[@]}" | fzf --multi --prompt="Backup > " --height=60% --reverse || true)"
+          sel="$(printf '%s\n' "${choices[@]}" | fzf_run --multi --prompt="Backup > " --height=60% --reverse || true)"
           [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
 
           if grep -qx "ALL (everything)" <<< "$sel"; then
@@ -6317,7 +6534,7 @@ binman_tui(){
         if exists fzf; then
           mapfile -t cands < <(ls -1 *.zip *.tar.gz 2>/dev/null || true)
           cands=("Type a path…" "${cands[@]}")
-          sel="$(printf '%s\n' "${cands[@]}" | fzf --prompt="Restore > " --height=60% --reverse || true)"
+          sel="$(printf '%s\n' "${cands[@]}" | fzf_run --prompt="Restore > " --height=60% --reverse || true)"
           [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
           if [[ "$sel" == "Type a path…" ]]; then
             printf "Archive path: "; read -r f; [[ -z "$f" ]] && echo "Cancelled." || op_restore "$f"
@@ -6339,7 +6556,7 @@ binman_tui(){
         if exists fzf && [[ -d "$ROLLBACK_ROOT" ]]; then
           mapfile -t snaps < <(cd "$ROLLBACK_ROOT" && ls -1 | sort -r)
           [[ ${#snaps[@]} -eq 0 ]] && { warn "No rollback snapshots yet"; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
-          sel="$(printf '%s\n' "${snaps[@]}" | fzf --prompt="Rollback > " --height=60% --reverse || true)"
+          sel="$(printf '%s\n' "${snaps[@]}" | fzf_run --prompt="Rollback > " --height=60% --reverse || true)"
           [[ -z "$sel" ]] && { echo "Cancelled."; } || apply_rollback "$sel"
         else
           id="$(latest_rollback_id || true)"; [[ -n "$id" ]] && apply_rollback "$id" || warn "No rollback snapshots yet"
@@ -6352,7 +6569,7 @@ binman_tui(){
         if exists fzf; then
           mapfile -t _cmds < <(_get_installed_cmd_names)
           if ((${#_cmds[@]}==0)); then warn "No commands installed."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; fi
-          sel="$(printf '%s\n' "${_cmds[@]}" | fzf --prompt="Test > " --height=60% --reverse || true)"
+          sel="$(printf '%s\n' "${_cmds[@]}" | fzf_run --prompt="Test > " --height=60% --reverse || true)"
           [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
           op_test "$sel"
         else
@@ -6890,7 +7107,6 @@ _parse_version(){
 # --------------------------------------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------------------------------------
-clear
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   # FLAGS ONLY when first arg looks like a flag
   if [[ "${1:-}" == -* ]]; then
