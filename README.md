@@ -544,13 +544,49 @@ push -v minor -t -r
 ```
 
 ### kari-install
-Cross-distro package installer wrapper (apt/dnf/pacman/zypper/rpm-ostree).
+Cross-distro package installer wrapper (apt/dnf/pacman/zypper/rpm-ostree), plus Flatpak and Homebrew if present. Think of it as a polite bouncer for your packages: it checks IDs, skips what you already have, and doesn't throw a tantrum if one guest isn't on the list.
 
 ```bash
 kari-install ripgrep fd
 kari-install --search neovim
 kari-install -n go git
 ```
+
+What it does (nerd-friendly, human-readable):
+
+- Per-package pipeline: installs each item independently so one missing package does not kill the whole run.
+- Smart skip logic: detects already-installed packages (dpkg/rpm/pacman/flatpak/brew) and skips with a reason.
+- Search across sources: repo, flatpak, brew. Curated by default; `--full` shows raw output.
+- Candidate picking: ranks exact/prefix/token matches first; avoids sketchy "close enough" picks unless you `--choose`.
+- Atomic-aware: if you're on rpm-ostree and asking for GUI apps, it will prefer flatpak when sensible.
+- Narration + logging: prints demo-friendly status lines and appends to `~/.local/state/kari-install/history.log`.
+
+Common switches:
+
+```bash
+kari-install --search steam
+kari-install --limit 10 --search gimp zsh steam
+kari-install --full --search docker
+kari-install --prefer flatpak gimp
+kari-install --force-source brew zsh
+kari-install --choose steam
+kari-install --fail-fast gimp2 zsh steam
+```
+
+Behavior notes:
+
+- `--dry-run` shows the exact commands that would run, no side effects.
+- `--yes` passes non-interactive flags to backends when supported.
+- If no repo match exists but a Flatpak/Brew option does, it will pick the best candidate unless you force or choose.
+- Missing packages are skipped with a clear reason; your other installs keep rolling.
+
+Log format (tab-separated, append-only):
+
+```
+<ISO-8601 UTC>  <tool>  <package>  <source>  <action>  <status>  <reason>
+```
+
+If you like receipts, this is your receipt. If you don't, ignore it and keep vibe-installing.
 
 ### tailscalesetup
 Install Tailscale quickly.
