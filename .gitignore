@@ -6,3 +6,4 @@ bundle*.zip
 # BinMan artifacts
 binman_backup-*.zip
 bundle*.zip
+tests
