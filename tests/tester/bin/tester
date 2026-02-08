@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# Description: tester (bash app)
-VERSION="0.1.0"
-set -Eeuo pipefail
-echo "tester v${VERSION} — hello (bash)"

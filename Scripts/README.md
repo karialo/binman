@@ -1,10 +1,10 @@
-# rsync-backup
+# refresh-ssh
 
-Quick backup to a target device with snapshot folder named by date
+release SSH from being locked to 10.0.0.1 between devices
 
 Author: K.A.R.I
 
 ## Usage
 ```
-rsync-backup [args]
+refresh-ssh [args]
 ```
