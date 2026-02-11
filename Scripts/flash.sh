@@ -2,15 +2,143 @@
 # flash — image writer with interactive wizard + expand + headless Wi-Fi/SSH + first-boot user setup
 # Wizard: flash <image.(img|xz|gz|bz2|zst)>
 # Direct : flash [--verify] [--expand] [--headless --SSID "name" --Password "pass" --Country CC [--Hidden]] [--User NAME --UserPass PASS] <image> <device>
+#
+# Manual test checklist:
+# - Run flash.sh with --headless --SSID --Password --Country GB on a spare SD.
+# - Mount SD partitions on laptop:
+# - Verify NM connection exists, no interface-name, psk uses NM-escaped password.
+# - Verify dtparam=spi=on present in config file (firmware/config.txt or config.txt).
+# - Verify rootfs /etc/wpa_supplicant/wpa_supplicant.conf contains country=GB.
+# - Verify first-boot scripts check both /boot and /boot/firmware triggers and remove triggers.
 
 set -Eeuo pipefail
-VERSION="0.7.0"
+VERSION="0.8.1"
 
 # ---------- helpers ----------
 err() { echo "[-] $*" >&2; }
 ok()  { echo "[+] $*"; }
 run() { echo "\$ $*" >&2; "$@"; }
 pause() { read -rp "$*"; }
+
+normalize_country() {
+  local cc="${1:-}"
+  cc="${cc#"${cc%%[![:space:]]*}"}"
+  cc="${cc%"${cc##*[![:space:]]}"}"
+  printf '%s' "${cc^^}"
+}
+
+is_iso3166_alpha2() {
+  local cc="${1:-}"
+  [[ "$cc" =~ ^[A-Z]{2}$ ]] || return 1
+
+  # Prefer tzdata's ISO3166 list if present.
+  if [[ -r /usr/share/zoneinfo/iso3166.tab ]]; then
+    grep -qE "^${cc}[[:space:]]" /usr/share/zoneinfo/iso3166.tab || return 1
+    return 0
+  fi
+
+  # Fallback list (ISO 3166-1 alpha-2).
+  case "$cc" in
+    AD|AE|AF|AG|AI|AL|AM|AO|AQ|AR|AS|AT|AU|AW|AX|AZ) return 0 ;;
+    BA|BB|BD|BE|BF|BG|BH|BI|BJ|BL|BM|BN|BO|BQ|BR|BS|BT|BV|BW|BY|BZ) return 0 ;;
+    CA|CC|CD|CF|CG|CH|CI|CK|CL|CM|CN|CO|CR|CU|CV|CW|CX|CY|CZ) return 0 ;;
+    DE|DJ|DK|DM|DO|DZ) return 0 ;;
+    EC|EE|EG|EH|ER|ES|ET) return 0 ;;
+    FI|FJ|FK|FM|FO|FR) return 0 ;;
+    GA|GB|GD|GE|GF|GG|GH|GI|GL|GM|GN|GP|GQ|GR|GS|GT|GU|GW|GY) return 0 ;;
+    HK|HM|HN|HR|HT|HU) return 0 ;;
+    ID|IE|IL|IM|IN|IO|IQ|IR|IS|IT) return 0 ;;
+    JE|JM|JO|JP) return 0 ;;
+    KE|KG|KH|KI|KM|KN|KP|KR|KW|KY|KZ) return 0 ;;
+    LA|LB|LC|LI|LK|LR|LS|LT|LU|LV|LY) return 0 ;;
+    MA|MC|MD|ME|MF|MG|MH|MK|ML|MM|MN|MO|MP|MQ|MR|MS|MT|MU|MV|MW|MX|MY|MZ) return 0 ;;
+    NA|NC|NE|NF|NG|NI|NL|NO|NP|NR|NU|NZ) return 0 ;;
+    OM) return 0 ;;
+    PA|PE|PF|PG|PH|PK|PL|PM|PN|PR|PS|PT|PW|PY) return 0 ;;
+    QA) return 0 ;;
+    RE|RO|RS|RU|RW) return 0 ;;
+    SA|SB|SC|SD|SE|SG|SH|SI|SJ|SK|SL|SM|SN|SO|SR|SS|ST|SV|SX|SY|SZ) return 0 ;;
+    TC|TD|TF|TG|TH|TJ|TK|TL|TM|TN|TO|TR|TT|TV|TW|TZ) return 0 ;;
+    UA|UG|UM|US|UY|UZ) return 0 ;;
+    VA|VC|VE|VG|VI|VN|VU) return 0 ;;
+    WF|WS) return 0 ;;
+    YE|YT) return 0 ;;
+    ZA|ZM|ZW) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+require_country_or_exit() {
+  local cc
+  cc="$(normalize_country "${1:-}")"
+  if [[ -z "$cc" ]]; then
+    err "Country code is empty. Use --Country CC (ISO3166-1 alpha-2, e.g. GB)."
+    exit 64
+  fi
+  if ! is_iso3166_alpha2 "$cc"; then
+    err "Invalid country code: '$cc' (expected ISO3166-1 alpha-2, e.g. GB, US, DE)."
+    exit 64
+  fi
+  printf '%s' "$cc"
+}
+
+nm_escape() {
+  # Escape for NetworkManager keyfile (.nmconnection) format (GLib keyfile string escapes).
+  local s="${1:-}"
+  s="${s//\\/\\\\}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+ensure_root_wpa_country() {
+  local root="${1:?}"
+  local cc="${2:?}"
+  local wpa="$root/etc/wpa_supplicant/wpa_supplicant.conf"
+  local tmp
+
+  mkdir -p "${wpa%/*}"
+  if [[ ! -e "$wpa" ]]; then
+    cat >"$wpa" <<EOF
+country=$cc
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+EOF
+    return 0
+  fi
+
+  tmp="${wpa}.flash.$$"
+  awk -v cc="$cc" '
+    BEGIN{inserted=0}
+    /^[[:space:]]*country=/ {next}
+    {
+      if (!inserted && $0 !~ /^[[:space:]]*($|[#;])/ ) {
+        print "country=" cc
+        inserted=1
+      }
+      print
+    }
+    END{
+      if (!inserted) print "country=" cc
+    }
+  ' "$wpa" >"$tmp"
+  cat "$tmp" >"$wpa"
+  rm -f "$tmp"
+}
+
+ensure_root_crda_regdomain() {
+  local root="${1:?}"
+  local cc="${2:?}"
+  local crda="$root/etc/default/crda"
+
+  [[ -f "$crda" ]] || return 0
+  if grep -qE '^[[:space:]]*REGDOMAIN=' "$crda"; then
+    sed -i -E "s/^[[:space:]]*REGDOMAIN=.*/REGDOMAIN=$cc/" "$crda"
+  else
+    printf '\nREGDOMAIN=%s\n' "$cc" >>"$crda"
+  fi
+}
 
 # self-sudo so users can run from their own dir
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
@@ -49,6 +177,11 @@ EOF
   esac
 done
 set -- "${ARGS[@]}"
+
+# Normalize + validate explicit --Country early (if provided).
+if [[ -n "${COUNTRY:-}" ]]; then
+  COUNTRY="$(require_country_or_exit "$COUNTRY")"
+fi
 
 # ---------- args ----------
 if (( $# < 1 || $# > 2 )); then
@@ -116,7 +249,15 @@ fi
 if (( HEADLESS )); then
   [[ -n "$SSID"     ]] || read -rp "SSID: " SSID
   [[ -n "$PASSWORD" ]] || { read -rsp "Password: " PASSWORD; echo; }
-  # Country auto-detect if not provided: iw reg -> LANG -> US
+  if [[ "$SSID" == *$'\n'* || "$SSID" == *$'\r'* ]]; then
+    err "SSID contains a newline which is not supported."
+    exit 64
+  fi
+  if [[ "$PASSWORD" == *$'\n'* || "$PASSWORD" == *$'\r'* ]]; then
+    err "Password contains a newline which is not supported."
+    exit 64
+  fi
+  # Country auto-detect if not provided: iw reg -> LANG -> GB
   if [[ -z "$COUNTRY" ]]; then
     if command -v iw >/dev/null 2>&1; then
       CC="$(iw reg get 2>/dev/null | awk '/country /{print $2}' | sed 's/:.*//; q')"
@@ -125,8 +266,9 @@ if (( HEADLESS )); then
     if [[ -z "$COUNTRY" && -n "${LANG:-}" && "$LANG" =~ _([A-Z]{2})\. ]]; then
       COUNTRY="${BASH_REMATCH[1]}"
     fi
-    COUNTRY="${COUNTRY:-US}"
+    COUNTRY="${COUNTRY:-GB}"
   fi
+  COUNTRY="$(require_country_or_exit "$COUNTRY")"
   read -rp "Is the SSID hidden? [y/N]: " Y; [[ "$Y" =~ ^[Yy]$ ]] && HIDDEN=1
 fi
 if [[ -z "$USER_NAME" && -z "$USER_PASS" ]]; then
@@ -214,25 +356,186 @@ if (( HEADLESS )); then
     echo "}"
   } > "$MNT_BOOT/wpa_supplicant.conf"
 
+  # Enable SPI (best effort; safe to skip on non-Pi images).
+  SPI_CFG=""
+  if [[ -f "$MNT_BOOT/firmware/config.txt" ]]; then
+    SPI_CFG="$MNT_BOOT/firmware/config.txt"
+  elif [[ -f "$MNT_BOOT/config.txt" ]]; then
+    SPI_CFG="$MNT_BOOT/config.txt"
+  fi
+  if [[ -n "$SPI_CFG" ]]; then
+    if grep -qE '^[[:space:]]*dtparam=spi=on([[:space:]]|,|$)' "$SPI_CFG"; then
+      ok "SPI already enabled (dtparam=spi=on)"
+    elif grep -qE '^[[:space:]]*dtparam=spi=' "$SPI_CFG"; then
+      if sed -i -E 's/^[[:space:]]*dtparam=spi=.*/dtparam=spi=on/' "$SPI_CFG"; then
+        ok "SPI enabled (dtparam=spi=on)"
+      else
+        err "SPI enable failed (could not update config.txt; continuing)"
+      fi
+    else
+      TMP_SPI="${SPI_CFG}.flash.$$"
+      if awk '
+        BEGIN{added=0}
+        /^[[:space:]]*#/ {print; next}
+        /^[[:space:]]*$/ {print; next}
+        {
+          if (!added) { print "dtparam=spi=on"; added=1 }
+          print
+          next
+        }
+        END{ if (!added) print "dtparam=spi=on" }
+      ' "$SPI_CFG" >"$TMP_SPI" && cat "$TMP_SPI" >"$SPI_CFG"; then
+        ok "SPI enabled (dtparam=spi=on)"
+      else
+        err "SPI enable failed (could not update config.txt; continuing)"
+      fi
+      rm -f "$TMP_SPI"
+    fi
+  else
+    ok "SPI config.txt not found (skipping SPI enable)"
+  fi
+
   # Also seed NetworkManager so Kali definitely connects
   run mount "$ROOT_PART" "$MNT_ROOT"
+  # Persist regdom in rootfs (not just /boot).
+  ensure_root_wpa_country "$MNT_ROOT" "$COUNTRY"
+  ensure_root_crda_regdomain "$MNT_ROOT" "$COUNTRY"
+
+  # Stage a first-boot country/regdom applier (best effort; safe on non-systemd images).
+  ok "Staging first-boot Wi-Fi country applier…"
+  {
+    echo "COUNTRY=\"$COUNTRY\""
+  } >"$MNT_BOOT/wificountry"
+  mkdir -p "$MNT_ROOT/usr/local/sbin" "$MNT_ROOT/etc/systemd/system"
+  cat >"$MNT_ROOT/usr/local/sbin/apply-wificountry.sh" <<'EOS'
+#!/bin/bash
+set -o pipefail
+
+CONF=""
+for p in /boot/wificountry /boot/firmware/wificountry; do
+  if [[ -f "$p" ]]; then
+    CONF="$p"
+    break
+  fi
+done
+if [[ -z "$CONF" ]]; then
+  exit 0
+fi
+
+cleanup() {
+  rm -f "$CONF" 2>/dev/null || true
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable apply-wificountry.service >/dev/null 2>&1 || true
+  fi
+}
+
+COUNTRY=""
+if [[ -f "$CONF" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONF" >/dev/null 2>&1 || true
+fi
+COUNTRY="${COUNTRY:-}"
+COUNTRY="${COUNTRY#"${COUNTRY%%[![:space:]]*}"}"
+COUNTRY="${COUNTRY%"${COUNTRY##*[![:space:]]}"}"
+COUNTRY="${COUNTRY^^}"
+
+if [[ ! "$COUNTRY" =~ ^[A-Z]{2}$ ]]; then
+  cleanup
+  exit 0
+fi
+
+if command -v raspi-config >/dev/null 2>&1; then
+  raspi-config nonint do_wifi_country "$COUNTRY" >/dev/null 2>&1 || true
+  raspi-config nonint do_spi 0 >/dev/null 2>&1 || true
+elif command -v iw >/dev/null 2>&1; then
+  iw reg set "$COUNTRY" >/dev/null 2>&1 || true
+fi
+
+WPA="/etc/wpa_supplicant/wpa_supplicant.conf"
+mkdir -p "${WPA%/*}" 2>/dev/null || true
+if [[ ! -e "$WPA" ]]; then
+  cat >"$WPA" <<EOF
+country=$COUNTRY
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+EOF
+else
+  tmp="${WPA}.tmp.$$"
+  awk -v cc="$COUNTRY" '
+    BEGIN{inserted=0}
+    /^[[:space:]]*country=/ {next}
+    {
+      if (!inserted && $0 !~ /^[[:space:]]*($|[#;])/ ) {
+        print "country=" cc
+        inserted=1
+      }
+      print
+    }
+    END{
+      if (!inserted) print "country=" cc
+    }
+  ' "$WPA" >"$tmp" 2>/dev/null || true
+  if [[ -s "$tmp" ]]; then
+    cat "$tmp" >"$WPA" 2>/dev/null || true
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+fi
+
+CRDA="/etc/default/crda"
+if [[ -f "$CRDA" ]]; then
+  if grep -qE '^[[:space:]]*REGDOMAIN=' "$CRDA" 2>/dev/null; then
+    sed -i -E "s/^[[:space:]]*REGDOMAIN=.*/REGDOMAIN=$COUNTRY/" "$CRDA" 2>/dev/null || true
+  else
+    printf '\nREGDOMAIN=%s\n' "$COUNTRY" >>"$CRDA" 2>/dev/null || true
+  fi
+fi
+
+cleanup
+exit 0
+EOS
+  chmod 755 "$MNT_ROOT/usr/local/sbin/apply-wificountry.sh"
+
+  cat >"$MNT_ROOT/etc/systemd/system/apply-wificountry.service" <<'EOS'
+[Unit]
+Description=Apply first-boot Wi-Fi country/regdom
+After=local-fs.target
+ConditionPathExists=|/boot/wificountry
+ConditionPathExists=|/boot/firmware/wificountry
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/apply-wificountry.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+EOS
+  chroot "$MNT_ROOT" systemctl enable apply-wificountry.service >/dev/null 2>&1 || true
+
   mkdir -p "$MNT_ROOT/etc/NetworkManager/system-connections"
-  NM="$MNT_ROOT/etc/NetworkManager/system-connections/${SSID_ESC}.nmconnection"
+  NM_UUID="$(cat /proc/sys/kernel/random/uuid)"
+  NM="$MNT_ROOT/etc/NetworkManager/system-connections/wifi-${NM_UUID}.nmconnection"
+  SSID_NM="$(nm_escape "$SSID")"
+  PASS_NM="$(nm_escape "$PASSWORD")"
   cat > "$NM" <<EOF
 [connection]
-id=${SSID_ESC}
-uuid=$(cat /proc/sys/kernel/random/uuid)
+id=${SSID_NM}
+uuid=${NM_UUID}
 type=wifi
-interface-name=wlan0
 autoconnect=true
 
 [wifi]
 mode=infrastructure
-ssid=${SSID_ESC}
+ssid=${SSID_NM}
+EOF
+  if (( HIDDEN )); then
+    echo "hidden=true" >>"$NM"
+  fi
+  cat >>"$NM" <<EOF
 
 [wifi-security]
 key-mgmt=wpa-psk
-psk=${PASS_ESC}
+psk=${PASS_NM}
 
 [ipv4]
 method=auto
@@ -249,25 +552,44 @@ EOF
     mkdir -p "$MNT_ROOT/usr/local/sbin" "$MNT_ROOT/etc/systemd/system"
     cat > "$MNT_ROOT/usr/local/sbin/apply-userconf.sh" <<'EOS'
 #!/bin/bash
-set -euo pipefail
-CONF="/boot/userconf"
-if [[ ! -f "$CONF" ]]; then exit 0; fi
+set -o pipefail
+
+CONF=""
+for p in /boot/userconf /boot/firmware/userconf; do
+  if [[ -f "$p" ]]; then
+    CONF="$p"
+    break
+  fi
+done
+if [[ -z "$CONF" ]]; then
+  exit 0
+fi
+
+cleanup() {
+  rm -f "$CONF" 2>/dev/null || true
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable apply-userconf.service >/dev/null 2>&1 || true
+  fi
+}
+
 # shellcheck disable=SC1090
-source "$CONF"   # expects USER_NAME, USER_PASS (plain)
+source "$CONF" >/dev/null 2>&1 || true  # expects USER_NAME, USER_PASS (plain)
 user="${USER_NAME:-kali}"
 pass="${USER_PASS:-kali}"
-if id "$user" &>/dev/null; then
-  echo "$user:$pass" | chpasswd
+if command -v id >/dev/null 2>&1 && id "$user" &>/dev/null; then
+  echo "$user:$pass" | chpasswd 2>/dev/null || true
 else
-  useradd -m -s /bin/bash "$user"
-  echo "$user:$pass" | chpasswd
+  useradd -m -s /bin/bash "$user" 2>/dev/null || true
+  echo "$user:$pass" | chpasswd 2>/dev/null || true
   usermod -aG sudo,plugdev,adm,video,audio,netdev "$user" 2>/dev/null || true
 fi
 # enable ssh permanently (if image uses ssh service)
-systemctl enable ssh 2>/dev/null || true
-# cleanup and disable self
-rm -f "$CONF"
-systemctl disable apply-userconf.service 2>/dev/null || true
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl enable ssh >/dev/null 2>&1 || true
+fi
+
+cleanup
+exit 0
 EOS
     chmod 755 "$MNT_ROOT/usr/local/sbin/apply-userconf.sh"
 
@@ -275,7 +597,8 @@ EOS
 [Unit]
 Description=Apply first-boot user configuration
 After=local-fs.target
-ConditionPathExists=/boot/userconf
+ConditionPathExists=|/boot/userconf
+ConditionPathExists=|/boot/firmware/userconf
 
 [Service]
 Type=oneshot
