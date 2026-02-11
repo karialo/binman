@@ -48,7 +48,7 @@ If you only remember one rule, make it this:
 
 | Script | Use it when you need to... |
 |---|---|
-| `flash.sh` | Write a Pi image to SD/USB and optionally stage headless Wi-Fi/SSH/user boot config |
+| `flash.sh` | Write a Pi image to SD/USB, stage headless/gadget setup, and diagnose mounted bootfs/rootfs |
 | `prep-headless.sh` | Inject only `/boot` headless files on an already-written image |
 | `verify.sh` | Do checksum + antivirus in one command, including watch mode |
 | `checksum.sh` | Compute/verify checksums (raw, prefixed, or checksum-file formats) |
@@ -112,72 +112,83 @@ sudo dnf install -y bash coreutils findutils grep sed gawk util-linux \
 ## Script Reference
 
 <a id="flash-sh"></a>
-### `flash.sh` (v0.8.1)
+### `flash.sh` (v0.9.0)
 
 **Designed for**
-- Flashing any Raspberry Pi-targeted raw image (`.img`, `.xz`, `.gz`, `.bz2`, `.zst`) to whole devices.
-- Staging headless boot config across Raspberry Pi OS/Debian-ish images.
-- Best-effort compatibility with non-official Pi images (no hard failure if `systemd`/`raspi-config` is missing).
+- Flashing Raspberry Pi images (`.img`, `.iso`, `.xz`, `.gz`, `.bz2`, `.zst`) to whole devices with strong guardrails.
+- Staging headless boot setup (SSH, Wi-Fi, country/regdomain, first-boot user, SPI).
+- Optionally staging USB gadget networking (`dwc2` + `g_ether` + `usb0` static IP).
+- Running offline diagnostics on mounted `bootfs/rootfs` without reflashing.
 
 **Usage**
 ```bash
 flash.sh <image>
 flash.sh [--verify] [--expand] \
+  [--gadget|--no-gadget] \
   [--headless --SSID "name" --Password "pass" --Country CC [--Hidden]] \
   [--User NAME --UserPass PASS] \
   <image> <device>
+
+flash.sh --diagnose-mounts [bootfs_mount] [rootfs_mount]
 ```
 
 **Key options**
-- `--verify`: compare first 16 MiB hash of image vs flashed device.
-- `--expand`: grow partition 2 + filesystem to fill target.
-- `--headless`: stage SSH and Wi-Fi config.
-- `--SSID`, `--Password`, `--Country`: Wi-Fi credentials and regulatory country.
-- `--Hidden`: writes hidden SSID flags (`scan_ssid=1` and NM `hidden=true`).
-- `--User`, `--UserPass`: first-boot user creation/reset via staged oneshot.
+- `--verify`: compare first 16 MiB hash of image and flashed device.
+- `--expand`: grow the best root-like ext partition with `growpart` + `resize2fs`.
+- `--headless`: stage SSH, Wi-Fi, country/regdomain, and first-boot helpers.
+- `--gadget` / `--no-gadget`: explicit USB gadget staging toggle.
+- `--SSID`, `--Password`, `--Country`, `--Hidden`: headless Wi-Fi settings.
+- `--User`, `--UserPass`: optional first-boot user creation/reset via staged trigger + service.
+- `--diagnose-mounts`: print the same post-flash diagnostics from mounted `bootfs/rootfs`, no write.
 
 **Examples**
 ```bash
-# Interactive wizard device selection
+# Interactive wizard + picker
 sudo ./flash.sh ~/Images/raspios.img.xz
 
-# Fully direct mode, headless, verify
-sudo ./flash.sh --headless \
+# Direct mode with headless + gadget + verify
+sudo ./flash.sh --headless --gadget \
   --SSID "Lab AP" --Password "CorrectHorseBatteryStaple" --Country GB \
+  --User kali --UserPass kali \
   --verify ~/Images/custom-pi.img.xz /dev/sdb
 
-# Headless + first-boot user
-sudo ./flash.sh --headless --SSID "OpsNet" --Password "secret" --Country GB \
-  --User kali --UserPass kali \
-  ~/Images/pi.img.xz /dev/mmcblk0
+# Offline diagnostics on already-mounted partitions
+./flash.sh --diagnose-mounts /run/media/$USER/bootfs /run/media/$USER/rootfs
 ```
 
 **How it works**
-- Auto-sudo elevation if not root.
-- Validates/normalizes country code to ISO3166 alpha-2 uppercase.
-- Detects removable disks and supports `fzf` picker fallback menu.
-- Unmounts target partitions before writing.
-- Streams decompression into `dd` for write.
-- Optional root partition expand using `growpart`, `e2fsck`, `resize2fs`.
-- Headless staging:
-  - `/boot/ssh`
-  - `/boot/wpa_supplicant.conf`
-  - SPI enable in boot config (`dtparam=spi=on`) for both legacy and Bookworm path variants.
-  - Rootfs `wpa_supplicant` country enforcement.
-  - Rootfs CRDA `REGDOMAIN` update if file exists.
-  - First-boot `/boot/wificountry` trigger + `apply-wificountry.service`.
-  - NetworkManager profile with safe UUID filename (`wifi-<uuid>.nmconnection`) and no interface pinning.
-  - Optional first-boot `/boot/userconf` + `apply-userconf.service`.
+- Enforces target safety checks:
+  - requires whole-disk target, rejects current root disk, double path confirmation, final `YEAH`.
+- Detects Pi-like partition layout after write and adapts staging paths.
+- Resolves boot files robustly across both layouts:
+  - `bootfs/config.txt` and `bootfs/cmdline.txt`
+  - `bootfs/firmware/config.txt` and `bootfs/firmware/cmdline.txt`
+- Headless staging includes:
+  - SSH trigger (`ssh`) in boot root and firmware path when available.
+  - `wpa_supplicant.conf` with hidden-SSID support.
+  - SPI enable (`dtparam=spi=on`) best-effort.
+  - Rootfs country/regdomain persistence.
+  - First-boot `wificountry` trigger + `apply-wificountry.service`.
+  - NM Wi-Fi profile under `/etc/NetworkManager/system-connections/`.
+  - Optional `firstboot-user` trigger + `apply-userconf.service`.
+- USB gadget staging (`--gadget`) includes:
+  - `dtoverlay=dwc2` in boot config.
+  - `modules-load=dwc2,g_ether` in cmdline.
+  - Rootfs usb0 IP staging:
+    - NM profile preferred (`usb-gadget.nmconnection`, `10.0.0.2/24`, host `10.0.0.1`).
+    - fallback `/etc/network/interfaces.d/usb0` when NM is absent.
+  - Fallback first-boot modprobe service if gadget boot edits are incomplete.
+- Always prints a detailed `POST-FLASH SUMMARY` with staged vs non-staged items and modified targets.
 
 **Important behavior**
-- Supports both runtime trigger paths:
-  - `/boot/*`
-  - `/boot/firmware/*` (Bookworm style)
-- First-boot helper scripts always exit `0` by design (no boot bricking).
+- Gadget is opt-in by default (safety-first); interactive flow shows a recommendation and asks.
+- `--diagnose-mounts` runs diagnostics only and exits without flashing.
+- First-boot helper scripts are tolerant and designed not to brick boot if dependencies are missing.
 
 **Dependencies**
-- Required: `dd`, `mount`, `umount`, `partprobe`, `lsblk`, `fdisk`.
-- Optional: `fzf`, `growpart`, `iw`, `systemctl` in target image.
+- Required core tools: `dd`, `mount`, `umount`, `partprobe`, `lsblk`, `fdisk`, `awk`, `sed`, `grep`.
+- Compression tools as needed: `xz`, `gzip`, `bzip2`, `zstd`.
+- Optional: `fzf`, `growpart`/`e2fsck`/`resize2fs`, `iw`, `systemctl` in target image.
 
 <a id="prep-headless-sh"></a>
 ### `prep-headless.sh` (v0.1.0)
@@ -768,8 +779,23 @@ Problem: Wi-Fi staged but target does not connect on first boot
   - boot: `wpa_supplicant.conf`, `wificountry`, `ssh`
   - rootfs: `/etc/wpa_supplicant/wpa_supplicant.conf` contains `country=XX`
   - rootfs: `apply-wificountry.service` and script exist
+- If using first-boot user staging, verify trigger name is `firstboot-user` (not `userconf`).
 - If image is not systemd-based, service enable may be skipped by design. Boot still proceeds safely.
 - For unusual custom images, validate network stack (NetworkManager vs ifupdown vs netplan).
+
+Problem: Host does not see `usb0` after boot
+- Run offline diagnostics against mounted media:
+  - `./flash.sh --diagnose-mounts /run/media/$USER/bootfs /run/media/$USER/rootfs`
+- Check summary for these common blockers:
+  - `config.txt` forces host mode (`dr_mode=host` or `otg_mode=1`).
+  - `cmdline.txt` missing `modules-load=dwc2,g_ether`.
+  - no staged usb0 config in rootfs (NM `usb-gadget.nmconnection` or interfaces fallback).
+- If needed, reflash with gadget enabled or pass explicit `--gadget` during direct mode.
+
+Problem: `--diagnose-mounts` fails with mount path errors
+- Pass both paths together, not one:
+  - `./flash.sh --diagnose-mounts /run/media/$USER/bootfs /run/media/$USER/rootfs`
+- Ensure mount points are readable by your user (or run with sudo).
 
 Problem: `SPI config.txt not found (skipping SPI enable)`
 - Image may not expose Pi boot config in expected location yet.
