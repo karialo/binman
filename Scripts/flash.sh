@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
 # flash — image writer with interactive wizard + expand + headless Wi-Fi/SSH + first-boot user setup
 # Wizard: flash <image.(img|xz|gz|bz2|zst)>
-# Direct : flash [--verify] [--expand] [--headless --SSID "name" --Password "pass" --Country CC [--Hidden]] [--User NAME --UserPass PASS] <image> <device>
+# Direct : flash [--verify] [--expand] [--gadget|--no-gadget] [--headless --SSID "name" --Password "pass" --Country CC [--Hidden]] [--User NAME --UserPass PASS] <image> <device>
 #
 # Manual test checklist:
-# - Run flash.sh with --headless --SSID --Password --Country GB on a spare SD.
+# - Run flash.sh with --headless --SSID --Password --Country GB [--gadget] on a spare SD.
 # - Mount SD partitions on laptop:
 # - Verify NM connection exists, no interface-name, psk uses NM-escaped password.
 # - Verify dtparam=spi=on present in config file (firmware/config.txt or config.txt).
+# - If --gadget is used, verify config/cmdline include dtoverlay=dwc2 + modules-load=dwc2,g_ether.
 # - Verify rootfs /etc/wpa_supplicant/wpa_supplicant.conf contains country=GB.
 # - Verify first-boot scripts check both /boot and /boot/firmware triggers and remove triggers.
+# - Boot Pi, plug into the DATA USB port, and confirm host sees usb0/enx*.
+# - For hotspot testing, use a 2.4 GHz WPA2 hotspot (not 5 GHz-only or WPA3-only).
 
 set -Eeuo pipefail
-VERSION="0.8.1"
+VERSION="0.8.2"
 
 # ---------- helpers ----------
 err() { echo "[-] $*" >&2; }
 ok()  { echo "[+] $*"; }
+warn() { echo "[!] $*"; }
 run() { echo "\$ $*" >&2; "$@"; }
 pause() { read -rp "$*"; }
 
@@ -140,6 +144,129 @@ ensure_root_crda_regdomain() {
   fi
 }
 
+cmdline_has_gadget_modules() {
+  local cmdline="${1:?}"
+  local line token modules
+
+  IFS= read -r line <"$cmdline" || line=""
+  line="${line//$'\r'/}"
+  for token in $line; do
+    [[ "$token" == modules-load=* ]] || continue
+    modules=",${token#modules-load=},"
+    [[ "$modules" == *,dwc2,* && "$modules" == *,g_ether,* ]] && return 0
+  done
+  return 1
+}
+
+ensure_cmdline_gadget_modules() {
+  local cmdline="${1:?}"
+  local line token raw csv m
+  local -a out=()
+  local -a mods=()
+  local -a merged=()
+  local had_modules_load=0
+  local changed=0
+  declare -A seen=()
+
+  IFS= read -r line <"$cmdline" || line=""
+  line="${line//$'\r'/}"
+
+  for token in $line; do
+    if [[ "$token" == modules-load=* ]]; then
+      had_modules_load=1
+      raw="${token#modules-load=}"
+      mods=()
+      merged=()
+      seen=()
+      IFS=',' read -r -a mods <<<"$raw"
+      for m in "${mods[@]}"; do
+        m="${m//[[:space:]]/}"
+        [[ -z "$m" ]] && continue
+        if [[ -z "${seen[$m]+x}" ]]; then
+          seen["$m"]=1
+          merged+=("$m")
+        fi
+      done
+      for m in dwc2 g_ether; do
+        if [[ -z "${seen[$m]+x}" ]]; then
+          seen["$m"]=1
+          merged+=("$m")
+          changed=1
+        fi
+      done
+      csv="$(IFS=,; echo "${merged[*]}")"
+      token="modules-load=${csv}"
+    fi
+    out+=("$token")
+  done
+
+  if (( !had_modules_load )); then
+    out+=("modules-load=dwc2,g_ether")
+    changed=1
+  fi
+
+  if [[ "${out[*]}" != "$line" ]]; then
+    changed=1
+  fi
+
+  printf '%s\n' "${out[*]}" >"$cmdline"
+  (( changed ))
+}
+
+stage_usb_gadget_fallback_service() {
+  local root="${1:?}"
+
+  mkdir -p "$root/usr/local/sbin" "$root/etc/systemd/system"
+
+  cat >"$root/usr/local/sbin/apply-usb-gadget.sh" <<'EOS'
+#!/bin/bash
+set -o pipefail
+
+loaded() {
+  grep -qE '^g_ether ' /proc/modules 2>/dev/null
+}
+
+cleanup() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable apply-usb-gadget.service >/dev/null 2>&1 || true
+  fi
+}
+
+if loaded; then
+  cleanup
+  exit 0
+fi
+
+if ! command -v modprobe >/dev/null 2>&1; then
+  cleanup
+  exit 0
+fi
+
+modprobe dwc2 >/dev/null 2>&1 || true
+modprobe g_ether >/dev/null 2>&1 || true
+
+loaded && cleanup
+exit 0
+EOS
+  chmod 755 "$root/usr/local/sbin/apply-usb-gadget.sh"
+
+  cat >"$root/etc/systemd/system/apply-usb-gadget.service" <<'EOS'
+[Unit]
+Description=Fallback USB gadget setup (dwc2 + g_ether)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/apply-usb-gadget.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+EOS
+
+  chroot "$root" systemctl enable apply-usb-gadget.service >/dev/null 2>&1 || true
+}
+
 # self-sudo so users can run from their own dir
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo "[flash] 🔐 Root access required — elevating via sudo…"
@@ -147,6 +274,8 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
 fi
 
 VERIFY=0; EXPAND=0
+# Default is OFF for safety. Use --gadget to opt in.
+GADGET=0
 HEADLESS=0; SSID=""; PASSWORD=""; COUNTRY=""; HIDDEN=0
 USER_NAME=""; USER_PASS=""
 
@@ -156,6 +285,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --verify)   VERIFY=1; shift ;;
     --expand)   EXPAND=1; shift ;;
+    --gadget)   GADGET=1; shift ;;
+    --no-gadget) GADGET=0; shift ;;
     --headless) HEADLESS=1; shift ;;
     --SSID)     SSID="${2:-}"; shift 2 ;;
     --Password) PASSWORD="${2:-}"; shift 2 ;;
@@ -168,6 +299,7 @@ while [[ $# -gt 0 ]]; do
 flash v$VERSION
 Wizard: flash <image>
 Direct : flash [--verify] [--expand] \
+               [--gadget|--no-gadget] \
                [--headless --SSID "name" --Password "pass" --Country CC [--Hidden]] \
                [--User NAME --UserPass PASS] \
                <image> <device>
@@ -349,9 +481,6 @@ if (( HEADLESS )); then
     echo "    ssid=\"$SSID_ESC\""
     echo "    psk=\"$PASS_ESC\""
     echo "    key_mgmt=WPA-PSK"
-    echo "    proto=RSN"
-    echo "    pairwise=CCMP"
-    echo "    group=CCMP"
     (( HIDDEN )) && echo "    scan_ssid=1"
     echo "}"
   } > "$MNT_BOOT/wpa_supplicant.conf"
@@ -499,6 +628,7 @@ EOS
 [Unit]
 Description=Apply first-boot Wi-Fi country/regdom
 After=local-fs.target
+Before=NetworkManager.service wpa_supplicant.service
 ConditionPathExists=|/boot/wificountry
 ConditionPathExists=|/boot/firmware/wificountry
 
@@ -508,6 +638,7 @@ ExecStart=/usr/local/sbin/apply-wificountry.sh
 RemainAfterExit=no
 
 [Install]
+WantedBy=network-pre.target
 WantedBy=multi-user.target
 EOS
   chroot "$MNT_ROOT" systemctl enable apply-wificountry.service >/dev/null 2>&1 || true
@@ -527,6 +658,7 @@ autoconnect=true
 [wifi]
 mode=infrastructure
 ssid=${SSID_NM}
+powersave=2
 EOF
   if (( HIDDEN )); then
     echo "hidden=true" >>"$NM"
@@ -622,6 +754,75 @@ EOS
   run umount "$MNT_BOOT" || true
   rmdir "$MNT_ROOT" "$MNT_BOOT" || true
   ok "Headless + (optional) user setup staged."
+fi
+
+# ---------- optional USB gadget mode ----------
+if (( GADGET )); then
+  ok "Staging USB gadget mode (dwc2 + g_ether)…"
+  BOOT_PART="${DEV}1"; ROOT_PART="${DEV}2"
+  MNT_BOOT="/mnt/flash-boot-gadget.$$"
+  MNT_ROOT="/mnt/flash-root-gadget.$$"
+  GADGET_CFG=""
+  GADGET_CMDLINE=""
+  GADGET_CHANGED=0
+  NEED_GADGET_FALLBACK=0
+
+  mkdir -p "$MNT_BOOT"
+  run mount -t vfat "$BOOT_PART" "$MNT_BOOT"
+
+  if [[ -f "$MNT_BOOT/firmware/config.txt" ]]; then
+    GADGET_CFG="$MNT_BOOT/firmware/config.txt"
+  elif [[ -f "$MNT_BOOT/config.txt" ]]; then
+    GADGET_CFG="$MNT_BOOT/config.txt"
+  fi
+
+  if [[ -f "$MNT_BOOT/firmware/cmdline.txt" ]]; then
+    GADGET_CMDLINE="$MNT_BOOT/firmware/cmdline.txt"
+  elif [[ -f "$MNT_BOOT/cmdline.txt" ]]; then
+    GADGET_CMDLINE="$MNT_BOOT/cmdline.txt"
+  fi
+
+  if [[ -z "$GADGET_CFG" ]]; then
+    warn "USB gadget config.txt not found"
+    NEED_GADGET_FALLBACK=1
+  else
+    if ! grep -qE '^[[:space:]]*dtoverlay=dwc2[[:space:]]*$' "$GADGET_CFG"; then
+      printf '\n[all]\ndtoverlay=dwc2\n' >>"$GADGET_CFG"
+      GADGET_CHANGED=1
+    fi
+  fi
+
+  if [[ -z "$GADGET_CMDLINE" ]]; then
+    warn "USB gadget cmdline.txt not found"
+    NEED_GADGET_FALLBACK=1
+  else
+    if ensure_cmdline_gadget_modules "$GADGET_CMDLINE"; then
+      GADGET_CHANGED=1
+    fi
+    if ! cmdline_has_gadget_modules "$GADGET_CMDLINE"; then
+      NEED_GADGET_FALLBACK=1
+    fi
+  fi
+
+  if (( NEED_GADGET_FALLBACK )); then
+    ok "Staging USB gadget fallback service…"
+    mkdir -p "$MNT_ROOT"
+    run mount "$ROOT_PART" "$MNT_ROOT"
+    stage_usb_gadget_fallback_service "$MNT_ROOT"
+    sync
+    run umount "$MNT_ROOT" || true
+    rmdir "$MNT_ROOT" || true
+  fi
+
+  if (( GADGET_CHANGED || NEED_GADGET_FALLBACK )); then
+    ok "USB gadget enabled (dwc2 + g_ether)"
+  else
+    ok "USB gadget already enabled"
+  fi
+
+  sync
+  run umount "$MNT_BOOT" || true
+  rmdir "$MNT_BOOT" || true
 fi
 
 # ---------- optional quick verification ----------
