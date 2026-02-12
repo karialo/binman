@@ -1,0 +1,4 @@
+$ ip neigh show dev usb0
+10.0.0.2 FAILED 
+
+

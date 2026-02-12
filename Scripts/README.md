@@ -54,6 +54,7 @@ If you only remember one rule, make it this:
 | `checksum.sh` | Compute/verify checksums (raw, prefixed, or checksum-file formats) |
 | `scanner.sh` | Scan a CIDR/subnet for alive hosts and open ports quickly |
 | `wifi-scanner.sh` | Scan nearby Wi-Fi networks using `nmcli`/`iw`/`iwlist` |
+| `netdiag.sh` | Diagnose usb0/wlan0 link/IP/ARP/firewall/NM issues (Pi gadget focused) |
 | `find-pi.sh` | Find Raspberry Pi devices on local network (OUI/vendor detection) |
 | `refresh-ssh.sh` | Remove stale `known_hosts` entries and optionally reconnect |
 | `finder.sh` | Find files/dirs by name recursively |
@@ -77,7 +78,7 @@ Package names can vary slightly by distro release, but this gets you 95% of the 
 | Core shell + file utils | almost all scripts | `bash coreutils findutils grep sed gawk util-linux` | `bash coreutils findutils grep sed gawk util-linux` | `bash coreutils findutils grep sed gawk util-linux` | `bash coreutils findutils grep sed gawk util-linux` |
 | Flash/decompress images | `flash.sh` | `xz-utils gzip bzip2 zstd` | `xz gzip bzip2 zstd` | `xz gzip bzip2 zstd` | `xz gzip bzip2 zstd` |
 | Partition grow/resize | `flash.sh --expand` | `cloud-guest-utils e2fsprogs` | `cloud-utils-growpart e2fsprogs` | `cloud-guest-utils e2fsprogs` | `growpart e2fsprogs` |
-| Device/network discovery | `flash.sh`, `scanner.sh`, `find-pi.sh` | `util-linux iproute2 iputils-ping netcat-openbsd nmap arp-scan` | `util-linux iproute iputils nmap-ncat nmap arp-scan` | `util-linux iproute2 iputils openbsd-netcat nmap arp-scan` | `util-linux iproute2 iputils netcat-openbsd nmap arp-scan` |
+| Device/network discovery | `flash.sh`, `scanner.sh`, `find-pi.sh`, `netdiag.sh` | `util-linux iproute2 iputils-ping netcat-openbsd nmap arp-scan` | `util-linux iproute iputils nmap-ncat nmap arp-scan` | `util-linux iproute2 iputils openbsd-netcat nmap arp-scan` | `util-linux iproute2 iputils netcat-openbsd nmap arp-scan` |
 | Wi-Fi scanning | `wifi-scanner.sh` | `network-manager iw wireless-tools jq fzf` | `NetworkManager iw wireless-tools jq fzf` | `networkmanager iw wireless_tools jq fzf` | `NetworkManager iw wireless-tools jq fzf` |
 | Antivirus + watch events | `verify.sh` | `clamav inotify-tools` | `clamav inotify-tools` | `clamav inotify-tools` | `clamav inotify-tools` |
 | Git + GitHub release flow | `gitprep.sh`, `push.sh` | `git gh` | `git gh` | `git github-cli` | `git gh` |

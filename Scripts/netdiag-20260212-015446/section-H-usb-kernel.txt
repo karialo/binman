@@ -1,0 +1,28 @@
+$ lsusb
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 001 Device 002: ID 05e3:0610 Genesys Logic, Inc. Hub
+Bus 001 Device 003: ID 04f2:b6be Chicony Electronics Co., Ltd Integrated Camera
+Bus 001 Device 004: ID 1a40:0101 Terminus Technology Inc. Hub
+Bus 001 Device 005: ID 25a7:fa61 Areson Technology Corp Elecom Co., Ltd MR-K013 Multicard Reader
+Bus 001 Device 010: ID 2e8a:0013 Raspberry Pi Ltd. Raspberry Pi USB Gadget
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 002 Device 002: ID 05e3:0626 Genesys Logic, Inc. Hub
+Bus 002 Device 003: ID 0b95:1790 ASIX Electronics Corp. AX88179 Gigabit Ethernet
+Bus 003 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 003 Device 002: ID 27c6:55a4 Shenzhen Goodix Technology Co.,Ltd. Goodix FingerPrint Device
+Bus 003 Device 003: ID 0489:e0cd Foxconn / Hon Hai MediaTek Bluetooth Adapter
+Bus 004 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+
+usb-related dmesg lines:
+[ 5354.117880] cdc_ether 1-2:1.0 usb0: entered promiscuous mode
+[ 5753.728931] cdc_ether 1-2:1.0 usb0: left promiscuous mode
+
+$ lsmod | egrep 'g_ether|dwc2|libcomposite|rndis_host|cdc_ether'
+cdc_ether              24576  1 cdc_ncm
+usbnet                 61440  3 cdc_mbim,cdc_ncm,cdc_ether
+usbcore               417792  13 xhci_hcd,usbnet,usbhid,btmtk,cdc_mbim,cdc_ncm,usb_storage,cdc_wdm,uvcvideo,btusb,xhci_pci,cdc_ether,uas
+
+/proc/cmdline:
+BOOT_IMAGE=/boot/vmlinuz-6.18.5+kali-amd64 root=UUID=7a1cebe3-055e-41eb-a7cb-4aae5a74341e ro quiet splash
+
+
