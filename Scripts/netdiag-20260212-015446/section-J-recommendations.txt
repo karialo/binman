@@ -1,0 +1,12 @@
+Most Likely Causes:
+  - (high) Link is not fully up
+  - (high) Link is not fully up
+  - (high) ARP/ND resolution problem on path
+  - (high) ICMP failed to reach target
+
+Fix Steps (not applied automatically):
+  - ip link set eth0 up
+  - ip link set eth1 up
+  - Try flushing neighbors and reping target; verify both peers are in same subnet.
+  - Check cable/OTG mode, IP config, route, and firewall policy.
+

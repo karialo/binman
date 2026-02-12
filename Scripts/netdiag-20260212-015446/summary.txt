@@ -1,0 +1,12 @@
+verdict: FAIL
+elapsed_seconds: 10
+
+Top issues:
+- Interface eth0 is down
+- Interface eth1 is down
+- Neighbor resolution has FAILED entries
+
+Next actions:
+- Bring interface up: ip link set eth0 up
+- Bring interface up: ip link set eth1 up
+- Verify host/Pi USB gadget IPs: host 10.0.0.1/24, Pi 10.0.0.2/24

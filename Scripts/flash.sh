@@ -608,7 +608,7 @@ method=ignore
 EOF
     chown 0:0 "$nm_file" 2>/dev/null || true
     chmod 600 "$nm_file"
-    SUMMARY_GADGET_NETWORK="NetworkManager static profile (usb0 -> 10.0.0.2/24)"
+    SUMMARY_GADGET_NETWORK="NetworkManager static profile (usb0/enx* dynamic detection -> 10.0.0.2/24)"
     summary_add_file "$nm_file"
     summary_add_line "$nm_file" "interface-name=usb0"
     summary_add_line "$nm_file" "address1=10.0.0.2/24,10.0.0.1"
@@ -621,10 +621,297 @@ iface usb0 inet static
     address 10.0.0.2
     netmask 255.255.255.0
 EOF
-    SUMMARY_GADGET_NETWORK="ifupdown static profile (usb0 -> 10.0.0.2/24)"
+    SUMMARY_GADGET_NETWORK="ifupdown static profile (usb0/enx* dynamic detection -> 10.0.0.2/24)"
     summary_add_file "$ifd_file"
     summary_add_line "$ifd_file" "iface usb0 inet static"
     summary_add_line "$ifd_file" "address 10.0.0.2"
+  fi
+}
+
+stage_nm_managed_wlan_udev_rule() {
+  local root="${1:?}"
+  local rules_dir="$root/etc/udev/rules.d"
+  local rules_file="$rules_dir/99-kari-nm-managed.rules"
+
+  mkdir -p "$rules_dir"
+  cat >"$rules_file" <<'EOF'
+# Keep Wi-Fi interfaces managed by NetworkManager.
+ACTION=="add|change", SUBSYSTEM=="net", KERNEL=="wlan*", ENV{NM_UNMANAGED}="0"
+ACTION=="add|change", SUBSYSTEM=="net", KERNEL=="wl*", ENV{NM_UNMANAGED}="0"
+
+# Keep USB gadget Ethernet links unmanaged by NM (script configures IP directly).
+ACTION=="add|change", SUBSYSTEM=="net", ENV{ID_NET_DRIVER}=="g_ether",    ENV{NM_UNMANAGED}="1"
+ACTION=="add|change", SUBSYSTEM=="net", ENV{ID_NET_DRIVER}=="cdc_ether",  ENV{NM_UNMANAGED}="1"
+ACTION=="add|change", SUBSYSTEM=="net", ENV{ID_NET_DRIVER}=="rndis_host", ENV{NM_UNMANAGED}="1"
+ACTION=="add|change", SUBSYSTEM=="net", ENV{ID_NET_DRIVER}=="cdc_ncm",    ENV{NM_UNMANAGED}="1"
+ACTION=="add|change", SUBSYSTEM=="net", KERNEL=="usb0", ENV{NM_UNMANAGED}="1"
+EOF
+  chown 0:0 "$rules_file" 2>/dev/null || true
+  chmod 644 "$rules_file"
+  summary_add_file "$rules_file"
+  summary_add_line "$rules_file" 'KERNEL=="wlan*", ENV{NM_UNMANAGED}="0"'
+  summary_add_line "$rules_file" 'KERNEL=="wl*", ENV{NM_UNMANAGED}="0"'
+  summary_add_line "$rules_file" 'ENV{ID_NET_DRIVER}=="g_ether",    ENV{NM_UNMANAGED}="1"'
+  summary_add_line "$rules_file" 'ENV{ID_NET_DRIVER}=="cdc_ether",  ENV{NM_UNMANAGED}="1"'
+  summary_add_line "$rules_file" 'ENV{ID_NET_DRIVER}=="rndis_host", ENV{NM_UNMANAGED}="1"'
+  summary_add_line "$rules_file" 'ENV{ID_NET_DRIVER}=="cdc_ncm",    ENV{NM_UNMANAGED}="1"'
+  summary_add_line "$rules_file" 'KERNEL=="usb0", ENV{NM_UNMANAGED}="1"'
+}
+
+stage_usb0_static_fallback_service() {
+  local root="${1:?}"
+  local helper="$root/usr/local/sbin/usb0-static.sh"
+  local unit="$root/etc/systemd/system/usb0-static.service"
+  local wants_multi_dir="$root/etc/systemd/system/multi-user.target.wants"
+  local wants_multi_link="$wants_multi_dir/usb0-static.service"
+  local wants_pre_dir="$root/etc/systemd/system/network-pre.target.wants"
+  local wants_pre_link="$wants_pre_dir/usb0-static.service"
+  local usb0_static_symlinks_ok=1
+  local link_target=""
+  local pre_link_ok=0
+  local multi_link_ok=0
+
+  mkdir -p "$root/usr/local/sbin" "$root/etc/systemd/system" "$wants_multi_dir" "$wants_pre_dir"
+
+  cat >"$helper" <<'EOS'
+#!/bin/sh
+TARGET="10.0.0.2/24"
+ROUTE_NET="10.0.0.0/24"
+LOG_FILE="/var/log/usb0-static.log"
+WAIT_SECS=30
+i=0
+
+mkdir -p /var/log 2>/dev/null || true
+touch "$LOG_FILE" 2>/dev/null || true
+
+timestamp() {
+  date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date 2>/dev/null || echo "time-unknown"
+}
+
+log() {
+  ts="$(timestamp)"
+  printf '%s %s\n' "$ts" "$*"
+  printf '%s %s\n' "$ts" "$*" >>"$LOG_FILE" 2>/dev/null || true
+}
+
+resolve_link() {
+  readlink -f "$1" 2>/dev/null || readlink "$1" 2>/dev/null || true
+}
+
+log_cmd_output() {
+  label="$1"
+  shift
+  "$@" 2>/dev/null | while IFS= read -r line; do
+    log "$label$line"
+  done
+}
+
+pick_iface_driver() {
+  for path in /sys/class/net/*; do
+    [ -e "$path" ] || continue
+    iface="${path##*/}"
+    [ "$iface" = "lo" ] && continue
+    case "$iface" in
+      wlan*|wl*) continue ;;
+    esac
+    [ -d "/sys/class/net/$iface/wireless" ] && continue
+    dev="/sys/class/net/$iface/device"
+    [ -e "$dev" ] || continue
+
+    driver="$(resolve_link "$dev/driver")"
+
+    case "$driver" in
+      */drivers/g_ether|*/drivers/cdc_ether|*/drivers/rndis_host|*/drivers/cdc_ncm)
+        printf '%s\n' "$iface"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+pick_iface_name() {
+  if [ -e /sys/class/net/usb0 ]; then
+    printf '%s\n' "usb0"
+    return 0
+  fi
+
+  for path in /sys/class/net/enx*; do
+    [ -e "$path" ] || continue
+    iface="${path##*/}"
+    [ "$iface" = "lo" ] && continue
+    printf '%s\n' "$iface"
+    return 0
+  done
+
+  for path in /sys/class/net/usb*; do
+    [ -e "$path" ] || continue
+    iface="${path##*/}"
+    [ "$iface" = "lo" ] && continue
+    printf '%s\n' "$iface"
+    return 0
+  done
+
+  return 1
+}
+
+configure_iface() {
+  iface="$1"
+  [ -n "$iface" ] || return 1
+  case "$iface" in
+    wlan*|wl*)
+      log "refusing to touch wireless iface: $iface"
+      return 1
+      ;;
+  esac
+  if [ -d "/sys/class/net/$iface/wireless" ]; then
+    log "refusing to touch wireless-marked iface: $iface"
+    return 1
+  fi
+
+  driver_path="$(resolve_link "/sys/class/net/$iface/device/driver")"
+  dev_path="$(resolve_link "/sys/class/net/$iface/device")"
+  [ -n "$driver_path" ] || driver_path="(none)"
+  [ -n "$dev_path" ] || dev_path="(none)"
+  log "selected interface: $iface"
+  log "driver path: $driver_path"
+  log "device path: $dev_path"
+
+  ip link set dev "$iface" up >/dev/null 2>&1 || true
+  ip addr flush dev "$iface" >/dev/null 2>&1 || true
+  ip addr add "$TARGET" dev "$iface" 2>/dev/null || true
+  ip route replace "$ROUTE_NET" dev "$iface" 2>/dev/null || true
+
+  if command -v arping >/dev/null 2>&1; then
+    arping -c 2 -A -I "$iface" 10.0.0.2 >/dev/null 2>&1 || true
+  else
+    ip neigh flush dev "$iface" >/dev/null 2>&1 || true
+  fi
+
+  if ip -4 addr show dev "$iface" 2>/dev/null | grep -q '10\.0\.0\.2/24'; then
+    log "verified static IP on $iface"
+    log_cmd_output "ip4: " ip -4 addr show dev "$iface"
+    log_cmd_output "link: " ip link show dev "$iface"
+    return 0
+  fi
+
+  log "verification failed on $iface"
+  log_cmd_output "ip4: " ip -4 addr show dev "$iface"
+  log_cmd_output "link: " ip link show dev "$iface"
+  return 1
+}
+
+dump_dmesg() {
+  if command -v dmesg >/dev/null 2>&1; then
+    dmesg 2>/dev/null | grep -Ei 'dwc2|g_ether|cdc_ether|cdc_ncm|usb|rndis' | tail -n 50 | while IFS= read -r line; do
+      log "dmesg: $line"
+    done
+  fi
+}
+
+log "usb0-static start (target=$TARGET)"
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm settle --timeout=8 2>/dev/null || true
+fi
+
+while [ "$i" -lt "$WAIT_SECS" ]; do
+  iface="$(pick_iface_driver)"
+  if [ -z "$iface" ]; then
+    iface="$(pick_iface_name)"
+  fi
+
+  if [ -n "$iface" ] && configure_iface "$iface"; then
+    dump_dmesg
+    exit 0
+  fi
+
+  i=$((i + 1))
+  sleep 1
+done
+
+log "timeout waiting for USB gadget interface"
+log_cmd_output "links: " ip -o link show
+dump_dmesg
+exit 1
+EOS
+  chmod 755 "$helper"
+  summary_add_file "$helper"
+  summary_add_line "$helper" 'TARGET="10.0.0.2/24"'
+  summary_add_line "$helper" 'LOG_FILE="/var/log/usb0-static.log"'
+  summary_add_line "$helper" "udevadm settle --timeout=8 2>/dev/null || true"
+  summary_add_line "$helper" "wlan*|wl*) continue ;;"
+  summary_add_line "$helper" "[ -d \"/sys/class/net/\$iface/wireless\" ] && continue"
+  summary_add_line "$helper" "*/drivers/g_ether|*/drivers/cdc_ether|*/drivers/rndis_host|*/drivers/cdc_ncm)"
+  summary_add_line "$helper" "wlan*|wl*)"
+  summary_add_line "$helper" "ip addr flush dev \"\$iface\" >/dev/null 2>&1 || true"
+  summary_add_line "$helper" "ip addr add \"\$TARGET\" dev \"\$iface\" 2>/dev/null || true"
+  summary_add_line "$helper" "ip route replace \"\$ROUTE_NET\" dev \"\$iface\" 2>/dev/null || true"
+  summary_add_line "$helper" "ip -4 addr show dev \"\$iface\" 2>/dev/null | grep -q '10\\.0\\.0\\.2/24'"
+  summary_add_line "$helper" "dmesg 2>/dev/null | grep -Ei 'dwc2|g_ether|cdc_ether|cdc_ncm|usb|rndis' | tail -n 50"
+
+  cat >"$unit" <<'EOS'
+[Unit]
+Description=Configure usb0 static address for USB gadget
+Wants=network-pre.target systemd-udev-settle.service
+After=systemd-modules-load.service systemd-udev-settle.service network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/usb0-static.sh
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=45
+
+[Install]
+WantedBy=network-pre.target
+WantedBy=multi-user.target
+EOS
+  summary_add_file "$unit"
+  summary_add_line "$unit" "Wants=network-pre.target systemd-udev-settle.service"
+  summary_add_line "$unit" "After=systemd-modules-load.service systemd-udev-settle.service network-pre.target"
+  summary_add_line "$unit" "ExecStart=/usr/local/sbin/usb0-static.sh"
+  summary_add_line "$unit" "StandardOutput=journal+console"
+  summary_add_line "$unit" "StandardError=journal+console"
+  summary_add_line "$unit" "TimeoutStartSec=45"
+  summary_add_line "$unit" "WantedBy=network-pre.target"
+  summary_add_line "$unit" "WantedBy=multi-user.target"
+
+  if ! enable_service_offline "$root" "usb0-static.service" "network-pre.target"; then
+    usb0_static_symlinks_ok=0
+  fi
+  if ! enable_service_offline "$root" "usb0-static.service" "multi-user.target"; then
+    usb0_static_symlinks_ok=0
+  fi
+  if (( !usb0_static_symlinks_ok )); then
+    warn "usb0-static.service offline symlink enable incomplete; applying direct link fallback"
+    ln -sfn ../usb0-static.service "$wants_pre_link" || true
+    ln -sfn ../usb0-static.service "$wants_multi_link" || true
+  fi
+
+  if [[ -L "$wants_pre_link" ]]; then
+    link_target="$(readlink "$wants_pre_link" 2>/dev/null || true)"
+    if [[ "$link_target" == "../usb0-static.service" ]]; then
+      pre_link_ok=1
+      summary_add_file "$wants_pre_link"
+      summary_add_line "$wants_pre_link" "../usb0-static.service"
+    fi
+  fi
+  if [[ -L "$wants_multi_link" ]]; then
+    link_target="$(readlink "$wants_multi_link" 2>/dev/null || true)"
+    if [[ "$link_target" == "../usb0-static.service" ]]; then
+      multi_link_ok=1
+      summary_add_file "$wants_multi_link"
+      summary_add_line "$wants_multi_link" "../usb0-static.service"
+    fi
+  fi
+
+  if (( pre_link_ok && multi_link_ok )); then
+    SUMMARY_USB0_SYMLINKS="yes"
+    ok "usb0-static.service symlink-enabled offline"
+  else
+    SUMMARY_USB0_SYMLINKS="no"
+    warn "usb0-static.service symlink enable incomplete"
   fi
 }
 
@@ -702,9 +989,15 @@ print_post_flash_summary() {
   say "USB gadget:"
   say "  gadget mode: ${SUMMARY_GADGET_STATUS}"
   say "  usb0 network staging: ${SUMMARY_GADGET_NETWORK}"
-  say "  usb0 addressing plan: Pi 10.0.0.2/24, host 10.0.0.1/24"
+  say "  usb0-static service symlinks: ${SUMMARY_USB0_SYMLINKS}"
+  say "  usb0 addressing plan: usb0/enx* dynamic detection -> 10.0.0.2/24"
+  say "  host quick-check:"
+  say '    ip link show | grep -E "usb0|enx|usb"'
+  say "    sudo ip addr add 10.0.0.1/24 dev <iface> 2>/dev/null || true"
+  say "    ping -c 3 10.0.0.2"
+  say "    ip neigh show dev <iface>"
   if [[ "$SUMMARY_GADGET_STATUS" != "enabled" ]]; then
-    warn "USB gadget not enabled: host will not see usb0; use Wi-Fi or reflash with gadget enabled."
+    warn "USB gadget not enabled: host will not see usb0/enx*/usb*; use Wi-Fi or reflash with gadget enabled."
   fi
   if [[ -n "$SUMMARY_GADGET_NOTE" ]]; then
     say "  note: ${SUMMARY_GADGET_NOTE}"
@@ -753,6 +1046,15 @@ diagnose_mounts() {
   local pi_layout_ok=0
   local nm_usb_file=""
   local ifd_usb_file=""
+  local nm_wlan_managed_rule=""
+  local usb0_static_unit=""
+  local usb0_static_link_multi=""
+  local usb0_static_link_pre=""
+  local usb0_static_enabled=0
+  local usb0_static_target_multi=""
+  local usb0_static_target_pre=""
+  local usb0_static_multi_ok=0
+  local usb0_static_pre_ok=0
 
   if [[ -n "$boot_mount" && -z "$root_mount" ]]; then
     err "When using --diagnose-mounts with explicit paths, provide both bootfs and rootfs mount paths."
@@ -790,6 +1092,7 @@ diagnose_mounts() {
   SUMMARY_USER_TRIGGER="no"
   SUMMARY_WIFI_SYMLINKS="unknown"
   SUMMARY_USER_SYMLINKS="unknown"
+  SUMMARY_USB0_SYMLINKS="unknown"
   SUMMARY_GADGET_STATUS="disabled"
   SUMMARY_GADGET_NETWORK="not found"
   SUMMARY_GADGET_NOTE=""
@@ -856,13 +1159,92 @@ diagnose_mounts() {
 
   nm_usb_file="$root_mount/etc/NetworkManager/system-connections/usb-gadget.nmconnection"
   ifd_usb_file="$root_mount/etc/network/interfaces.d/usb0"
+  nm_wlan_managed_rule="$root_mount/etc/udev/rules.d/99-kari-nm-managed.rules"
+  usb0_static_unit="$root_mount/etc/systemd/system/usb0-static.service"
+  usb0_static_link_multi="$root_mount/etc/systemd/system/multi-user.target.wants/usb0-static.service"
+  usb0_static_link_pre="$root_mount/etc/systemd/system/network-pre.target.wants/usb0-static.service"
+
+  if [[ -f "$nm_wlan_managed_rule" ]]; then
+    summary_add_file "$nm_wlan_managed_rule"
+    if grep -Fq 'KERNEL=="wlan*", ENV{NM_UNMANAGED}="0"' "$nm_wlan_managed_rule"; then
+      summary_add_line "$nm_wlan_managed_rule" 'KERNEL=="wlan*", ENV{NM_UNMANAGED}="0"'
+    fi
+    if grep -Fq 'KERNEL=="wl*", ENV{NM_UNMANAGED}="0"' "$nm_wlan_managed_rule"; then
+      summary_add_line "$nm_wlan_managed_rule" 'KERNEL=="wl*", ENV{NM_UNMANAGED}="0"'
+    fi
+    if grep -Fq 'ENV{ID_NET_DRIVER}=="g_ether",    ENV{NM_UNMANAGED}="1"' "$nm_wlan_managed_rule"; then
+      summary_add_line "$nm_wlan_managed_rule" 'ENV{ID_NET_DRIVER}=="g_ether",    ENV{NM_UNMANAGED}="1"'
+    fi
+    if grep -Fq 'ENV{ID_NET_DRIVER}=="cdc_ether",  ENV{NM_UNMANAGED}="1"' "$nm_wlan_managed_rule"; then
+      summary_add_line "$nm_wlan_managed_rule" 'ENV{ID_NET_DRIVER}=="cdc_ether",  ENV{NM_UNMANAGED}="1"'
+    fi
+    if grep -Fq 'ENV{ID_NET_DRIVER}=="rndis_host", ENV{NM_UNMANAGED}="1"' "$nm_wlan_managed_rule"; then
+      summary_add_line "$nm_wlan_managed_rule" 'ENV{ID_NET_DRIVER}=="rndis_host", ENV{NM_UNMANAGED}="1"'
+    fi
+    if grep -Fq 'ENV{ID_NET_DRIVER}=="cdc_ncm",    ENV{NM_UNMANAGED}="1"' "$nm_wlan_managed_rule"; then
+      summary_add_line "$nm_wlan_managed_rule" 'ENV{ID_NET_DRIVER}=="cdc_ncm",    ENV{NM_UNMANAGED}="1"'
+    fi
+    if grep -Fq 'KERNEL=="usb0", ENV{NM_UNMANAGED}="1"' "$nm_wlan_managed_rule"; then
+      summary_add_line "$nm_wlan_managed_rule" 'KERNEL=="usb0", ENV{NM_UNMANAGED}="1"'
+    fi
+  fi
+
+  if [[ -f "$usb0_static_unit" ]]; then
+    summary_add_file "$usb0_static_unit"
+    summary_add_line "$usb0_static_unit" "Wants=network-pre.target systemd-udev-settle.service"
+    summary_add_line "$usb0_static_unit" "After=systemd-modules-load.service systemd-udev-settle.service network-pre.target"
+    summary_add_line "$usb0_static_unit" "ExecStart=/usr/local/sbin/usb0-static.sh"
+    summary_add_line "$usb0_static_unit" "StandardOutput=journal+console"
+    summary_add_line "$usb0_static_unit" "StandardError=journal+console"
+    summary_add_line "$usb0_static_unit" "TimeoutStartSec=45"
+    summary_add_line "$usb0_static_unit" "WantedBy=network-pre.target"
+    summary_add_line "$usb0_static_unit" "WantedBy=multi-user.target"
+  fi
+
+  if [[ -L "$usb0_static_link_pre" ]]; then
+    usb0_static_target_pre="$(readlink "$usb0_static_link_pre" 2>/dev/null || true)"
+    if [[ "$usb0_static_target_pre" == "../usb0-static.service" ]]; then
+      usb0_static_pre_ok=1
+      summary_add_file "$usb0_static_link_pre"
+      summary_add_line "$usb0_static_link_pre" "../usb0-static.service"
+    fi
+  fi
+  if [[ -L "$usb0_static_link_multi" ]]; then
+    usb0_static_target_multi="$(readlink "$usb0_static_link_multi" 2>/dev/null || true)"
+    if [[ "$usb0_static_target_multi" == "../usb0-static.service" ]]; then
+      usb0_static_multi_ok=1
+      summary_add_file "$usb0_static_link_multi"
+      summary_add_line "$usb0_static_link_multi" "../usb0-static.service"
+    fi
+  fi
+
+  if (( usb0_static_pre_ok && usb0_static_multi_ok )); then
+    SUMMARY_USB0_SYMLINKS="yes"
+  elif [[ -f "$usb0_static_unit" ]]; then
+    SUMMARY_USB0_SYMLINKS="no"
+  else
+    SUMMARY_USB0_SYMLINKS="not found"
+  fi
+
+  if [[ -f "$usb0_static_unit" && "$usb0_static_target_pre" == "../usb0-static.service" \
+    && "$usb0_static_target_multi" == "../usb0-static.service" ]]; then
+    usb0_static_enabled=1
+  fi
   if [[ -f "$nm_usb_file" ]]; then
-    SUMMARY_GADGET_NETWORK="NetworkManager static profile (usb0 -> 10.0.0.2/24)"
+    if (( usb0_static_enabled )); then
+      SUMMARY_GADGET_NETWORK="NM profile + systemd usb0-static fallback (usb0/enx* dynamic detection -> 10.0.0.2/24)"
+    else
+      SUMMARY_GADGET_NETWORK="NetworkManager static profile (usb0/enx* dynamic detection -> 10.0.0.2/24)"
+    fi
     summary_add_file "$nm_usb_file"
     summary_add_line "$nm_usb_file" "interface-name=usb0"
     summary_add_line "$nm_usb_file" "address1=10.0.0.2/24,10.0.0.1"
   elif [[ -f "$ifd_usb_file" ]]; then
-    SUMMARY_GADGET_NETWORK="ifupdown static profile (usb0 -> 10.0.0.2/24)"
+    if (( usb0_static_enabled )); then
+      SUMMARY_GADGET_NETWORK="ifupdown static profile + systemd usb0-static fallback (usb0/enx* dynamic detection -> 10.0.0.2/24)"
+    else
+      SUMMARY_GADGET_NETWORK="ifupdown static profile (usb0/enx* dynamic detection -> 10.0.0.2/24)"
+    fi
     summary_add_file "$ifd_usb_file"
     summary_add_line "$ifd_usb_file" "iface usb0 inet static"
     summary_add_line "$ifd_usb_file" "address 10.0.0.2"
@@ -894,6 +1276,7 @@ SUMMARY_COUNTRY_TRIGGER="not requested"
 SUMMARY_USER_TRIGGER="not requested"
 SUMMARY_WIFI_SYMLINKS="not requested"
 SUMMARY_USER_SYMLINKS="not requested"
+SUMMARY_USB0_SYMLINKS="not requested"
 SUMMARY_PI_LAYOUT="not checked"
 SUMMARY_LAYOUT_DETAIL="not checked"
 SUMMARY_GADGET_STATUS="disabled"
@@ -1231,6 +1614,8 @@ if (( HEADLESS )); then
   esc() { sed 's/\\/\\\\/g; s/"/\\"/g'; }
   SSID_ESC="$(printf "%s" "$SSID" | esc)"
   PASS_ESC="$(printf "%s" "$PASSWORD" | esc)"
+  WPA_BOOT="$MNT_BOOT/wpa_supplicant.conf"
+  WPA_BOOT_FW="$MNT_BOOT/firmware/wpa_supplicant.conf"
 
   # wpa_supplicant (read by some images on first boot)
   {
@@ -1244,11 +1629,21 @@ if (( HEADLESS )); then
     echo "    key_mgmt=WPA-PSK"
     (( HIDDEN )) && echo "    scan_ssid=1"
     echo "}"
-  } > "$MNT_BOOT/wpa_supplicant.conf"
-  summary_add_file "$MNT_BOOT/wpa_supplicant.conf"
-  summary_add_line "$MNT_BOOT/wpa_supplicant.conf" "country=$COUNTRY"
-  summary_add_line "$MNT_BOOT/wpa_supplicant.conf" "ssid=<provided>"
-  summary_add_line "$MNT_BOOT/wpa_supplicant.conf" "psk=<redacted>"
+  } > "$WPA_BOOT"
+  summary_add_file "$WPA_BOOT"
+  summary_add_line "$WPA_BOOT" "country=$COUNTRY"
+  summary_add_line "$WPA_BOOT" "ssid=<provided>"
+  summary_add_line "$WPA_BOOT" "psk=<redacted>"
+  if [[ -d "$MNT_BOOT/firmware" ]]; then
+    if cp "$WPA_BOOT" "$WPA_BOOT_FW"; then
+      summary_add_file "$WPA_BOOT_FW"
+      summary_add_line "$WPA_BOOT_FW" "country=$COUNTRY"
+      summary_add_line "$WPA_BOOT_FW" "ssid=<provided>"
+      summary_add_line "$WPA_BOOT_FW" "psk=<redacted>"
+    else
+      warn "Could not stage $WPA_BOOT_FW"
+    fi
+  fi
 
   # Enable SPI (best effort; safe to skip on non-Pi images).
   if [[ -n "$SPI_CFG" ]]; then
@@ -1301,6 +1696,7 @@ if (( HEADLESS )); then
     summary_add_file "$MNT_ROOT/etc/default/crda"
     summary_add_line "$MNT_ROOT/etc/default/crda" "REGDOMAIN=$COUNTRY"
   fi
+  stage_nm_managed_wlan_udev_rule "$MNT_ROOT"
 
   # Stage a first-boot country/regdom applier (best effort; safe on non-systemd images).
   ok "Staging first-boot Wi-Fi country applier…"
@@ -1643,17 +2039,19 @@ if (( GADGET )); then
     warn "USB gadget staging requested, but target image does not look like a Raspberry Pi boot/root layout; skipping staging."
     SUMMARY_GADGET_STATUS="disabled (non-Pi layout)"
     SUMMARY_GADGET_NETWORK="not staged (non-Pi layout)"
+    SUMMARY_USB0_SYMLINKS="skipped (non-Pi layout)"
     SUMMARY_GADGET_NOTE="gadget staging skipped because Pi boot/root partitions were not detected."
     [[ "$SUMMARY_BOOT_CFG" == "not touched" ]] && SUMMARY_BOOT_CFG="skipped (non-Pi layout)"
     [[ "$SUMMARY_CMDLINE" == "not touched" ]] && SUMMARY_CMDLINE="skipped (non-Pi layout)"
   else
-    ok "Staging USB gadget mode (dwc2 + g_ether + usb0 static IP)…"
+    ok "Staging USB gadget mode (dwc2 + g_ether + dynamic usb0/enx*/usb* static IP)…"
     BOOT_PART="$DETECTED_PI_BOOT_PART"
     ROOT_PART="$DETECTED_PI_ROOT_PART"
     if [[ ! -b "$BOOT_PART" || ! -b "$ROOT_PART" ]]; then
       warn "Detected Pi partitions are not block devices; skipping gadget staging."
       SUMMARY_GADGET_STATUS="disabled (invalid partitions)"
       SUMMARY_GADGET_NETWORK="not staged (invalid partitions)"
+      SUMMARY_USB0_SYMLINKS="skipped (invalid partitions)"
       [[ "$SUMMARY_BOOT_CFG" == "not touched" ]] && SUMMARY_BOOT_CFG="skipped (invalid partitions)"
       [[ "$SUMMARY_CMDLINE" == "not touched" ]] && SUMMARY_CMDLINE="skipped (invalid partitions)"
     else
@@ -1710,7 +2108,14 @@ if (( GADGET )); then
       fi
 
       run mount "$ROOT_PART" "$MNT_ROOT"
+      stage_nm_managed_wlan_udev_rule "$MNT_ROOT"
       stage_usb0_network_config "$MNT_ROOT"
+      stage_usb0_static_fallback_service "$MNT_ROOT"
+      if root_has_networkmanager "$MNT_ROOT"; then
+        SUMMARY_GADGET_NETWORK="NM profile + systemd usb0-static fallback (usb0/enx* dynamic detection -> 10.0.0.2/24)"
+      else
+        SUMMARY_GADGET_NETWORK="ifupdown static profile + systemd usb0-static fallback (usb0/enx* dynamic detection -> 10.0.0.2/24)"
+      fi
 
       if (( NEED_GADGET_FALLBACK )); then
         ok "Staging USB gadget fallback service…"
@@ -1729,7 +2134,7 @@ if (( GADGET )); then
         ok "USB gadget enabled (dwc2 + g_ether)"
       else
         SUMMARY_GADGET_STATUS="disabled"
-        warn "USB gadget staging incomplete; host usb0 detection may fail."
+        warn "USB gadget staging incomplete; host usb0/enx*/usb* detection may fail."
       fi
 
       sync
@@ -1741,6 +2146,7 @@ if (( GADGET )); then
 else
   SUMMARY_GADGET_STATUS="disabled"
   SUMMARY_GADGET_NETWORK="not staged (option disabled)"
+  SUMMARY_USB0_SYMLINKS="not staged (option disabled)"
 fi
 
 # ---------- optional quick verification ----------

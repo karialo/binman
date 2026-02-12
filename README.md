@@ -518,6 +518,15 @@ wifi-scanner --interface wlan0
 wifi-scanner --format json --backend auto
 ```
 
+### netdiag
+USB gadget and network diagnostic tool with quick/full modes and JSON output.
+
+```bash
+netdiag
+netdiag --full --iface usb0
+netdiag --quick --json
+```
+
 ### rsync-backup
 Quick backup to a mounted device, timestamped.
 

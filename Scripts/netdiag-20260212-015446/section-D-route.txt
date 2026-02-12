@@ -1,0 +1,23 @@
+$ ip route get 10.0.0.2
+10.0.0.2 dev usb0 src 10.0.0.1 uid 1000 
+    cache 
+
+$ ip rule show
+0:	from all lookup local
+5210:	from all fwmark 0x80000/0xff0000 lookup main
+5230:	from all fwmark 0x80000/0xff0000 lookup default
+5250:	from all fwmark 0x80000/0xff0000 unreachable
+5270:	from all lookup 52
+32766:	from all lookup main
+32767:	from all lookup default
+
+$ ip route show table main
+default via 10.68.87.118 dev wlan0 proto dhcp src 10.68.87.43 metric 600 
+10.0.0.0/24 dev usb0 proto kernel scope link src 10.0.0.1 
+10.68.87.0/24 dev wlan0 proto kernel scope link src 10.68.87.43 metric 600 
+172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown 
+172.18.0.0/16 dev br-7d7aefce0776 proto kernel scope link src 172.18.0.1 linkdown 
+172.19.0.0/16 dev br-c6e43a602b2a proto kernel scope link src 172.19.0.1 linkdown 
+172.20.0.0/16 dev br-13520f3b6390 proto kernel scope link src 172.20.0.1 linkdown 
+
+

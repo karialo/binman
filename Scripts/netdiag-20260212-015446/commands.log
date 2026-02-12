@@ -1,0 +1,1330 @@
+[cmd] ip -br link
+lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP> 
+eth0             DOWN           88:a4:c2:0b:50:71 <NO-CARRIER,BROADCAST,MULTICAST,UP> 
+eth1             DOWN           98:fc:84:e6:25:92 <NO-CARRIER,BROADCAST,MULTICAST,UP> 
+wlan0            UP             c8:94:02:e1:4b:a1 <BROADCAST,MULTICAST,UP,LOWER_UP> 
+tailscale0       UNKNOWN        <POINTOPOINT,MULTICAST,NOARP,UP,LOWER_UP> 
+docker0          DOWN           02:42:25:73:4c:0e <NO-CARRIER,BROADCAST,MULTICAST,UP> 
+br-13520f3b6390  DOWN           02:42:fe:d6:e4:fd <NO-CARRIER,BROADCAST,MULTICAST,UP> 
+br-7d7aefce0776  DOWN           02:42:00:0b:95:34 <NO-CARRIER,BROADCAST,MULTICAST,UP> 
+br-c6e43a602b2a  DOWN           02:42:62:31:dd:0a <NO-CARRIER,BROADCAST,MULTICAST,UP> 
+usb0             UP             3a:5a:10:62:6a:bf <BROADCAST,MULTICAST,UP,LOWER_UP> 
+
+[cmd] ip -br addr
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+eth0             DOWN           
+eth1             DOWN           10.0.0.1/24 
+wlan0            UP             10.68.87.43/24 fe80::ca94:2ff:fee1:4ba1/64 
+tailscale0       UNKNOWN        100.69.37.58/32 fd7a:115c:a1e0::ac33:253a/128 fe80::d8:fe43:ae6e:5b57/64 
+docker0          DOWN           172.17.0.1/16 
+br-13520f3b6390  DOWN           172.20.0.1/16 
+br-7d7aefce0776  DOWN           172.18.0.1/16 
+br-c6e43a602b2a  DOWN           172.19.0.1/16 
+usb0             UP             10.0.0.1/24 
+
+[cmd] nmcli dev status
+DEVICE           TYPE      STATE                   CONNECTION      
+wlan0            wifi      connected               Asgard          
+tailscale0       tun       connected (externally)  tailscale0      
+lo               loopback  connected (externally)  lo              
+br-13520f3b6390  bridge    connected (externally)  br-13520f3b6390 
+br-7d7aefce0776  bridge    connected (externally)  br-7d7aefce0776 
+br-c6e43a602b2a  bridge    connected (externally)  br-c6e43a602b2a 
+docker0          bridge    connected (externally)  docker0         
+eth1             ethernet  connected (externally)  eth1            
+usb0             ethernet  connected (externally)  usb0            
+p2p-dev-wlan0    wifi-p2p  disconnected            --              
+eth0             ethernet  unavailable             --              
+
+[cmd] ethtool usb0
+netlink error: Operation not permitted
+Settings for usb0:
+	Supported ports: [  ]
+	Supported link modes:   Not reported
+	Supported pause frame use: No
+	Supports auto-negotiation: No
+	Supported FEC modes: Not reported
+	Advertised link modes:  Not reported
+	Advertised pause frame use: No
+	Advertised auto-negotiation: No
+	Advertised FEC modes: Not reported
+	Speed: 425Mb/s
+	Duplex: Unknown! (255)
+	Auto-negotiation: off
+	Port: Twisted Pair
+	PHYAD: 0
+	Transceiver: internal
+	MDI-X: Unknown
+        Current message level: 0x00000007 (7)
+                               drv probe link
+	Link detected: yes
+
+[cmd] ethtool eth0
+netlink error: Operation not permitted
+Settings for eth0:
+	Supported ports: [ TP	 MII ]
+	Supported link modes:   10baseT/Half 10baseT/Full
+	                        100baseT/Half 100baseT/Full
+	                        1000baseT/Full
+	Supported pause frame use: Symmetric Receive-only
+	Supports auto-negotiation: Yes
+	Supported FEC modes: Not reported
+	Advertised link modes:  10baseT/Half 10baseT/Full
+	                        100baseT/Half 100baseT/Full
+	                        1000baseT/Full
+	Advertised pause frame use: Symmetric Receive-only
+	Advertised auto-negotiation: Yes
+	Advertised FEC modes: Not reported
+	Speed: Unknown!
+	Duplex: Unknown! (255)
+	Auto-negotiation: on
+	master-slave cfg: preferred slave
+	master-slave status: unknown
+	Port: Twisted Pair
+	PHYAD: 0
+	Transceiver: external
+	MDI-X: Unknown
+	Link detected: no
+
+[cmd] ethtool eth1
+netlink error: Operation not permitted
+Settings for eth1:
+	Supported ports: [  ]
+	Supported link modes:   Not reported
+	Supported pause frame use: No
+	Supports auto-negotiation: No
+	Supported FEC modes: Not reported
+	Advertised link modes:  Not reported
+	Advertised pause frame use: No
+	Advertised auto-negotiation: No
+	Advertised FEC modes: Not reported
+	Speed: Unknown!
+	Duplex: Unknown! (255)
+	Auto-negotiation: off
+	Port: Twisted Pair
+	PHYAD: 0
+	Transceiver: internal
+	MDI-X: Unknown
+        Current message level: 0x00000007 (7)
+                               drv probe link
+	Link detected: no
+
+[cmd] ethtool wlan0
+netlink error: Operation not permitted
+Settings for wlan0:
+	Link detected: yes
+
+[cmd] ethtool usb0
+netlink error: Operation not permitted
+Settings for usb0:
+	Supported ports: [  ]
+	Supported link modes:   Not reported
+	Supported pause frame use: No
+	Supports auto-negotiation: No
+	Supported FEC modes: Not reported
+	Advertised link modes:  Not reported
+	Advertised pause frame use: No
+	Advertised auto-negotiation: No
+	Advertised FEC modes: Not reported
+	Speed: 425Mb/s
+	Duplex: Unknown! (255)
+	Auto-negotiation: off
+	Port: Twisted Pair
+	PHYAD: 0
+	Transceiver: internal
+	MDI-X: Unknown
+        Current message level: 0x00000007 (7)
+                               drv probe link
+	Link detected: yes
+
+[cmd] nmcli -t -f DEVICE\,STATE\,CONNECTION device status
+wlan0:connected:Asgard
+tailscale0:connected (externally):tailscale0
+lo:connected (externally):lo
+br-13520f3b6390:connected (externally):br-13520f3b6390
+br-7d7aefce0776:connected (externally):br-7d7aefce0776
+br-c6e43a602b2a:connected (externally):br-c6e43a602b2a
+docker0:connected (externally):docker0
+eth1:connected (externally):eth1
+usb0:connected (externally):usb0
+p2p-dev-wlan0:disconnected:
+eth0:unavailable:
+
+[cmd] ip route show dev usb0
+10.0.0.0/24 proto kernel scope link src 10.0.0.1 
+
+[cmd] ip -6 route show dev usb0
+
+
+[cmd] udevadm info --query=property --name usb0
+Unknown device "/dev/usb0": No such device
+
+[cmd] ethtool eth0
+netlink error: Operation not permitted
+Settings for eth0:
+	Supported ports: [ TP	 MII ]
+	Supported link modes:   10baseT/Half 10baseT/Full
+	                        100baseT/Half 100baseT/Full
+	                        1000baseT/Full
+	Supported pause frame use: Symmetric Receive-only
+	Supports auto-negotiation: Yes
+	Supported FEC modes: Not reported
+	Advertised link modes:  10baseT/Half 10baseT/Full
+	                        100baseT/Half 100baseT/Full
+	                        1000baseT/Full
+	Advertised pause frame use: Symmetric Receive-only
+	Advertised auto-negotiation: Yes
+	Advertised FEC modes: Not reported
+	Speed: Unknown!
+	Duplex: Unknown! (255)
+	Auto-negotiation: on
+	master-slave cfg: preferred slave
+	master-slave status: unknown
+	Port: Twisted Pair
+	PHYAD: 0
+	Transceiver: external
+	MDI-X: Unknown
+	Link detected: no
+
+[cmd] nmcli -t -f DEVICE\,STATE\,CONNECTION device status
+wlan0:connected:Asgard
+tailscale0:connected (externally):tailscale0
+lo:connected (externally):lo
+br-13520f3b6390:connected (externally):br-13520f3b6390
+br-7d7aefce0776:connected (externally):br-7d7aefce0776
+br-c6e43a602b2a:connected (externally):br-c6e43a602b2a
+docker0:connected (externally):docker0
+eth1:connected (externally):eth1
+usb0:connected (externally):usb0
+p2p-dev-wlan0:disconnected:
+eth0:unavailable:
+
+[cmd] udevadm info --query=property --name eth0
+Unknown device "/dev/eth0": No such device
+
+[cmd] ip route show dev eth0
+
+
+[cmd] ip -6 route show dev eth0
+
+
+[cmd] udevadm info --query=property --name eth0
+Unknown device "/dev/eth0": No such device
+
+[cmd] ethtool eth1
+netlink error: Operation not permitted
+Settings for eth1:
+	Supported ports: [  ]
+	Supported link modes:   Not reported
+	Supported pause frame use: No
+	Supports auto-negotiation: No
+	Supported FEC modes: Not reported
+	Advertised link modes:  Not reported
+	Advertised pause frame use: No
+	Advertised auto-negotiation: No
+	Advertised FEC modes: Not reported
+	Speed: Unknown!
+	Duplex: Unknown! (255)
+	Auto-negotiation: off
+	Port: Twisted Pair
+	PHYAD: 0
+	Transceiver: internal
+	MDI-X: Unknown
+        Current message level: 0x00000007 (7)
+                               drv probe link
+	Link detected: no
+
+[cmd] nmcli -t -f DEVICE\,STATE\,CONNECTION device status
+wlan0:connected:Asgard
+tailscale0:connected (externally):tailscale0
+lo:connected (externally):lo
+br-13520f3b6390:connected (externally):br-13520f3b6390
+br-7d7aefce0776:connected (externally):br-7d7aefce0776
+br-c6e43a602b2a:connected (externally):br-c6e43a602b2a
+docker0:connected (externally):docker0
+eth1:connected (externally):eth1
+usb0:connected (externally):usb0
+p2p-dev-wlan0:disconnected:
+eth0:unavailable:
+
+[cmd] ip route show dev eth1
+
+
+[cmd] ip -6 route show dev eth1
+
+
+[cmd] udevadm info --query=property --name eth1
+Unknown device "/dev/eth1": No such device
+
+[cmd] ethtool wlan0
+netlink error: Operation not permitted
+Settings for wlan0:
+	Link detected: yes
+
+[cmd] nmcli -t -f DEVICE\,STATE\,CONNECTION device status
+wlan0:connected:Asgard
+tailscale0:connected (externally):tailscale0
+lo:connected (externally):lo
+br-13520f3b6390:connected (externally):br-13520f3b6390
+br-7d7aefce0776:connected (externally):br-7d7aefce0776
+br-c6e43a602b2a:connected (externally):br-c6e43a602b2a
+docker0:connected (externally):docker0
+eth1:connected (externally):eth1
+usb0:connected (externally):usb0
+p2p-dev-wlan0:disconnected:
+eth0:unavailable:
+
+[cmd] udevadm info --query=property --name wlan0
+Unknown device "/dev/wlan0": No such device
+
+[cmd] ip route show dev wlan0
+default via 10.68.87.118 proto dhcp src 10.68.87.43 metric 600 
+10.68.87.0/24 proto kernel scope link src 10.68.87.43 metric 600 
+
+[cmd] ip -6 route show dev wlan0
+fe80::/64 proto kernel metric 1024 pref medium
+
+[cmd] udevadm info --query=property --name wlan0
+Unknown device "/dev/wlan0": No such device
+
+[cmd] ip route get 10.0.0.2
+10.0.0.2 dev usb0 src 10.0.0.1 uid 1000 
+    cache 
+
+[cmd] ip rule show
+0:	from all lookup local
+5210:	from all fwmark 0x80000/0xff0000 lookup main
+5230:	from all fwmark 0x80000/0xff0000 lookup default
+5250:	from all fwmark 0x80000/0xff0000 unreachable
+5270:	from all lookup 52
+32766:	from all lookup main
+32767:	from all lookup default
+
+[cmd] ip route show table main
+default via 10.68.87.118 dev wlan0 proto dhcp src 10.68.87.43 metric 600 
+10.0.0.0/24 dev usb0 proto kernel scope link src 10.0.0.1 
+10.68.87.0/24 dev wlan0 proto kernel scope link src 10.68.87.43 metric 600 
+172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown 
+172.18.0.0/16 dev br-7d7aefce0776 proto kernel scope link src 172.18.0.1 linkdown 
+172.19.0.0/16 dev br-c6e43a602b2a proto kernel scope link src 172.19.0.1 linkdown 
+172.20.0.0/16 dev br-13520f3b6390 proto kernel scope link src 172.20.0.1 linkdown 
+
+[cmd] ip neigh show dev usb0
+10.0.0.2 FAILED 
+
+[cmd] ping -c 3 -W 1 10.0.0.2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+
+--- 10.0.0.2 ping statistics ---
+3 packets transmitted, 0 received, 100% packet loss, time 2059ms
+
+[cmd] ping -c 2 -W 1 10.68.87.118
+PING 10.68.87.118 (10.68.87.118) 56(84) bytes of data.
+64 bytes from 10.68.87.118: icmp_seq=1 ttl=64 time=6.10 ms
+64 bytes from 10.68.87.118: icmp_seq=2 ttl=64 time=3.41 ms
+
+--- 10.68.87.118 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1001ms
+rtt min/avg/max/mdev = 3.406/4.753/6.101/1.347 ms
+
+[cmd] arping -c 2 -w 3 -I usb0 10.0.0.2
+arping: libnet_init(LIBNET_LINK, usb0): libnet_open_link(): UID/EUID 0 or capability CAP_NET_RAW required
+arping: you may need to run as root
+
+[cmd] curl --max-time 3 -sS http://10.0.0.2
+curl: (28) Connection timed out after 3002 milliseconds
+
+[cmd] lsusb
+Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 001 Device 002: ID 05e3:0610 Genesys Logic, Inc. Hub
+Bus 001 Device 003: ID 04f2:b6be Chicony Electronics Co., Ltd Integrated Camera
+Bus 001 Device 004: ID 1a40:0101 Terminus Technology Inc. Hub
+Bus 001 Device 005: ID 25a7:fa61 Areson Technology Corp Elecom Co., Ltd MR-K013 Multicard Reader
+Bus 001 Device 010: ID 2e8a:0013 Raspberry Pi Ltd. Raspberry Pi USB Gadget
+Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Bus 002 Device 002: ID 05e3:0626 Genesys Logic, Inc. Hub
+Bus 002 Device 003: ID 0b95:1790 ASIX Electronics Corp. AX88179 Gigabit Ethernet
+Bus 003 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
+Bus 003 Device 002: ID 27c6:55a4 Shenzhen Goodix Technology Co.,Ltd. Goodix FingerPrint Device
+Bus 003 Device 003: ID 0489:e0cd Foxconn / Hon Hai MediaTek Bluetooth Adapter
+Bus 004 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+
+[cmd] dmesg --since 30\ minutes\ ago
+[ 5230.685404] perf: interrupt took too long (2517 > 2500), lowering kernel.perf_event_max_sample_rate to 79250
+[ 5325.386524] [UFW BLOCK] IN=wlan0 OUT= MAC=c8:94:02:e1:4b:a1:e2:91:2d:a7:7f:78:08:00 SRC=10.68.87.118 DST=10.68.87.43 LEN=53 TOS=0x00 PREC=0x00 TTL=64 ID=21001 DF PROTO=TCP SPT=53 DPT=41232 WINDOW=64 RES=0x00 ACK PSH URGP=0 
+[ 5325.386535] [UFW BLOCK] IN=wlan0 OUT= MAC=c8:94:02:e1:4b:a1:e2:91:2d:a7:7f:78:08:00 SRC=10.68.87.118 DST=10.68.87.43 LEN=82 TOS=0x00 PREC=0x00 TTL=64 ID=21002 DF PROTO=TCP SPT=53 DPT=41232 WINDOW=64 RES=0x00 ACK PSH URGP=0 
+[ 5325.395767] [UFW BLOCK] IN=wlan0 OUT= MAC=c8:94:02:e1:4b:a1:e2:91:2d:a7:7f:78:08:00 SRC=10.68.87.118 DST=10.68.87.43 LEN=82 TOS=0x00 PREC=0x00 TTL=64 ID=21003 DF PROTO=TCP SPT=53 DPT=41232 WINDOW=64 RES=0x00 ACK PSH URGP=0 
+[ 5325.600573] [UFW BLOCK] IN=wlan0 OUT= MAC=c8:94:02:e1:4b:a1:e2:91:2d:a7:7f:78:08:00 SRC=10.68.87.118 DST=10.68.87.43 LEN=83 TOS=0x00 PREC=0x00 TTL=64 ID=21004 DF PROTO=TCP SPT=53 DPT=41232 WINDOW=64 RES=0x00 ACK PSH URGP=0 
+[ 5326.114568] [UFW BLOCK] IN=wlan0 OUT= MAC=c8:94:02:e1:4b:a1:e2:91:2d:a7:7f:78:08:00 SRC=10.68.87.118 DST=10.68.87.43 LEN=83 TOS=0x00 PREC=0x00 TTL=64 ID=21005 DF PROTO=TCP SPT=53 DPT=41232 WINDOW=64 RES=0x00 ACK PSH URGP=0 
+[ 5326.935738] [UFW BLOCK] IN=wlan0 OUT= MAC=c8:94:02:e1:4b:a1:e2:91:2d:a7:7f:78:08:00 SRC=10.68.87.118 DST=10.68.87.43 LEN=83 TOS=0x00 PREC=0x00 TTL=64 ID=21006 DF PROTO=TCP SPT=53 DPT=41232 WINDOW=64 RES=0x00 ACK PSH URGP=0 
+[ 5328.563970] [UFW BLOCK] IN=wlan0 OUT= MAC=c8:94:02:e1:4b:a1:e2:91:2d:a7:7f:78:08:00 SRC=10.68.87.118 DST=10.68.87.43 LEN=83 TOS=0x00 PREC=0x00 TTL=64 ID=21007 DF PROTO=TCP SPT=53 DPT=41232 WINDOW=64 RES=0x00 ACK PSH URGP=0 
+[ 5331.951378] [UFW BLOCK] IN=wlan0 OUT= MAC=c8:94:02:e1:4b:a1:e2:91:2d:a7:7f:78:08:00 SRC=10.68.87.118 DST=10.68.87.43 LEN=83 TOS=0x00 PREC=0x00 TTL=64 ID=21008 DF PROTO=TCP SPT=53 DPT=41232 WINDOW=64 RES=0x00 ACK PSH URGP=0 
+[ 5338.607732] [UFW BLOCK] IN=wlan0 OUT= MAC=c8:94:02:e1:4b:a1:e2:91:2d:a7:7f:78:08:00 SRC=10.68.87.118 DST=10.68.87.43 LEN=83 TOS=0x00 PREC=0x00 TTL=64 ID=21009 DF PROTO=TCP SPT=53 DPT=41232 WINDOW=64 RES=0x00 ACK PSH URGP=0 
+[ 5351.612937] [UFW BLOCK] IN=wlan0 OUT= MAC=c8:94:02:e1:4b:a1:e2:91:2d:a7:7f:78:08:00 SRC=10.68.87.118 DST=10.68.87.43 LEN=83 TOS=0x00 PREC=0x00 TTL=64 ID=21010 DF PROTO=TCP SPT=53 DPT=41232 WINDOW=64 RES=0x00 ACK PSH URGP=0 
+[ 5354.117880] cdc_ether 1-2:1.0 usb0: entered promiscuous mode
+[ 5378.980264] [UFW BLOCK] IN=wlan0 OUT= MAC=c8:94:02:e1:4b:a1:e2:91:2d:a7:7f:78:08:00 SRC=10.68.87.118 DST=10.68.87.43 LEN=83 TOS=0x00 PREC=0x00 TTL=64 ID=21011 DF PROTO=TCP SPT=53 DPT=41232 WINDOW=64 RES=0x00 ACK PSH URGP=0 
+[ 5753.728931] cdc_ether 1-2:1.0 usb0: left promiscuous mode
+
+[cmd] lsmod
+Module                  Size  Used by
+xt_recent              24576  0
+nft_ct                 28672  1
+nft_masq               12288  1
+sd_mod                 86016  0
+sg                     45056  0
+uas                    32768  0
+usb_storage            90112  1 uas
+scsi_mod              319488  4 sd_mod,usb_storage,uas,sg
+scsi_common            16384  5 scsi_mod,sd_mod,usb_storage,uas,sg
+xt_mark                12288  2
+nft_chain_nat          12288  4
+xt_MASQUERADE          16384  6
+nf_nat                 65536  3 nft_masq,nft_chain_nat,xt_MASQUERADE
+bridge                397312  0
+stp                    12288  1 bridge
+llc                    16384  2 bridge,stp
+xfrm_user              73728  1
+xfrm_algo              16384  1 xfrm_user
+ccm                    20480  6
+snd_seq_dummy          12288  0
+snd_hrtimer            12288  1
+snd_seq               114688  7 snd_seq_dummy
+snd_seq_device         16384  1 snd_seq
+tun                    77824  2
+sunrpc                868352  1
+overlay               229376  0
+ip6t_REJECT            12288  1
+nf_reject_ipv6         20480  1 ip6t_REJECT
+xt_hl                  12288  22
+ip6t_rt                16384  3
+qrtr                   57344  2
+ipt_REJECT             12288  1
+nf_reject_ipv4         12288  1 ipt_REJECT
+xt_LOG                 16384  10
+nf_log_syslog          24576  10
+nft_limit              16384  13
+xt_limit               12288  0
+xt_addrtype            12288  6
+zram                   61440  1
+xt_tcpudp              16384  60
+lz4hc_compress         20480  1 zram
+lz4_compress           24576  1 zram
+xt_conntrack           12288  20
+nf_conntrack          208896  5 xt_conntrack,nf_nat,nft_ct,nft_masq,xt_MASQUERADE
+nf_defrag_ipv6         24576  1 nf_conntrack
+nf_defrag_ipv4         12288  1 nf_conntrack
+nft_compat             24576  131
+x_tables               57344  13 xt_conntrack,nft_compat,xt_LOG,xt_tcpudp,xt_addrtype,xt_recent,ip6t_rt,ipt_REJECT,xt_limit,xt_hl,xt_MASQUERADE,ip6t_REJECT,xt_mark
+nf_tables             421888  993 nft_ct,nft_compat,nft_masq,nft_chain_nat,nft_limit
+binfmt_misc            28672  1
+nls_ascii              12288  1
+nls_cp437              16384  1
+vfat                   24576  1
+fat                   114688  1 vfat
+intel_rapl_msr         20480  0
+amd_atl                69632  1
+intel_rapl_common      53248  1 intel_rapl_msr
+snd_sof_amd_rembrandt    16384  0
+snd_sof_amd_acp        65536  1 snd_sof_amd_rembrandt
+snd_sof_pci            24576  1 snd_sof_amd_rembrandt
+snd_sof_xtensa_dsp     16384  1 snd_sof_amd_acp
+edac_mce_amd           28672  0
+btusb                  81920  0
+snd_sof               425984  2 snd_sof_amd_acp,snd_sof_pci
+kvm_amd               225280  0
+snd_sof_utils          16384  1 snd_sof
+btmtk                  32768  1 btusb
+snd_soc_core          442368  1 snd_sof
+btrtl                  36864  1 btusb
+btbcm                  24576  1 btusb
+kvm                  1482752  1 kvm_amd
+uvcvideo              155648  0
+mt7921e                28672  0
+btintel                73728  1 btusb
+videobuf2_vmalloc      20480  1 uvcvideo
+uvc                    12288  1 uvcvideo
+videobuf2_memops       16384  1 videobuf2_vmalloc
+snd_compress           32768  1 snd_soc_core
+mt7921_common          98304  1 mt7921e
+videobuf2_v4l2         36864  1 uvcvideo
+bluetooth            1101824  6 btrtl,btmtk,btintel,btbcm,btusb
+mt792x_lib             77824  2 mt7921e,mt7921_common
+snd_hda_codec_alc269   147456  1
+snd_pcm_dmaengine      20480  1 snd_soc_core
+mt76_connac_lib       102400  3 mt792x_lib,mt7921e,mt7921_common
+snd_hda_scodec_component    20480  1 snd_hda_codec_alc269
+irqbypass              16384  1 kvm
+snd_hda_codec_realtek_lib    65536  1 snd_hda_codec_alc269
+mt76                  167936  4 mt792x_lib,mt7921e,mt7921_common,mt76_connac_lib
+snd_hda_codec_atihdmi    20480  1
+rapl                   20480  0
+ecdh_generic           16384  1 bluetooth
+snd_hda_codec_generic   131072  2 snd_hda_codec_realtek_lib,snd_hda_codec_alc269
+snd_hda_codec_hdmi     61440  1 snd_hda_codec_atihdmi
+snd_pci_ps             28672  0
+videodev              385024  2 videobuf2_v4l2,uvcvideo
+snd_ctl_led            24576  0
+mac80211             1671168  4 mt792x_lib,mt76,mt7921_common,mt76_connac_lib
+snd_soc_acpi_amd_match    12288  1 snd_pci_ps
+snd_hda_intel          65536  2
+think_lmi              49152  0
+videobuf2_common       86016  4 videobuf2_vmalloc,videobuf2_v4l2,uvcvideo,videobuf2_memops
+snd_rpl_pci_acp6x      16384  0
+pcspkr                 12288  0
+mc                     90112  4 videodev,videobuf2_v4l2,uvcvideo,videobuf2_common
+snd_acp_pci            12288  0
+firmware_attributes_class    12288  1 think_lmi
+snd_hda_codec         221184  6 snd_hda_codec_generic,snd_hda_codec_hdmi,snd_hda_intel,snd_hda_codec_realtek_lib,snd_hda_codec_alc269,snd_hda_codec_atihdmi
+snd_amd_acpi_mach      12288  1 snd_acp_pci
+wmi_bmof               12288  0
+acpi_cpufreq           32768  0
+snd_hda_core          151552  7 snd_hda_codec_generic,snd_hda_codec_hdmi,snd_hda_intel,snd_hda_codec,snd_hda_codec_realtek_lib,snd_hda_codec_alc269,snd_hda_codec_atihdmi
+snd_acp_legacy_common    24576  1 snd_acp_pci
+snd_pci_acp6x          16384  0
+snd_pci_acp5x          16384  0
+k10temp                16384  0
+cfg80211             1486848  4 mt76,mac80211,mt7921_common,mt76_connac_lib
+snd_intel_dspcfg       45056  2 snd_hda_intel,snd_sof
+snd_intel_sdw_acpi     16384  1 snd_intel_dspcfg
+thinkpad_acpi         167936  0
+snd_hwdep              24576  1 snd_hda_codec
+libarc4                12288  1 mac80211
+snd_rn_pci_acp3x       20480  0
+snd_acp_config         20480  6 snd_rn_pci_acp3x,snd_pci_acp6x,snd_pci_acp5x,snd_sof_amd_rembrandt,snd_acp_pci,snd_pci_ps
+snd_pcm               212992  13 snd_sof_amd_acp,snd_hda_codec_hdmi,snd_pci_acp6x,snd_acp_legacy_common,snd_hda_intel,snd_hda_codec,snd_sof,snd_compress,snd_soc_core,snd_sof_utils,snd_hda_core,snd_pci_ps,snd_pcm_dmaengine
+nvram                  20480  1 thinkpad_acpi
+snd_soc_acpi           16384  4 snd_sof_amd_acp,snd_acp_legacy_common,snd_acp_config,snd_amd_acpi_mach
+snd_pci_acp3x          16384  0
+sparse_keymap          12288  1 thinkpad_acpi
+snd_timer              49152  3 snd_seq,snd_hrtimer,snd_pcm
+ccp                   176128  1 kvm_amd
+platform_profile       20480  1 thinkpad_acpi
+rfkill                 45056  10 mt7921e,bluetooth,thinkpad_acpi,cfg80211
+ac                     16384  0
+snd                   159744  22 snd_ctl_led,snd_hda_codec_generic,snd_seq,snd_seq_device,snd_hda_codec_hdmi,snd_hwdep,snd_hda_intel,snd_hda_codec,snd_sof,snd_timer,snd_hda_codec_realtek_lib,snd_compress,thinkpad_acpi,snd_hda_codec_alc269,snd_soc_core,snd_pcm
+soundcore              16384  2 snd_ctl_led,snd
+cdc_mbim               16384  0
+cdc_wdm                32768  1 cdc_mbim
+joydev                 32768  0
+evdev                  32768  23
+msr                    12288  0
+i2c_dev                24576  0
+efi_pstore             12288  0
+configfs               61440  1
+nfnetlink              20480  4 nft_compat,nf_tables
+efivarfs               28672  1
+autofs4                61440  2
+ext4                 1224704  1
+mbcache                20480  1 ext4
+jbd2                  196608  1 ext4
+crc32c_cryptoapi       12288  0
+hid_generic            12288  0
+cdc_ncm                49152  1 cdc_mbim
+cdc_ether              24576  1 cdc_ncm
+usbhid                 86016  0
+usbnet                 61440  3 cdc_mbim,cdc_ncm,cdc_ether
+hid                   274432  2 usbhid,hid_generic
+mii                    16384  1 usbnet
+amdgpu              19488768  28
+amdxcp                 12288  1 amdgpu
+drm_panel_backlight_quirks    12288  1 amdgpu
+gpu_sched              69632  1 amdgpu
+drm_buddy              32768  1 amdgpu
+drm_ttm_helper         16384  2 amdgpu
+ttm                   131072  2 amdgpu,drm_ttm_helper
+drm_exec               12288  1 amdgpu
+i2c_algo_bit           16384  1 amdgpu
+drm_suballoc_helper    16384  1 amdgpu
+drm_display_helper    290816  1 amdgpu
+cec                    81920  2 drm_display_helper,amdgpu
+rc_core                77824  1 cec
+drm_client_lib         12288  1 amdgpu
+drm_kms_helper        245760  4 drm_display_helper,amdgpu,drm_ttm_helper,drm_client_lib
+ucsi_acpi              12288  0
+typec_ucsi             69632  1 ucsi_acpi
+xhci_pci               24576  0
+ghash_clmulni_intel    12288  0
+psmouse               229376  0
+xhci_hcd              409600  1 xhci_pci
+aesni_intel            98304  4
+serio_raw              16384  0
+typec                 114688  1 typec_ucsi
+nvme                   69632  3
+roles                  16384  1 typec_ucsi
+drm                   851968  26 gpu_sched,drm_panel_backlight_quirks,drm_kms_helper,drm_exec,drm_suballoc_helper,drm_display_helper,drm_buddy,thinkpad_acpi,amdgpu,drm_ttm_helper,drm_client_lib,ttm,amdxcp
+battery                28672  1 thinkpad_acpi
+nvme_core             245760  4 nvme
+thunderbolt           557056  1 typec
+usbcore               417792  13 xhci_hcd,usbnet,usbhid,btmtk,cdc_mbim,cdc_ncm,usb_storage,cdc_wdm,uvcvideo,btusb,xhci_pci,cdc_ether,uas
+sp5100_tco             20480  0
+watchdog               53248  1 sp5100_tco
+nvme_keyring           20480  1 nvme_core
+i2c_scmi               16384  0
+nvme_auth              32768  1 nvme_core
+video                  77824  2 thinkpad_acpi,amdgpu
+r8169                 143360  0
+hkdf                   16384  1 nvme_auth
+usb_common             20480  4 xhci_hcd,usbcore,uvcvideo,typec_ucsi
+i2c_piix4              36864  0
+wmi                    28672  3 video,wmi_bmof,think_lmi
+crc16                  12288  3 bluetooth,amdgpu,ext4
+realtek                57344  1
+button                 28672  0
+i2c_smbus              20480  1 i2c_piix4
+
+[cmd] nmcli general status
+STATE      CONNECTIVITY  WIFI-HW  WIFI     WWAN-HW  WWAN     METERED       
+connected  full          enabled  enabled  missing  enabled  yes (guessed) 
+
+[cmd] nmcli -f GENERAL.STATE\,GENERAL.REASON\,IP4.ADDRESS\,IP6.ADDRESS dev show usb0
+GENERAL.STATE:                          100 (connected (externally))
+GENERAL.REASON:                         0 (No reason given)
+IP4.ADDRESS[1]:                         10.0.0.1/24
+
+[cmd] nmcli -t -f NAME\,UUID\,TYPE\,DEVICE con show
+Asgard:f3ca130e-fe53-4890-a86d-84134513fcfd:802-11-wireless:wlan0
+tailscale0:ac8e40aa-9b06-4a0c-9d7a-8614a51f70e6:tun:tailscale0
+lo:8f4dcf87-0e10-4300-b7d2-b61b2439e99e:loopback:lo
+br-13520f3b6390:129100b4-f152-4032-b8a2-fdb0e7de9a8d:bridge:br-13520f3b6390
+br-7d7aefce0776:88f59496-e5db-4445-a227-c7eb325188d6:bridge:br-7d7aefce0776
+br-c6e43a602b2a:d8d76778-085d-44e0-9b3f-d262b1704063:bridge:br-c6e43a602b2a
+docker0:4e4a613c-4b4e-4cfa-9566-c0749c24ee5d:bridge:docker0
+eth1:18d755f3-c405-4c3d-822f-d771747a3b87:802-3-ethernet:eth1
+usb0:90c248d9-74da-4a44-af2b-1efddf17f753:802-3-ethernet:usb0
+Afghanistan - Kabul:392cf3f7-ecb0-4cf3-8f12-f39c759022ed:vpn:
+Albania - Tirana:0a34e396-2756-4de8-b808-edf0b4eacf07:vpn:
+Algeria - Algiers:82a718f7-7009-48aa-b92c-52629bc85797:vpn:
+Angola - Luanda:38d72729-3e7b-4253-86e9-407b2781af4b:vpn:
+Argentina - Buenos Aires:7530acf4-21bd-4ee0-930a-5b98c5806858:vpn:
+Armenia - Yerevan:3a18a01d-c8c4-4402-afba-91d664499d87:vpn:
+Australia - Adelaide:520e124d-0c17-4a2d-bbde-2139e9f2834b:vpn:
+Austria - Vienna:ed499e31-e2d4-49be-b4db-4002936985d3:vpn:
+Azerbaijan - Baku:3cf36c07-daeb-4f20-b964-60d56028e7aa:vpn:
+Bahrain:9f3ebeae-a8d5-4cd6-bbfd-f4730eae6f7a:vpn:
+Bangladesh:42c198a6-402e-4eae-8890-c0efa0ca4f18:vpn:
+Belarus - Minsk:ea00e022-6ed4-4f8d-9374-ee8cd88a5e7c:vpn:
+Belgium - Brussels:34c2129c-af7e-4985-854d-aec72557de52:vpn:
+Bhutan- Thimphu:e7e2ddff-0a9d-4e60-b19a-a83c44e48740:vpn:
+Bosnia - Novi Travnik:6e2efdaf-c414-4a96-b3e4-3c58dee3dd1f:vpn:
+Brazil - Sao Paulo:1685b0e0-ac53-4e9a-9869-270d067582d9:vpn:
+Brunei Darussalam - Bandar Seri Begawan:48eb05df-1c7c-4f64-9431-676734fc31ac:vpn:
+Bulgaria - Sofia:40cc1198-21d3-46a0-aba7-853a8b7e8e04:vpn:
+Cambodia - Phnom Penh:bb500ffc-7283-4f24-b020-5c6fc1d6596c:vpn:
+Cameroon - Yaounde:a99c7c75-76df-4911-ad8d-e21cc2823852:vpn:
+Canada - Montreal:96e130e2-3b90-4eed-b86d-947db757f762:vpn:
+Canada - Toronto:e43d369b-cbdb-45f4-8712-0d17b556fe73:vpn:
+Canada - Vancouver:9d7083ab-cd9c-42b1-9fbf-1f86907dc9b6:vpn:
+Chad - N'Djamena:ba34e74c-fdbb-4f66-8054-bd7ff0ff5b16:vpn:
+Chile - Santiago:b8eb31e3-345f-40bc-8def-5d5daeac2e57:vpn:
+Colombia - Bogota:e2d90356-5167-4703-b2fa-079adb0a6190:vpn:
+Comoros - Moroni:2fd5dbcf-0053-42ca-8048-0b367e877c6a:vpn:
+Costa Rica - San Jose:e2fb6fd1-2e11-458d-8d1f-d3fb323f4f77:vpn:
+Côte d'Ivoire - Yamoussoukro:35cf7266-a9d4-4806-8ab5-b807a9946844:vpn:
+Croatia - Zagreb:07f72026-eb3f-4994-9cbf-f101569a1384:vpn:
+Cuba - Havana:0bf36673-58d3-45c3-b81e-b8fe73a376a2:vpn:
+Cyprus - Limassol:3ce83c9d-db13-4923-bea0-f9ad66eaf4ab:vpn:
+Czech Republic - Prague:f75e7e16-a99e-451a-becd-f73e7c32cf30:vpn:
+Denmark - Copenhagen:64ed614c-7dee-474f-b7db-fab17eb39906:vpn:
+Dominican Republic - Santo Domingo:934f7641-20b2-4010-a482-8f6408974ea3:vpn:
+Ecuador - Quito:a4834b27-2c68-4b42-8a64-0a9a8e94b759:vpn:
+Egypt - Cairo:97a2e979-e2d0-431d-ad3a-a324fe8ce523:vpn:
+El Salvador - San Salvador:9d3c90fc-85ae-4fce-8a60-6310e3659dad:vpn:
+Eritrea - Asmara:0590e3b1-b3c1-42cd-8686-09a669be03c2:vpn:
+Estonia - Tallinn:5fcce529-b788-40db-848e-4bdc7d1d0be9:vpn:
+Ethiopia - 	Addis Ababa:b36995a4-62ac-4975-9df1-3640e3d84712:vpn:
+Finland - Helsinki:74e61a51-2f63-43b7-b0e1-87e9c7e8d8ff:vpn:
+France - Marseille:b8aa7fc0-3295-4a8c-b174-b89352c7cba7:vpn:
+France - Paris:292c0f2e-9e90-4c77-bf7c-7f8e7c94eaaf:vpn:
+Georgia - Tbilisi:6bab3cb5-f2ef-434d-84a7-0278b8622328:vpn:
+Germany - Berlin:8f426f2c-2896-49db-866d-079f93186808:vpn:
+Germany - Frankfurt:2dcbd79a-8ba2-414c-9c98-69445aa0ca28:vpn:
+Ghana - Accra:ca0bb52c-7166-4172-8aec-de7932ba8b21:vpn:
+Greece - Athens:e23e5d41-25f5-4271-981c-702e79dc6d74:vpn:
+Guatemala - Guatemala City:cdf886aa-40af-4242-b0d5-a245a8cc31ce:vpn:
+Honduras - 	Tegucigalpa:c536097f-c058-4222-aaea-25a5478c269a:vpn:
+Hong Kong - Hong Kong:fe5c4135-b5b1-4bd2-a77c-aafd41389747:vpn:
+Hungary - Budapest:bbb9b8ed-e3b4-4405-99a7-631b1519e0e3:vpn:
+Iceland - Reykjavik:2d8ae8af-5a2c-4936-87d8-f34e8cbca819:vpn:
+India - Mumbai:0e9800c2-22d8-4236-a955-f2968d2b9801:vpn:
+Indonesia:73191a17-f0d5-4a05-af9f-3a0241cf953b:vpn:
+Iraq - Baghdad:c12b9cdf-6cc9-4c1d-8634-7694663338a9:vpn:
+Ireland - Dublin:f458eeb4-0c19-4300-810a-11699fa05353:vpn:
+Israel - Tel Aviv:3afbc719-002c-4a85-8d47-b16ab409596d:vpn:
+Italy - Milan:01f2166e-3b52-4846-b00a-56d85fe1c8d3:vpn:
+Italy - Palermo:d75c7fbe-4cf1-4e06-bae9-78b06904413c:vpn:
+Japan - Osaka:003b6c73-59d2-49e1-a641-8242f1aca3b8:vpn:
+Japan - Tokyo:66cfa604-7e42-4cbf-8400-994a876bc148:vpn:
+Jordan - Amman:3389e9f3-3b38-46af-bbef-67a9981f70cc:vpn:
+Kazakhstan - Astana:ec310ab0-b9f4-41fe-a80f-0b92c958ee19:vpn:
+Kenya - Nairobi:7ff64cd1-61e9-4efc-b36b-419d3d4b2fd3:vpn:
+Korea - Seoul:db1c7937-6de4-48a4-8183-f5b832aa6ed3:vpn:
+Kuwait - Kuwait City:9436440e-e5da-45bb-817d-df1db4ef9835:vpn:
+Lao People's Democratic Republic
+- 	Vientiane:f50d7ef3-3d5a-4564-981f-fd78b6ec0277:vpn:
+Latvia - Riga:7daf8175-8fc4-4484-82c2-b3e155a208ec:vpn:
+Libyan Arab Jamahiriya - Tripoli:bc9a0792-a62b-47f8-95dc-d6f40b9f3cfc:vpn:
+Lithuania - Siauliai:e7d3a150-b0a3-4d41-a98c-4f40637dacf3:vpn:
+Lithuania - Vilnius:1ec27790-3726-4d5f-bbad-3daad87c9e40:vpn:
+Luxembourg - Luxembourg:e625e0d5-3cbb-4389-92df-baf907be4049:vpn:
+Malaysia - Kuala Lumpur:2ffaed23-66d0-4fd4-859f-da1c37d9a1a8:vpn:
+Malta - Valletta:eac36501-9e84-46c3-b630-54f327b809a6:vpn:
+Mauritania - Nouakchott:b5bdbd29-ae9c-4588-bed7-277c9a9748d5:vpn:
+Mauritius - 	Port Louis:9f491647-67ac-40c1-ae7f-3ce7a2082b9d:vpn:
+Mexico - Mexico City:354e081f-be7a-4b03-b131-399759e5906f:vpn:
+Mexico - Querétaro:00acc7e4-28d8-4bed-b8bb-33c5b54733ed:vpn:
+Moldova - Chisinau:cfb33f54-2491-442f-b944-db74c3162aaa:vpn:
+Mongolia - Ulaanbaatar:e02ffe91-cb26-4d23-8971-d07f5b46358b:vpn:
+Montenegro - Podgorica:f7fe03e3-a042-4847-9cd3-a28841cc9dba:vpn:
+Morocco - Casablanca:2e3316e7-e118-49e5-bf0f-2f4f40a6f058:vpn:
+Morocco - Rabat:95417cd9-bdf9-42fb-b615-65a83a6ee0e8:vpn:
+Mozambique - Maputo:b37913aa-4895-4765-abfb-88ed2cd942b2:vpn:
+Myanmar - Yangon:cea3fe56-9f3e-4aa2-ab68-40b3e385d685:vpn:
+Nepal - Kathmandu:f7151785-f22f-4bef-b5ed-69b24d4197df:vpn:
+Netherlands - Amsterdam:b8e337ca-91be-4499-a55e-7253f6a3e545:vpn:
+New Zealand - Auckland:9de214a7-cd70-472b-9ba5-a047b3d43b66:vpn:
+Nigeria - Abuja:856bc6b4-bcd0-42ca-95cc-cc4ce15eed1f:vpn:
+Nigeria - Lagos:1eb9813d-9128-4aff-a9a8-86bc545a5f4e:vpn:
+North Macedonia - Skopje:f2f5a33b-016b-407c-a112-7a7c443cc17c:vpn:
+Norway - Oslo:19af7a70-f6dc-4a35-9577-a8033d820902:vpn:
+Oman - Muscat:30020173-2f52-4fa1-b519-5735bde3a224:vpn:
+Pakistan - Karachi:9f1a03d3-7475-497a-96dd-c2876a794932:vpn:
+Palestinian Territories - Ramallah:c0f7bb9e-435b-4574-854e-c7f65f024c25:vpn:
+Panama - Panama City:64e11298-f1db-4a43-9ba1-9316ffffcac2:vpn:
+Peru - Lima:d29b2679-c700-4ce8-8d78-3533176a3727:vpn:
+Philippines - Manila:55749506-aa95-4b49-8a93-775f4efc6682:vpn:
+Poland - Warsaw:639eee38-b4b4-44c9-9118-7b16a0cdc643:vpn:
+Portugal - Lisbon:7f82c450-85ed-4255-9e0d-91469e713a33:vpn:
+Puerto Rico - Suan Juan:842b2612-fc1f-4a1d-86c1-3332c023bfcb:vpn:
+Quatar - Soha:9a6e3410-c625-4b83-b6f4-cc2221a0d7a0:vpn:
+Romania - Bucharest:00f3587f-2660-4ef9-b865-4c4222379c7a:vpn:
+Russia - Moscow:ff4c34f5-428a-470c-b0e7-661a47e1a345:vpn:
+Rwanda - Kigali:18c15341-1b60-49ef-a663-a57726d7f6a3:vpn:
+Saudi Arabia - Riyadh:d24df788-b3fa-4381-a6f2-30420cbed5c2:vpn:
+Senegal - Dakar:9ac08d8c-a957-4ce2-9f9d-02b440c0568c:vpn:
+Serbia - Belgrade:914c5eaa-f8b4-422c-85e0-4961d00f2be4:vpn:
+Singapore - Singapore:da8a5107-f5bc-4af7-abdd-9f29936c908c:vpn:
+Slovakia - Bratislava:3c720fbc-7fc1-488e-bbaa-aa7feb0fd3ad:vpn:
+Slovenia - Ljubljana:28794eea-847c-4215-abdc-8069bd8e0963:vpn:
+Somalia - Mogadishu:ef738f59-5861-48ed-ac2e-09e482a1eb67:vpn:
+South Africa - Johannesburg:d910d93e-759a-4d4b-9aaa-803ce86bc11d:vpn:
+South Sudan - Juba:868c4e4c-b77d-43cd-ae48-44b1733f7776:vpn:
+Spain - Barcelona:6d82df65-f0f1-450a-bc82-f9d7b5defbfb:vpn:
+Spain - Madrid:c02c837b-c8c4-482f-b756-c8be4317e6aa:vpn:
+Sri Lanka - Colombo:029c48ef-f615-451e-9b3d-69ba1d3e8e40:vpn:
+Sudan - Khartoum:3d96a87a-e1a1-49bf-957c-5b3cab494cab:vpn:
+Sweden - Stockholm:73e95d9d-f64b-4cef-bd0f-d4de143053b4:vpn:
+Switzerland - Zurich:39d43808-7b52-40f4-95c0-2b505fbbf7d1:vpn:
+Syrian Arab Republic - Damascus:918f3b34-9997-4ee0-85b7-ce10a083fa3e:vpn:
+Taiwan - Taichung:a6bea091-93ac-42e6-9aea-2bcfd57f1f61:vpn:
+Tajikistan - Dushanbe:fa7c3f07-e95e-425c-a1a3-6b114f4dc1ac:vpn:
+Tanzania - Dodoma:0ee15256-535c-4603-9eea-cb5779d76f41:vpn:
+Thailand - Bankok:5fd91f43-f09f-4f3a-b490-40e1888666e2:vpn:
+Togo - Lomé:38adbc06-1982-4ea3-acc9-a455862ec6fd:vpn:
+Tunisia - Tunis:40ff9ab8-bd53-4b15-ac12-e0d0fec5c447:vpn:
+Turkey - Istanbul:9a70d92d-ce9c-41f9-89d4-5f4024d0a561:vpn:
+Turkmenistan - Ashgabat:ba2cc2fd-9df3-4c01-a2ac-a0ce4bb657d0:vpn:
+Uganda - Kampala:c758b842-4cde-483f-8bfc-18149b4d5012:vpn:
+UK - Belfast:34647454-dcc9-43f0-8bf6-ac69c39b921d:vpn:
+UK - Cardiff:a6dc9809-5c90-4634-83ff-d41aa68cdab2:vpn:
+UK - Edinburgh:51477870-f847-4235-996f-f741c17fca8c:vpn:
+UK - London:4f37d42d-b7d6-40ae-aae9-dc297868a7e1:vpn:
+UK - Manchester:93486633-36ed-4599-9a39-db59ea2c26a5:vpn:
+Ukraine - Kyiv:2e9def21-6ac2-438a-9e71-c5d4201088a2:vpn:
+United Arab Emirates - Dubai:1ae8ed4e-4309-4188-813b-bc368a595320:vpn:
+USA - Ashburn - Virginia:0fa243e0-fc01-4f4c-af63-2b3b9593946d:vpn:
+USA - Atlanta:0c2de6cf-bfa5-480a-b9a9-0ef088fc9e34:vpn:
+USA - Boston - Massachusetts:be800938-1fab-40d9-bcd6-4efbfc58aca9:vpn:
+USA - Charlotte - North Carolina:f7d31fcf-d534-4256-afe7-74a8a4b42535:vpn:
+USA - Chicago - Illinois:60ab577c-bd55-49b0-a316-66edee309f77:vpn:
+USA - Columbus - Ohio:b6eff338-f7da-49bd-b15a-feaa4ecc7ce1:vpn:
+USA - Dallas - Texas:acaddd96-1872-4eff-9694-b9d2e340751c:vpn:
+USA - Denver - Colorado:1000792d-bdd0-4806-91f4-97407736ce10:vpn:
+USA - Detroit - Michigan:2fbed031-248e-4717-9c92-684d136c7c87:vpn:
+USA - Los Angeles - California:7c6bce6c-1653-48ed-b8f7-991905eb4266:vpn:
+USA - McAllen - Texas:9f0cfa31-e630-477b-89b5-a5bc48d1b8ce:vpn:
+USA - Memphis - Tennesse:2b753bd4-bcb9-46b1-8ff3-449c8fe4b455:vpn:
+USA - Miami - Florida:de9c756c-904a-41c7-acc8-30220cedbb27:vpn:
+USA - New York - New York:a02e3ec0-625a-4963-98ee-170e03e499ad:vpn:
+USA - Philadelphia - Pennsylvania:adf86d48-fda3-48c5-9319-16798a5343a4:vpn:
+USA - Phoenix - Arizona:afacb05d-c83c-4bd3-9faa-de594f9d0dbb:vpn:
+USA - Salt Lake City - Utah:265a0e58-24f5-4636-8712-470d8e9df47b:vpn:
+USA - San Jose - California:0a1857f3-32b1-4121-821b-e72e37c6d236:vpn:
+USA - Seattle - Washington:2a8d9320-f6a9-4613-83fd-e4469d70ed03:vpn:
+USA - Secaucus - New Jersey:5b137885-01a8-4972-ad5d-93eb6ca578a4:vpn:
+USA - Washington DC:99f77be9-5332-4b01-881d-3fade3fa1255:vpn:
+Uzbekisan - Tashkent:8a1a3c13-319c-407a-a7fc-b8c246001409:vpn:
+Venezuela - Caracas:97de485d-13b4-4108-a8ce-2cf8cecdea0e:vpn:
+Vietnam - Hanoi:a2fbb76d-ab62-423e-af7c-1be622c95d71:vpn:
+VM8248525:d51bef88-c25d-4436-8a85-07af0122156c:802-11-wireless:
+Wired connection 1:45892adf-bbe7-3d77-9229-59cd1185632c:802-3-ethernet:
+Wired connection 2:992799a4-7870-3fe4-a2a4-020712610490:802-3-ethernet:
+Wired connection 3:c96fa050-d436-3f3c-bd85-4c1f2e9f11e5:802-3-ethernet:
+Yemen - Sana's:4260e13f-07b6-42f4-b8c0-6dcf2bea4b9c:vpn:
+
+[cmd] udevadm info --query=property --name usb0
+Unknown device "/dev/usb0": No such device
+
+[cmd] nmcli -f GENERAL.STATE\,GENERAL.REASON\,IP4.ADDRESS\,IP6.ADDRESS dev show eth0
+GENERAL.STATE:                          20 (unavailable)
+GENERAL.REASON:                         2 (Device is now managed)
+
+[cmd] nmcli -t -f NAME\,UUID\,TYPE\,DEVICE con show
+Asgard:f3ca130e-fe53-4890-a86d-84134513fcfd:802-11-wireless:wlan0
+tailscale0:ac8e40aa-9b06-4a0c-9d7a-8614a51f70e6:tun:tailscale0
+lo:8f4dcf87-0e10-4300-b7d2-b61b2439e99e:loopback:lo
+br-13520f3b6390:129100b4-f152-4032-b8a2-fdb0e7de9a8d:bridge:br-13520f3b6390
+br-7d7aefce0776:88f59496-e5db-4445-a227-c7eb325188d6:bridge:br-7d7aefce0776
+br-c6e43a602b2a:d8d76778-085d-44e0-9b3f-d262b1704063:bridge:br-c6e43a602b2a
+docker0:4e4a613c-4b4e-4cfa-9566-c0749c24ee5d:bridge:docker0
+eth1:18d755f3-c405-4c3d-822f-d771747a3b87:802-3-ethernet:eth1
+usb0:90c248d9-74da-4a44-af2b-1efddf17f753:802-3-ethernet:usb0
+Afghanistan - Kabul:392cf3f7-ecb0-4cf3-8f12-f39c759022ed:vpn:
+Albania - Tirana:0a34e396-2756-4de8-b808-edf0b4eacf07:vpn:
+Algeria - Algiers:82a718f7-7009-48aa-b92c-52629bc85797:vpn:
+Angola - Luanda:38d72729-3e7b-4253-86e9-407b2781af4b:vpn:
+Argentina - Buenos Aires:7530acf4-21bd-4ee0-930a-5b98c5806858:vpn:
+Armenia - Yerevan:3a18a01d-c8c4-4402-afba-91d664499d87:vpn:
+Australia - Adelaide:520e124d-0c17-4a2d-bbde-2139e9f2834b:vpn:
+Austria - Vienna:ed499e31-e2d4-49be-b4db-4002936985d3:vpn:
+Azerbaijan - Baku:3cf36c07-daeb-4f20-b964-60d56028e7aa:vpn:
+Bahrain:9f3ebeae-a8d5-4cd6-bbfd-f4730eae6f7a:vpn:
+Bangladesh:42c198a6-402e-4eae-8890-c0efa0ca4f18:vpn:
+Belarus - Minsk:ea00e022-6ed4-4f8d-9374-ee8cd88a5e7c:vpn:
+Belgium - Brussels:34c2129c-af7e-4985-854d-aec72557de52:vpn:
+Bhutan- Thimphu:e7e2ddff-0a9d-4e60-b19a-a83c44e48740:vpn:
+Bosnia - Novi Travnik:6e2efdaf-c414-4a96-b3e4-3c58dee3dd1f:vpn:
+Brazil - Sao Paulo:1685b0e0-ac53-4e9a-9869-270d067582d9:vpn:
+Brunei Darussalam - Bandar Seri Begawan:48eb05df-1c7c-4f64-9431-676734fc31ac:vpn:
+Bulgaria - Sofia:40cc1198-21d3-46a0-aba7-853a8b7e8e04:vpn:
+Cambodia - Phnom Penh:bb500ffc-7283-4f24-b020-5c6fc1d6596c:vpn:
+Cameroon - Yaounde:a99c7c75-76df-4911-ad8d-e21cc2823852:vpn:
+Canada - Montreal:96e130e2-3b90-4eed-b86d-947db757f762:vpn:
+Canada - Toronto:e43d369b-cbdb-45f4-8712-0d17b556fe73:vpn:
+Canada - Vancouver:9d7083ab-cd9c-42b1-9fbf-1f86907dc9b6:vpn:
+Chad - N'Djamena:ba34e74c-fdbb-4f66-8054-bd7ff0ff5b16:vpn:
+Chile - Santiago:b8eb31e3-345f-40bc-8def-5d5daeac2e57:vpn:
+Colombia - Bogota:e2d90356-5167-4703-b2fa-079adb0a6190:vpn:
+Comoros - Moroni:2fd5dbcf-0053-42ca-8048-0b367e877c6a:vpn:
+Costa Rica - San Jose:e2fb6fd1-2e11-458d-8d1f-d3fb323f4f77:vpn:
+Côte d'Ivoire - Yamoussoukro:35cf7266-a9d4-4806-8ab5-b807a9946844:vpn:
+Croatia - Zagreb:07f72026-eb3f-4994-9cbf-f101569a1384:vpn:
+Cuba - Havana:0bf36673-58d3-45c3-b81e-b8fe73a376a2:vpn:
+Cyprus - Limassol:3ce83c9d-db13-4923-bea0-f9ad66eaf4ab:vpn:
+Czech Republic - Prague:f75e7e16-a99e-451a-becd-f73e7c32cf30:vpn:
+Denmark - Copenhagen:64ed614c-7dee-474f-b7db-fab17eb39906:vpn:
+Dominican Republic - Santo Domingo:934f7641-20b2-4010-a482-8f6408974ea3:vpn:
+Ecuador - Quito:a4834b27-2c68-4b42-8a64-0a9a8e94b759:vpn:
+Egypt - Cairo:97a2e979-e2d0-431d-ad3a-a324fe8ce523:vpn:
+El Salvador - San Salvador:9d3c90fc-85ae-4fce-8a60-6310e3659dad:vpn:
+Eritrea - Asmara:0590e3b1-b3c1-42cd-8686-09a669be03c2:vpn:
+Estonia - Tallinn:5fcce529-b788-40db-848e-4bdc7d1d0be9:vpn:
+Ethiopia - 	Addis Ababa:b36995a4-62ac-4975-9df1-3640e3d84712:vpn:
+Finland - Helsinki:74e61a51-2f63-43b7-b0e1-87e9c7e8d8ff:vpn:
+France - Marseille:b8aa7fc0-3295-4a8c-b174-b89352c7cba7:vpn:
+France - Paris:292c0f2e-9e90-4c77-bf7c-7f8e7c94eaaf:vpn:
+Georgia - Tbilisi:6bab3cb5-f2ef-434d-84a7-0278b8622328:vpn:
+Germany - Berlin:8f426f2c-2896-49db-866d-079f93186808:vpn:
+Germany - Frankfurt:2dcbd79a-8ba2-414c-9c98-69445aa0ca28:vpn:
+Ghana - Accra:ca0bb52c-7166-4172-8aec-de7932ba8b21:vpn:
+Greece - Athens:e23e5d41-25f5-4271-981c-702e79dc6d74:vpn:
+Guatemala - Guatemala City:cdf886aa-40af-4242-b0d5-a245a8cc31ce:vpn:
+Honduras - 	Tegucigalpa:c536097f-c058-4222-aaea-25a5478c269a:vpn:
+Hong Kong - Hong Kong:fe5c4135-b5b1-4bd2-a77c-aafd41389747:vpn:
+Hungary - Budapest:bbb9b8ed-e3b4-4405-99a7-631b1519e0e3:vpn:
+Iceland - Reykjavik:2d8ae8af-5a2c-4936-87d8-f34e8cbca819:vpn:
+India - Mumbai:0e9800c2-22d8-4236-a955-f2968d2b9801:vpn:
+Indonesia:73191a17-f0d5-4a05-af9f-3a0241cf953b:vpn:
+Iraq - Baghdad:c12b9cdf-6cc9-4c1d-8634-7694663338a9:vpn:
+Ireland - Dublin:f458eeb4-0c19-4300-810a-11699fa05353:vpn:
+Israel - Tel Aviv:3afbc719-002c-4a85-8d47-b16ab409596d:vpn:
+Italy - Milan:01f2166e-3b52-4846-b00a-56d85fe1c8d3:vpn:
+Italy - Palermo:d75c7fbe-4cf1-4e06-bae9-78b06904413c:vpn:
+Japan - Osaka:003b6c73-59d2-49e1-a641-8242f1aca3b8:vpn:
+Japan - Tokyo:66cfa604-7e42-4cbf-8400-994a876bc148:vpn:
+Jordan - Amman:3389e9f3-3b38-46af-bbef-67a9981f70cc:vpn:
+Kazakhstan - Astana:ec310ab0-b9f4-41fe-a80f-0b92c958ee19:vpn:
+Kenya - Nairobi:7ff64cd1-61e9-4efc-b36b-419d3d4b2fd3:vpn:
+Korea - Seoul:db1c7937-6de4-48a4-8183-f5b832aa6ed3:vpn:
+Kuwait - Kuwait City:9436440e-e5da-45bb-817d-df1db4ef9835:vpn:
+Lao People's Democratic Republic
+- 	Vientiane:f50d7ef3-3d5a-4564-981f-fd78b6ec0277:vpn:
+Latvia - Riga:7daf8175-8fc4-4484-82c2-b3e155a208ec:vpn:
+Libyan Arab Jamahiriya - Tripoli:bc9a0792-a62b-47f8-95dc-d6f40b9f3cfc:vpn:
+Lithuania - Siauliai:e7d3a150-b0a3-4d41-a98c-4f40637dacf3:vpn:
+Lithuania - Vilnius:1ec27790-3726-4d5f-bbad-3daad87c9e40:vpn:
+Luxembourg - Luxembourg:e625e0d5-3cbb-4389-92df-baf907be4049:vpn:
+Malaysia - Kuala Lumpur:2ffaed23-66d0-4fd4-859f-da1c37d9a1a8:vpn:
+Malta - Valletta:eac36501-9e84-46c3-b630-54f327b809a6:vpn:
+Mauritania - Nouakchott:b5bdbd29-ae9c-4588-bed7-277c9a9748d5:vpn:
+Mauritius - 	Port Louis:9f491647-67ac-40c1-ae7f-3ce7a2082b9d:vpn:
+Mexico - Mexico City:354e081f-be7a-4b03-b131-399759e5906f:vpn:
+Mexico - Querétaro:00acc7e4-28d8-4bed-b8bb-33c5b54733ed:vpn:
+Moldova - Chisinau:cfb33f54-2491-442f-b944-db74c3162aaa:vpn:
+Mongolia - Ulaanbaatar:e02ffe91-cb26-4d23-8971-d07f5b46358b:vpn:
+Montenegro - Podgorica:f7fe03e3-a042-4847-9cd3-a28841cc9dba:vpn:
+Morocco - Casablanca:2e3316e7-e118-49e5-bf0f-2f4f40a6f058:vpn:
+Morocco - Rabat:95417cd9-bdf9-42fb-b615-65a83a6ee0e8:vpn:
+Mozambique - Maputo:b37913aa-4895-4765-abfb-88ed2cd942b2:vpn:
+Myanmar - Yangon:cea3fe56-9f3e-4aa2-ab68-40b3e385d685:vpn:
+Nepal - Kathmandu:f7151785-f22f-4bef-b5ed-69b24d4197df:vpn:
+Netherlands - Amsterdam:b8e337ca-91be-4499-a55e-7253f6a3e545:vpn:
+New Zealand - Auckland:9de214a7-cd70-472b-9ba5-a047b3d43b66:vpn:
+Nigeria - Abuja:856bc6b4-bcd0-42ca-95cc-cc4ce15eed1f:vpn:
+Nigeria - Lagos:1eb9813d-9128-4aff-a9a8-86bc545a5f4e:vpn:
+North Macedonia - Skopje:f2f5a33b-016b-407c-a112-7a7c443cc17c:vpn:
+Norway - Oslo:19af7a70-f6dc-4a35-9577-a8033d820902:vpn:
+Oman - Muscat:30020173-2f52-4fa1-b519-5735bde3a224:vpn:
+Pakistan - Karachi:9f1a03d3-7475-497a-96dd-c2876a794932:vpn:
+Palestinian Territories - Ramallah:c0f7bb9e-435b-4574-854e-c7f65f024c25:vpn:
+Panama - Panama City:64e11298-f1db-4a43-9ba1-9316ffffcac2:vpn:
+Peru - Lima:d29b2679-c700-4ce8-8d78-3533176a3727:vpn:
+Philippines - Manila:55749506-aa95-4b49-8a93-775f4efc6682:vpn:
+Poland - Warsaw:639eee38-b4b4-44c9-9118-7b16a0cdc643:vpn:
+Portugal - Lisbon:7f82c450-85ed-4255-9e0d-91469e713a33:vpn:
+Puerto Rico - Suan Juan:842b2612-fc1f-4a1d-86c1-3332c023bfcb:vpn:
+Quatar - Soha:9a6e3410-c625-4b83-b6f4-cc2221a0d7a0:vpn:
+Romania - Bucharest:00f3587f-2660-4ef9-b865-4c4222379c7a:vpn:
+Russia - Moscow:ff4c34f5-428a-470c-b0e7-661a47e1a345:vpn:
+Rwanda - Kigali:18c15341-1b60-49ef-a663-a57726d7f6a3:vpn:
+Saudi Arabia - Riyadh:d24df788-b3fa-4381-a6f2-30420cbed5c2:vpn:
+Senegal - Dakar:9ac08d8c-a957-4ce2-9f9d-02b440c0568c:vpn:
+Serbia - Belgrade:914c5eaa-f8b4-422c-85e0-4961d00f2be4:vpn:
+Singapore - Singapore:da8a5107-f5bc-4af7-abdd-9f29936c908c:vpn:
+Slovakia - Bratislava:3c720fbc-7fc1-488e-bbaa-aa7feb0fd3ad:vpn:
+Slovenia - Ljubljana:28794eea-847c-4215-abdc-8069bd8e0963:vpn:
+Somalia - Mogadishu:ef738f59-5861-48ed-ac2e-09e482a1eb67:vpn:
+South Africa - Johannesburg:d910d93e-759a-4d4b-9aaa-803ce86bc11d:vpn:
+South Sudan - Juba:868c4e4c-b77d-43cd-ae48-44b1733f7776:vpn:
+Spain - Barcelona:6d82df65-f0f1-450a-bc82-f9d7b5defbfb:vpn:
+Spain - Madrid:c02c837b-c8c4-482f-b756-c8be4317e6aa:vpn:
+Sri Lanka - Colombo:029c48ef-f615-451e-9b3d-69ba1d3e8e40:vpn:
+Sudan - Khartoum:3d96a87a-e1a1-49bf-957c-5b3cab494cab:vpn:
+Sweden - Stockholm:73e95d9d-f64b-4cef-bd0f-d4de143053b4:vpn:
+Switzerland - Zurich:39d43808-7b52-40f4-95c0-2b505fbbf7d1:vpn:
+Syrian Arab Republic - Damascus:918f3b34-9997-4ee0-85b7-ce10a083fa3e:vpn:
+Taiwan - Taichung:a6bea091-93ac-42e6-9aea-2bcfd57f1f61:vpn:
+Tajikistan - Dushanbe:fa7c3f07-e95e-425c-a1a3-6b114f4dc1ac:vpn:
+Tanzania - Dodoma:0ee15256-535c-4603-9eea-cb5779d76f41:vpn:
+Thailand - Bankok:5fd91f43-f09f-4f3a-b490-40e1888666e2:vpn:
+Togo - Lomé:38adbc06-1982-4ea3-acc9-a455862ec6fd:vpn:
+Tunisia - Tunis:40ff9ab8-bd53-4b15-ac12-e0d0fec5c447:vpn:
+Turkey - Istanbul:9a70d92d-ce9c-41f9-89d4-5f4024d0a561:vpn:
+Turkmenistan - Ashgabat:ba2cc2fd-9df3-4c01-a2ac-a0ce4bb657d0:vpn:
+Uganda - Kampala:c758b842-4cde-483f-8bfc-18149b4d5012:vpn:
+UK - Belfast:34647454-dcc9-43f0-8bf6-ac69c39b921d:vpn:
+UK - Cardiff:a6dc9809-5c90-4634-83ff-d41aa68cdab2:vpn:
+UK - Edinburgh:51477870-f847-4235-996f-f741c17fca8c:vpn:
+UK - London:4f37d42d-b7d6-40ae-aae9-dc297868a7e1:vpn:
+UK - Manchester:93486633-36ed-4599-9a39-db59ea2c26a5:vpn:
+Ukraine - Kyiv:2e9def21-6ac2-438a-9e71-c5d4201088a2:vpn:
+United Arab Emirates - Dubai:1ae8ed4e-4309-4188-813b-bc368a595320:vpn:
+USA - Ashburn - Virginia:0fa243e0-fc01-4f4c-af63-2b3b9593946d:vpn:
+USA - Atlanta:0c2de6cf-bfa5-480a-b9a9-0ef088fc9e34:vpn:
+USA - Boston - Massachusetts:be800938-1fab-40d9-bcd6-4efbfc58aca9:vpn:
+USA - Charlotte - North Carolina:f7d31fcf-d534-4256-afe7-74a8a4b42535:vpn:
+USA - Chicago - Illinois:60ab577c-bd55-49b0-a316-66edee309f77:vpn:
+USA - Columbus - Ohio:b6eff338-f7da-49bd-b15a-feaa4ecc7ce1:vpn:
+USA - Dallas - Texas:acaddd96-1872-4eff-9694-b9d2e340751c:vpn:
+USA - Denver - Colorado:1000792d-bdd0-4806-91f4-97407736ce10:vpn:
+USA - Detroit - Michigan:2fbed031-248e-4717-9c92-684d136c7c87:vpn:
+USA - Los Angeles - California:7c6bce6c-1653-48ed-b8f7-991905eb4266:vpn:
+USA - McAllen - Texas:9f0cfa31-e630-477b-89b5-a5bc48d1b8ce:vpn:
+USA - Memphis - Tennesse:2b753bd4-bcb9-46b1-8ff3-449c8fe4b455:vpn:
+USA - Miami - Florida:de9c756c-904a-41c7-acc8-30220cedbb27:vpn:
+USA - New York - New York:a02e3ec0-625a-4963-98ee-170e03e499ad:vpn:
+USA - Philadelphia - Pennsylvania:adf86d48-fda3-48c5-9319-16798a5343a4:vpn:
+USA - Phoenix - Arizona:afacb05d-c83c-4bd3-9faa-de594f9d0dbb:vpn:
+USA - Salt Lake City - Utah:265a0e58-24f5-4636-8712-470d8e9df47b:vpn:
+USA - San Jose - California:0a1857f3-32b1-4121-821b-e72e37c6d236:vpn:
+USA - Seattle - Washington:2a8d9320-f6a9-4613-83fd-e4469d70ed03:vpn:
+USA - Secaucus - New Jersey:5b137885-01a8-4972-ad5d-93eb6ca578a4:vpn:
+USA - Washington DC:99f77be9-5332-4b01-881d-3fade3fa1255:vpn:
+Uzbekisan - Tashkent:8a1a3c13-319c-407a-a7fc-b8c246001409:vpn:
+Venezuela - Caracas:97de485d-13b4-4108-a8ce-2cf8cecdea0e:vpn:
+Vietnam - Hanoi:a2fbb76d-ab62-423e-af7c-1be622c95d71:vpn:
+VM8248525:d51bef88-c25d-4436-8a85-07af0122156c:802-11-wireless:
+Wired connection 1:45892adf-bbe7-3d77-9229-59cd1185632c:802-3-ethernet:
+Wired connection 2:992799a4-7870-3fe4-a2a4-020712610490:802-3-ethernet:
+Wired connection 3:c96fa050-d436-3f3c-bd85-4c1f2e9f11e5:802-3-ethernet:
+Yemen - Sana's:4260e13f-07b6-42f4-b8c0-6dcf2bea4b9c:vpn:
+
+[cmd] udevadm info --query=property --name eth0
+Unknown device "/dev/eth0": No such device
+
+[cmd] nmcli -f GENERAL.STATE\,GENERAL.REASON\,IP4.ADDRESS\,IP6.ADDRESS dev show eth1
+GENERAL.STATE:                          100 (connected (externally))
+GENERAL.REASON:                         0 (No reason given)
+IP4.ADDRESS[1]:                         10.0.0.1/24
+
+[cmd] nmcli -t -f NAME\,UUID\,TYPE\,DEVICE con show
+Asgard:f3ca130e-fe53-4890-a86d-84134513fcfd:802-11-wireless:wlan0
+tailscale0:ac8e40aa-9b06-4a0c-9d7a-8614a51f70e6:tun:tailscale0
+lo:8f4dcf87-0e10-4300-b7d2-b61b2439e99e:loopback:lo
+br-13520f3b6390:129100b4-f152-4032-b8a2-fdb0e7de9a8d:bridge:br-13520f3b6390
+br-7d7aefce0776:88f59496-e5db-4445-a227-c7eb325188d6:bridge:br-7d7aefce0776
+br-c6e43a602b2a:d8d76778-085d-44e0-9b3f-d262b1704063:bridge:br-c6e43a602b2a
+docker0:4e4a613c-4b4e-4cfa-9566-c0749c24ee5d:bridge:docker0
+eth1:18d755f3-c405-4c3d-822f-d771747a3b87:802-3-ethernet:eth1
+usb0:90c248d9-74da-4a44-af2b-1efddf17f753:802-3-ethernet:usb0
+Afghanistan - Kabul:392cf3f7-ecb0-4cf3-8f12-f39c759022ed:vpn:
+Albania - Tirana:0a34e396-2756-4de8-b808-edf0b4eacf07:vpn:
+Algeria - Algiers:82a718f7-7009-48aa-b92c-52629bc85797:vpn:
+Angola - Luanda:38d72729-3e7b-4253-86e9-407b2781af4b:vpn:
+Argentina - Buenos Aires:7530acf4-21bd-4ee0-930a-5b98c5806858:vpn:
+Armenia - Yerevan:3a18a01d-c8c4-4402-afba-91d664499d87:vpn:
+Australia - Adelaide:520e124d-0c17-4a2d-bbde-2139e9f2834b:vpn:
+Austria - Vienna:ed499e31-e2d4-49be-b4db-4002936985d3:vpn:
+Azerbaijan - Baku:3cf36c07-daeb-4f20-b964-60d56028e7aa:vpn:
+Bahrain:9f3ebeae-a8d5-4cd6-bbfd-f4730eae6f7a:vpn:
+Bangladesh:42c198a6-402e-4eae-8890-c0efa0ca4f18:vpn:
+Belarus - Minsk:ea00e022-6ed4-4f8d-9374-ee8cd88a5e7c:vpn:
+Belgium - Brussels:34c2129c-af7e-4985-854d-aec72557de52:vpn:
+Bhutan- Thimphu:e7e2ddff-0a9d-4e60-b19a-a83c44e48740:vpn:
+Bosnia - Novi Travnik:6e2efdaf-c414-4a96-b3e4-3c58dee3dd1f:vpn:
+Brazil - Sao Paulo:1685b0e0-ac53-4e9a-9869-270d067582d9:vpn:
+Brunei Darussalam - Bandar Seri Begawan:48eb05df-1c7c-4f64-9431-676734fc31ac:vpn:
+Bulgaria - Sofia:40cc1198-21d3-46a0-aba7-853a8b7e8e04:vpn:
+Cambodia - Phnom Penh:bb500ffc-7283-4f24-b020-5c6fc1d6596c:vpn:
+Cameroon - Yaounde:a99c7c75-76df-4911-ad8d-e21cc2823852:vpn:
+Canada - Montreal:96e130e2-3b90-4eed-b86d-947db757f762:vpn:
+Canada - Toronto:e43d369b-cbdb-45f4-8712-0d17b556fe73:vpn:
+Canada - Vancouver:9d7083ab-cd9c-42b1-9fbf-1f86907dc9b6:vpn:
+Chad - N'Djamena:ba34e74c-fdbb-4f66-8054-bd7ff0ff5b16:vpn:
+Chile - Santiago:b8eb31e3-345f-40bc-8def-5d5daeac2e57:vpn:
+Colombia - Bogota:e2d90356-5167-4703-b2fa-079adb0a6190:vpn:
+Comoros - Moroni:2fd5dbcf-0053-42ca-8048-0b367e877c6a:vpn:
+Costa Rica - San Jose:e2fb6fd1-2e11-458d-8d1f-d3fb323f4f77:vpn:
+Côte d'Ivoire - Yamoussoukro:35cf7266-a9d4-4806-8ab5-b807a9946844:vpn:
+Croatia - Zagreb:07f72026-eb3f-4994-9cbf-f101569a1384:vpn:
+Cuba - Havana:0bf36673-58d3-45c3-b81e-b8fe73a376a2:vpn:
+Cyprus - Limassol:3ce83c9d-db13-4923-bea0-f9ad66eaf4ab:vpn:
+Czech Republic - Prague:f75e7e16-a99e-451a-becd-f73e7c32cf30:vpn:
+Denmark - Copenhagen:64ed614c-7dee-474f-b7db-fab17eb39906:vpn:
+Dominican Republic - Santo Domingo:934f7641-20b2-4010-a482-8f6408974ea3:vpn:
+Ecuador - Quito:a4834b27-2c68-4b42-8a64-0a9a8e94b759:vpn:
+Egypt - Cairo:97a2e979-e2d0-431d-ad3a-a324fe8ce523:vpn:
+El Salvador - San Salvador:9d3c90fc-85ae-4fce-8a60-6310e3659dad:vpn:
+Eritrea - Asmara:0590e3b1-b3c1-42cd-8686-09a669be03c2:vpn:
+Estonia - Tallinn:5fcce529-b788-40db-848e-4bdc7d1d0be9:vpn:
+Ethiopia - 	Addis Ababa:b36995a4-62ac-4975-9df1-3640e3d84712:vpn:
+Finland - Helsinki:74e61a51-2f63-43b7-b0e1-87e9c7e8d8ff:vpn:
+France - Marseille:b8aa7fc0-3295-4a8c-b174-b89352c7cba7:vpn:
+France - Paris:292c0f2e-9e90-4c77-bf7c-7f8e7c94eaaf:vpn:
+Georgia - Tbilisi:6bab3cb5-f2ef-434d-84a7-0278b8622328:vpn:
+Germany - Berlin:8f426f2c-2896-49db-866d-079f93186808:vpn:
+Germany - Frankfurt:2dcbd79a-8ba2-414c-9c98-69445aa0ca28:vpn:
+Ghana - Accra:ca0bb52c-7166-4172-8aec-de7932ba8b21:vpn:
+Greece - Athens:e23e5d41-25f5-4271-981c-702e79dc6d74:vpn:
+Guatemala - Guatemala City:cdf886aa-40af-4242-b0d5-a245a8cc31ce:vpn:
+Honduras - 	Tegucigalpa:c536097f-c058-4222-aaea-25a5478c269a:vpn:
+Hong Kong - Hong Kong:fe5c4135-b5b1-4bd2-a77c-aafd41389747:vpn:
+Hungary - Budapest:bbb9b8ed-e3b4-4405-99a7-631b1519e0e3:vpn:
+Iceland - Reykjavik:2d8ae8af-5a2c-4936-87d8-f34e8cbca819:vpn:
+India - Mumbai:0e9800c2-22d8-4236-a955-f2968d2b9801:vpn:
+Indonesia:73191a17-f0d5-4a05-af9f-3a0241cf953b:vpn:
+Iraq - Baghdad:c12b9cdf-6cc9-4c1d-8634-7694663338a9:vpn:
+Ireland - Dublin:f458eeb4-0c19-4300-810a-11699fa05353:vpn:
+Israel - Tel Aviv:3afbc719-002c-4a85-8d47-b16ab409596d:vpn:
+Italy - Milan:01f2166e-3b52-4846-b00a-56d85fe1c8d3:vpn:
+Italy - Palermo:d75c7fbe-4cf1-4e06-bae9-78b06904413c:vpn:
+Japan - Osaka:003b6c73-59d2-49e1-a641-8242f1aca3b8:vpn:
+Japan - Tokyo:66cfa604-7e42-4cbf-8400-994a876bc148:vpn:
+Jordan - Amman:3389e9f3-3b38-46af-bbef-67a9981f70cc:vpn:
+Kazakhstan - Astana:ec310ab0-b9f4-41fe-a80f-0b92c958ee19:vpn:
+Kenya - Nairobi:7ff64cd1-61e9-4efc-b36b-419d3d4b2fd3:vpn:
+Korea - Seoul:db1c7937-6de4-48a4-8183-f5b832aa6ed3:vpn:
+Kuwait - Kuwait City:9436440e-e5da-45bb-817d-df1db4ef9835:vpn:
+Lao People's Democratic Republic
+- 	Vientiane:f50d7ef3-3d5a-4564-981f-fd78b6ec0277:vpn:
+Latvia - Riga:7daf8175-8fc4-4484-82c2-b3e155a208ec:vpn:
+Libyan Arab Jamahiriya - Tripoli:bc9a0792-a62b-47f8-95dc-d6f40b9f3cfc:vpn:
+Lithuania - Siauliai:e7d3a150-b0a3-4d41-a98c-4f40637dacf3:vpn:
+Lithuania - Vilnius:1ec27790-3726-4d5f-bbad-3daad87c9e40:vpn:
+Luxembourg - Luxembourg:e625e0d5-3cbb-4389-92df-baf907be4049:vpn:
+Malaysia - Kuala Lumpur:2ffaed23-66d0-4fd4-859f-da1c37d9a1a8:vpn:
+Malta - Valletta:eac36501-9e84-46c3-b630-54f327b809a6:vpn:
+Mauritania - Nouakchott:b5bdbd29-ae9c-4588-bed7-277c9a9748d5:vpn:
+Mauritius - 	Port Louis:9f491647-67ac-40c1-ae7f-3ce7a2082b9d:vpn:
+Mexico - Mexico City:354e081f-be7a-4b03-b131-399759e5906f:vpn:
+Mexico - Querétaro:00acc7e4-28d8-4bed-b8bb-33c5b54733ed:vpn:
+Moldova - Chisinau:cfb33f54-2491-442f-b944-db74c3162aaa:vpn:
+Mongolia - Ulaanbaatar:e02ffe91-cb26-4d23-8971-d07f5b46358b:vpn:
+Montenegro - Podgorica:f7fe03e3-a042-4847-9cd3-a28841cc9dba:vpn:
+Morocco - Casablanca:2e3316e7-e118-49e5-bf0f-2f4f40a6f058:vpn:
+Morocco - Rabat:95417cd9-bdf9-42fb-b615-65a83a6ee0e8:vpn:
+Mozambique - Maputo:b37913aa-4895-4765-abfb-88ed2cd942b2:vpn:
+Myanmar - Yangon:cea3fe56-9f3e-4aa2-ab68-40b3e385d685:vpn:
+Nepal - Kathmandu:f7151785-f22f-4bef-b5ed-69b24d4197df:vpn:
+Netherlands - Amsterdam:b8e337ca-91be-4499-a55e-7253f6a3e545:vpn:
+New Zealand - Auckland:9de214a7-cd70-472b-9ba5-a047b3d43b66:vpn:
+Nigeria - Abuja:856bc6b4-bcd0-42ca-95cc-cc4ce15eed1f:vpn:
+Nigeria - Lagos:1eb9813d-9128-4aff-a9a8-86bc545a5f4e:vpn:
+North Macedonia - Skopje:f2f5a33b-016b-407c-a112-7a7c443cc17c:vpn:
+Norway - Oslo:19af7a70-f6dc-4a35-9577-a8033d820902:vpn:
+Oman - Muscat:30020173-2f52-4fa1-b519-5735bde3a224:vpn:
+Pakistan - Karachi:9f1a03d3-7475-497a-96dd-c2876a794932:vpn:
+Palestinian Territories - Ramallah:c0f7bb9e-435b-4574-854e-c7f65f024c25:vpn:
+Panama - Panama City:64e11298-f1db-4a43-9ba1-9316ffffcac2:vpn:
+Peru - Lima:d29b2679-c700-4ce8-8d78-3533176a3727:vpn:
+Philippines - Manila:55749506-aa95-4b49-8a93-775f4efc6682:vpn:
+Poland - Warsaw:639eee38-b4b4-44c9-9118-7b16a0cdc643:vpn:
+Portugal - Lisbon:7f82c450-85ed-4255-9e0d-91469e713a33:vpn:
+Puerto Rico - Suan Juan:842b2612-fc1f-4a1d-86c1-3332c023bfcb:vpn:
+Quatar - Soha:9a6e3410-c625-4b83-b6f4-cc2221a0d7a0:vpn:
+Romania - Bucharest:00f3587f-2660-4ef9-b865-4c4222379c7a:vpn:
+Russia - Moscow:ff4c34f5-428a-470c-b0e7-661a47e1a345:vpn:
+Rwanda - Kigali:18c15341-1b60-49ef-a663-a57726d7f6a3:vpn:
+Saudi Arabia - Riyadh:d24df788-b3fa-4381-a6f2-30420cbed5c2:vpn:
+Senegal - Dakar:9ac08d8c-a957-4ce2-9f9d-02b440c0568c:vpn:
+Serbia - Belgrade:914c5eaa-f8b4-422c-85e0-4961d00f2be4:vpn:
+Singapore - Singapore:da8a5107-f5bc-4af7-abdd-9f29936c908c:vpn:
+Slovakia - Bratislava:3c720fbc-7fc1-488e-bbaa-aa7feb0fd3ad:vpn:
+Slovenia - Ljubljana:28794eea-847c-4215-abdc-8069bd8e0963:vpn:
+Somalia - Mogadishu:ef738f59-5861-48ed-ac2e-09e482a1eb67:vpn:
+South Africa - Johannesburg:d910d93e-759a-4d4b-9aaa-803ce86bc11d:vpn:
+South Sudan - Juba:868c4e4c-b77d-43cd-ae48-44b1733f7776:vpn:
+Spain - Barcelona:6d82df65-f0f1-450a-bc82-f9d7b5defbfb:vpn:
+Spain - Madrid:c02c837b-c8c4-482f-b756-c8be4317e6aa:vpn:
+Sri Lanka - Colombo:029c48ef-f615-451e-9b3d-69ba1d3e8e40:vpn:
+Sudan - Khartoum:3d96a87a-e1a1-49bf-957c-5b3cab494cab:vpn:
+Sweden - Stockholm:73e95d9d-f64b-4cef-bd0f-d4de143053b4:vpn:
+Switzerland - Zurich:39d43808-7b52-40f4-95c0-2b505fbbf7d1:vpn:
+Syrian Arab Republic - Damascus:918f3b34-9997-4ee0-85b7-ce10a083fa3e:vpn:
+Taiwan - Taichung:a6bea091-93ac-42e6-9aea-2bcfd57f1f61:vpn:
+Tajikistan - Dushanbe:fa7c3f07-e95e-425c-a1a3-6b114f4dc1ac:vpn:
+Tanzania - Dodoma:0ee15256-535c-4603-9eea-cb5779d76f41:vpn:
+Thailand - Bankok:5fd91f43-f09f-4f3a-b490-40e1888666e2:vpn:
+Togo - Lomé:38adbc06-1982-4ea3-acc9-a455862ec6fd:vpn:
+Tunisia - Tunis:40ff9ab8-bd53-4b15-ac12-e0d0fec5c447:vpn:
+Turkey - Istanbul:9a70d92d-ce9c-41f9-89d4-5f4024d0a561:vpn:
+Turkmenistan - Ashgabat:ba2cc2fd-9df3-4c01-a2ac-a0ce4bb657d0:vpn:
+Uganda - Kampala:c758b842-4cde-483f-8bfc-18149b4d5012:vpn:
+UK - Belfast:34647454-dcc9-43f0-8bf6-ac69c39b921d:vpn:
+UK - Cardiff:a6dc9809-5c90-4634-83ff-d41aa68cdab2:vpn:
+UK - Edinburgh:51477870-f847-4235-996f-f741c17fca8c:vpn:
+UK - London:4f37d42d-b7d6-40ae-aae9-dc297868a7e1:vpn:
+UK - Manchester:93486633-36ed-4599-9a39-db59ea2c26a5:vpn:
+Ukraine - Kyiv:2e9def21-6ac2-438a-9e71-c5d4201088a2:vpn:
+United Arab Emirates - Dubai:1ae8ed4e-4309-4188-813b-bc368a595320:vpn:
+USA - Ashburn - Virginia:0fa243e0-fc01-4f4c-af63-2b3b9593946d:vpn:
+USA - Atlanta:0c2de6cf-bfa5-480a-b9a9-0ef088fc9e34:vpn:
+USA - Boston - Massachusetts:be800938-1fab-40d9-bcd6-4efbfc58aca9:vpn:
+USA - Charlotte - North Carolina:f7d31fcf-d534-4256-afe7-74a8a4b42535:vpn:
+USA - Chicago - Illinois:60ab577c-bd55-49b0-a316-66edee309f77:vpn:
+USA - Columbus - Ohio:b6eff338-f7da-49bd-b15a-feaa4ecc7ce1:vpn:
+USA - Dallas - Texas:acaddd96-1872-4eff-9694-b9d2e340751c:vpn:
+USA - Denver - Colorado:1000792d-bdd0-4806-91f4-97407736ce10:vpn:
+USA - Detroit - Michigan:2fbed031-248e-4717-9c92-684d136c7c87:vpn:
+USA - Los Angeles - California:7c6bce6c-1653-48ed-b8f7-991905eb4266:vpn:
+USA - McAllen - Texas:9f0cfa31-e630-477b-89b5-a5bc48d1b8ce:vpn:
+USA - Memphis - Tennesse:2b753bd4-bcb9-46b1-8ff3-449c8fe4b455:vpn:
+USA - Miami - Florida:de9c756c-904a-41c7-acc8-30220cedbb27:vpn:
+USA - New York - New York:a02e3ec0-625a-4963-98ee-170e03e499ad:vpn:
+USA - Philadelphia - Pennsylvania:adf86d48-fda3-48c5-9319-16798a5343a4:vpn:
+USA - Phoenix - Arizona:afacb05d-c83c-4bd3-9faa-de594f9d0dbb:vpn:
+USA - Salt Lake City - Utah:265a0e58-24f5-4636-8712-470d8e9df47b:vpn:
+USA - San Jose - California:0a1857f3-32b1-4121-821b-e72e37c6d236:vpn:
+USA - Seattle - Washington:2a8d9320-f6a9-4613-83fd-e4469d70ed03:vpn:
+USA - Secaucus - New Jersey:5b137885-01a8-4972-ad5d-93eb6ca578a4:vpn:
+USA - Washington DC:99f77be9-5332-4b01-881d-3fade3fa1255:vpn:
+Uzbekisan - Tashkent:8a1a3c13-319c-407a-a7fc-b8c246001409:vpn:
+Venezuela - Caracas:97de485d-13b4-4108-a8ce-2cf8cecdea0e:vpn:
+Vietnam - Hanoi:a2fbb76d-ab62-423e-af7c-1be622c95d71:vpn:
+VM8248525:d51bef88-c25d-4436-8a85-07af0122156c:802-11-wireless:
+Wired connection 1:45892adf-bbe7-3d77-9229-59cd1185632c:802-3-ethernet:
+Wired connection 2:992799a4-7870-3fe4-a2a4-020712610490:802-3-ethernet:
+Wired connection 3:c96fa050-d436-3f3c-bd85-4c1f2e9f11e5:802-3-ethernet:
+Yemen - Sana's:4260e13f-07b6-42f4-b8c0-6dcf2bea4b9c:vpn:
+
+[cmd] udevadm info --query=property --name eth1
+Unknown device "/dev/eth1": No such device
+
+[cmd] nmcli -f GENERAL.STATE\,GENERAL.REASON\,IP4.ADDRESS\,IP6.ADDRESS dev show wlan0
+GENERAL.STATE:                          100 (connected)
+GENERAL.REASON:                         0 (No reason given)
+IP4.ADDRESS[1]:                         10.68.87.43/24
+IP6.ADDRESS[1]:                         fe80::ca94:2ff:fee1:4ba1/64
+
+[cmd] nmcli -t -f NAME\,UUID\,TYPE\,DEVICE con show
+Asgard:f3ca130e-fe53-4890-a86d-84134513fcfd:802-11-wireless:wlan0
+tailscale0:ac8e40aa-9b06-4a0c-9d7a-8614a51f70e6:tun:tailscale0
+lo:8f4dcf87-0e10-4300-b7d2-b61b2439e99e:loopback:lo
+br-13520f3b6390:129100b4-f152-4032-b8a2-fdb0e7de9a8d:bridge:br-13520f3b6390
+br-7d7aefce0776:88f59496-e5db-4445-a227-c7eb325188d6:bridge:br-7d7aefce0776
+br-c6e43a602b2a:d8d76778-085d-44e0-9b3f-d262b1704063:bridge:br-c6e43a602b2a
+docker0:4e4a613c-4b4e-4cfa-9566-c0749c24ee5d:bridge:docker0
+eth1:18d755f3-c405-4c3d-822f-d771747a3b87:802-3-ethernet:eth1
+usb0:90c248d9-74da-4a44-af2b-1efddf17f753:802-3-ethernet:usb0
+Afghanistan - Kabul:392cf3f7-ecb0-4cf3-8f12-f39c759022ed:vpn:
+Albania - Tirana:0a34e396-2756-4de8-b808-edf0b4eacf07:vpn:
+Algeria - Algiers:82a718f7-7009-48aa-b92c-52629bc85797:vpn:
+Angola - Luanda:38d72729-3e7b-4253-86e9-407b2781af4b:vpn:
+Argentina - Buenos Aires:7530acf4-21bd-4ee0-930a-5b98c5806858:vpn:
+Armenia - Yerevan:3a18a01d-c8c4-4402-afba-91d664499d87:vpn:
+Australia - Adelaide:520e124d-0c17-4a2d-bbde-2139e9f2834b:vpn:
+Austria - Vienna:ed499e31-e2d4-49be-b4db-4002936985d3:vpn:
+Azerbaijan - Baku:3cf36c07-daeb-4f20-b964-60d56028e7aa:vpn:
+Bahrain:9f3ebeae-a8d5-4cd6-bbfd-f4730eae6f7a:vpn:
+Bangladesh:42c198a6-402e-4eae-8890-c0efa0ca4f18:vpn:
+Belarus - Minsk:ea00e022-6ed4-4f8d-9374-ee8cd88a5e7c:vpn:
+Belgium - Brussels:34c2129c-af7e-4985-854d-aec72557de52:vpn:
+Bhutan- Thimphu:e7e2ddff-0a9d-4e60-b19a-a83c44e48740:vpn:
+Bosnia - Novi Travnik:6e2efdaf-c414-4a96-b3e4-3c58dee3dd1f:vpn:
+Brazil - Sao Paulo:1685b0e0-ac53-4e9a-9869-270d067582d9:vpn:
+Brunei Darussalam - Bandar Seri Begawan:48eb05df-1c7c-4f64-9431-676734fc31ac:vpn:
+Bulgaria - Sofia:40cc1198-21d3-46a0-aba7-853a8b7e8e04:vpn:
+Cambodia - Phnom Penh:bb500ffc-7283-4f24-b020-5c6fc1d6596c:vpn:
+Cameroon - Yaounde:a99c7c75-76df-4911-ad8d-e21cc2823852:vpn:
+Canada - Montreal:96e130e2-3b90-4eed-b86d-947db757f762:vpn:
+Canada - Toronto:e43d369b-cbdb-45f4-8712-0d17b556fe73:vpn:
+Canada - Vancouver:9d7083ab-cd9c-42b1-9fbf-1f86907dc9b6:vpn:
+Chad - N'Djamena:ba34e74c-fdbb-4f66-8054-bd7ff0ff5b16:vpn:
+Chile - Santiago:b8eb31e3-345f-40bc-8def-5d5daeac2e57:vpn:
+Colombia - Bogota:e2d90356-5167-4703-b2fa-079adb0a6190:vpn:
+Comoros - Moroni:2fd5dbcf-0053-42ca-8048-0b367e877c6a:vpn:
+Costa Rica - San Jose:e2fb6fd1-2e11-458d-8d1f-d3fb323f4f77:vpn:
+Côte d'Ivoire - Yamoussoukro:35cf7266-a9d4-4806-8ab5-b807a9946844:vpn:
+Croatia - Zagreb:07f72026-eb3f-4994-9cbf-f101569a1384:vpn:
+Cuba - Havana:0bf36673-58d3-45c3-b81e-b8fe73a376a2:vpn:
+Cyprus - Limassol:3ce83c9d-db13-4923-bea0-f9ad66eaf4ab:vpn:
+Czech Republic - Prague:f75e7e16-a99e-451a-becd-f73e7c32cf30:vpn:
+Denmark - Copenhagen:64ed614c-7dee-474f-b7db-fab17eb39906:vpn:
+Dominican Republic - Santo Domingo:934f7641-20b2-4010-a482-8f6408974ea3:vpn:
+Ecuador - Quito:a4834b27-2c68-4b42-8a64-0a9a8e94b759:vpn:
+Egypt - Cairo:97a2e979-e2d0-431d-ad3a-a324fe8ce523:vpn:
+El Salvador - San Salvador:9d3c90fc-85ae-4fce-8a60-6310e3659dad:vpn:
+Eritrea - Asmara:0590e3b1-b3c1-42cd-8686-09a669be03c2:vpn:
+Estonia - Tallinn:5fcce529-b788-40db-848e-4bdc7d1d0be9:vpn:
+Ethiopia - 	Addis Ababa:b36995a4-62ac-4975-9df1-3640e3d84712:vpn:
+Finland - Helsinki:74e61a51-2f63-43b7-b0e1-87e9c7e8d8ff:vpn:
+France - Marseille:b8aa7fc0-3295-4a8c-b174-b89352c7cba7:vpn:
+France - Paris:292c0f2e-9e90-4c77-bf7c-7f8e7c94eaaf:vpn:
+Georgia - Tbilisi:6bab3cb5-f2ef-434d-84a7-0278b8622328:vpn:
+Germany - Berlin:8f426f2c-2896-49db-866d-079f93186808:vpn:
+Germany - Frankfurt:2dcbd79a-8ba2-414c-9c98-69445aa0ca28:vpn:
+Ghana - Accra:ca0bb52c-7166-4172-8aec-de7932ba8b21:vpn:
+Greece - Athens:e23e5d41-25f5-4271-981c-702e79dc6d74:vpn:
+Guatemala - Guatemala City:cdf886aa-40af-4242-b0d5-a245a8cc31ce:vpn:
+Honduras - 	Tegucigalpa:c536097f-c058-4222-aaea-25a5478c269a:vpn:
+Hong Kong - Hong Kong:fe5c4135-b5b1-4bd2-a77c-aafd41389747:vpn:
+Hungary - Budapest:bbb9b8ed-e3b4-4405-99a7-631b1519e0e3:vpn:
+Iceland - Reykjavik:2d8ae8af-5a2c-4936-87d8-f34e8cbca819:vpn:
+India - Mumbai:0e9800c2-22d8-4236-a955-f2968d2b9801:vpn:
+Indonesia:73191a17-f0d5-4a05-af9f-3a0241cf953b:vpn:
+Iraq - Baghdad:c12b9cdf-6cc9-4c1d-8634-7694663338a9:vpn:
+Ireland - Dublin:f458eeb4-0c19-4300-810a-11699fa05353:vpn:
+Israel - Tel Aviv:3afbc719-002c-4a85-8d47-b16ab409596d:vpn:
+Italy - Milan:01f2166e-3b52-4846-b00a-56d85fe1c8d3:vpn:
+Italy - Palermo:d75c7fbe-4cf1-4e06-bae9-78b06904413c:vpn:
+Japan - Osaka:003b6c73-59d2-49e1-a641-8242f1aca3b8:vpn:
+Japan - Tokyo:66cfa604-7e42-4cbf-8400-994a876bc148:vpn:
+Jordan - Amman:3389e9f3-3b38-46af-bbef-67a9981f70cc:vpn:
+Kazakhstan - Astana:ec310ab0-b9f4-41fe-a80f-0b92c958ee19:vpn:
+Kenya - Nairobi:7ff64cd1-61e9-4efc-b36b-419d3d4b2fd3:vpn:
+Korea - Seoul:db1c7937-6de4-48a4-8183-f5b832aa6ed3:vpn:
+Kuwait - Kuwait City:9436440e-e5da-45bb-817d-df1db4ef9835:vpn:
+Lao People's Democratic Republic
+- 	Vientiane:f50d7ef3-3d5a-4564-981f-fd78b6ec0277:vpn:
+Latvia - Riga:7daf8175-8fc4-4484-82c2-b3e155a208ec:vpn:
+Libyan Arab Jamahiriya - Tripoli:bc9a0792-a62b-47f8-95dc-d6f40b9f3cfc:vpn:
+Lithuania - Siauliai:e7d3a150-b0a3-4d41-a98c-4f40637dacf3:vpn:
+Lithuania - Vilnius:1ec27790-3726-4d5f-bbad-3daad87c9e40:vpn:
+Luxembourg - Luxembourg:e625e0d5-3cbb-4389-92df-baf907be4049:vpn:
+Malaysia - Kuala Lumpur:2ffaed23-66d0-4fd4-859f-da1c37d9a1a8:vpn:
+Malta - Valletta:eac36501-9e84-46c3-b630-54f327b809a6:vpn:
+Mauritania - Nouakchott:b5bdbd29-ae9c-4588-bed7-277c9a9748d5:vpn:
+Mauritius - 	Port Louis:9f491647-67ac-40c1-ae7f-3ce7a2082b9d:vpn:
+Mexico - Mexico City:354e081f-be7a-4b03-b131-399759e5906f:vpn:
+Mexico - Querétaro:00acc7e4-28d8-4bed-b8bb-33c5b54733ed:vpn:
+Moldova - Chisinau:cfb33f54-2491-442f-b944-db74c3162aaa:vpn:
+Mongolia - Ulaanbaatar:e02ffe91-cb26-4d23-8971-d07f5b46358b:vpn:
+Montenegro - Podgorica:f7fe03e3-a042-4847-9cd3-a28841cc9dba:vpn:
+Morocco - Casablanca:2e3316e7-e118-49e5-bf0f-2f4f40a6f058:vpn:
+Morocco - Rabat:95417cd9-bdf9-42fb-b615-65a83a6ee0e8:vpn:
+Mozambique - Maputo:b37913aa-4895-4765-abfb-88ed2cd942b2:vpn:
+Myanmar - Yangon:cea3fe56-9f3e-4aa2-ab68-40b3e385d685:vpn:
+Nepal - Kathmandu:f7151785-f22f-4bef-b5ed-69b24d4197df:vpn:
+Netherlands - Amsterdam:b8e337ca-91be-4499-a55e-7253f6a3e545:vpn:
+New Zealand - Auckland:9de214a7-cd70-472b-9ba5-a047b3d43b66:vpn:
+Nigeria - Abuja:856bc6b4-bcd0-42ca-95cc-cc4ce15eed1f:vpn:
+Nigeria - Lagos:1eb9813d-9128-4aff-a9a8-86bc545a5f4e:vpn:
+North Macedonia - Skopje:f2f5a33b-016b-407c-a112-7a7c443cc17c:vpn:
+Norway - Oslo:19af7a70-f6dc-4a35-9577-a8033d820902:vpn:
+Oman - Muscat:30020173-2f52-4fa1-b519-5735bde3a224:vpn:
+Pakistan - Karachi:9f1a03d3-7475-497a-96dd-c2876a794932:vpn:
+Palestinian Territories - Ramallah:c0f7bb9e-435b-4574-854e-c7f65f024c25:vpn:
+Panama - Panama City:64e11298-f1db-4a43-9ba1-9316ffffcac2:vpn:
+Peru - Lima:d29b2679-c700-4ce8-8d78-3533176a3727:vpn:
+Philippines - Manila:55749506-aa95-4b49-8a93-775f4efc6682:vpn:
+Poland - Warsaw:639eee38-b4b4-44c9-9118-7b16a0cdc643:vpn:
+Portugal - Lisbon:7f82c450-85ed-4255-9e0d-91469e713a33:vpn:
+Puerto Rico - Suan Juan:842b2612-fc1f-4a1d-86c1-3332c023bfcb:vpn:
+Quatar - Soha:9a6e3410-c625-4b83-b6f4-cc2221a0d7a0:vpn:
+Romania - Bucharest:00f3587f-2660-4ef9-b865-4c4222379c7a:vpn:
+Russia - Moscow:ff4c34f5-428a-470c-b0e7-661a47e1a345:vpn:
+Rwanda - Kigali:18c15341-1b60-49ef-a663-a57726d7f6a3:vpn:
+Saudi Arabia - Riyadh:d24df788-b3fa-4381-a6f2-30420cbed5c2:vpn:
+Senegal - Dakar:9ac08d8c-a957-4ce2-9f9d-02b440c0568c:vpn:
+Serbia - Belgrade:914c5eaa-f8b4-422c-85e0-4961d00f2be4:vpn:
+Singapore - Singapore:da8a5107-f5bc-4af7-abdd-9f29936c908c:vpn:
+Slovakia - Bratislava:3c720fbc-7fc1-488e-bbaa-aa7feb0fd3ad:vpn:
+Slovenia - Ljubljana:28794eea-847c-4215-abdc-8069bd8e0963:vpn:
+Somalia - Mogadishu:ef738f59-5861-48ed-ac2e-09e482a1eb67:vpn:
+South Africa - Johannesburg:d910d93e-759a-4d4b-9aaa-803ce86bc11d:vpn:
+South Sudan - Juba:868c4e4c-b77d-43cd-ae48-44b1733f7776:vpn:
+Spain - Barcelona:6d82df65-f0f1-450a-bc82-f9d7b5defbfb:vpn:
+Spain - Madrid:c02c837b-c8c4-482f-b756-c8be4317e6aa:vpn:
+Sri Lanka - Colombo:029c48ef-f615-451e-9b3d-69ba1d3e8e40:vpn:
+Sudan - Khartoum:3d96a87a-e1a1-49bf-957c-5b3cab494cab:vpn:
+Sweden - Stockholm:73e95d9d-f64b-4cef-bd0f-d4de143053b4:vpn:
+Switzerland - Zurich:39d43808-7b52-40f4-95c0-2b505fbbf7d1:vpn:
+Syrian Arab Republic - Damascus:918f3b34-9997-4ee0-85b7-ce10a083fa3e:vpn:
+Taiwan - Taichung:a6bea091-93ac-42e6-9aea-2bcfd57f1f61:vpn:
+Tajikistan - Dushanbe:fa7c3f07-e95e-425c-a1a3-6b114f4dc1ac:vpn:
+Tanzania - Dodoma:0ee15256-535c-4603-9eea-cb5779d76f41:vpn:
+Thailand - Bankok:5fd91f43-f09f-4f3a-b490-40e1888666e2:vpn:
+Togo - Lomé:38adbc06-1982-4ea3-acc9-a455862ec6fd:vpn:
+Tunisia - Tunis:40ff9ab8-bd53-4b15-ac12-e0d0fec5c447:vpn:
+Turkey - Istanbul:9a70d92d-ce9c-41f9-89d4-5f4024d0a561:vpn:
+Turkmenistan - Ashgabat:ba2cc2fd-9df3-4c01-a2ac-a0ce4bb657d0:vpn:
+Uganda - Kampala:c758b842-4cde-483f-8bfc-18149b4d5012:vpn:
+UK - Belfast:34647454-dcc9-43f0-8bf6-ac69c39b921d:vpn:
+UK - Cardiff:a6dc9809-5c90-4634-83ff-d41aa68cdab2:vpn:
+UK - Edinburgh:51477870-f847-4235-996f-f741c17fca8c:vpn:
+UK - London:4f37d42d-b7d6-40ae-aae9-dc297868a7e1:vpn:
+UK - Manchester:93486633-36ed-4599-9a39-db59ea2c26a5:vpn:
+Ukraine - Kyiv:2e9def21-6ac2-438a-9e71-c5d4201088a2:vpn:
+United Arab Emirates - Dubai:1ae8ed4e-4309-4188-813b-bc368a595320:vpn:
+USA - Ashburn - Virginia:0fa243e0-fc01-4f4c-af63-2b3b9593946d:vpn:
+USA - Atlanta:0c2de6cf-bfa5-480a-b9a9-0ef088fc9e34:vpn:
+USA - Boston - Massachusetts:be800938-1fab-40d9-bcd6-4efbfc58aca9:vpn:
+USA - Charlotte - North Carolina:f7d31fcf-d534-4256-afe7-74a8a4b42535:vpn:
+USA - Chicago - Illinois:60ab577c-bd55-49b0-a316-66edee309f77:vpn:
+USA - Columbus - Ohio:b6eff338-f7da-49bd-b15a-feaa4ecc7ce1:vpn:
+USA - Dallas - Texas:acaddd96-1872-4eff-9694-b9d2e340751c:vpn:
+USA - Denver - Colorado:1000792d-bdd0-4806-91f4-97407736ce10:vpn:
+USA - Detroit - Michigan:2fbed031-248e-4717-9c92-684d136c7c87:vpn:
+USA - Los Angeles - California:7c6bce6c-1653-48ed-b8f7-991905eb4266:vpn:
+USA - McAllen - Texas:9f0cfa31-e630-477b-89b5-a5bc48d1b8ce:vpn:
+USA - Memphis - Tennesse:2b753bd4-bcb9-46b1-8ff3-449c8fe4b455:vpn:
+USA - Miami - Florida:de9c756c-904a-41c7-acc8-30220cedbb27:vpn:
+USA - New York - New York:a02e3ec0-625a-4963-98ee-170e03e499ad:vpn:
+USA - Philadelphia - Pennsylvania:adf86d48-fda3-48c5-9319-16798a5343a4:vpn:
+USA - Phoenix - Arizona:afacb05d-c83c-4bd3-9faa-de594f9d0dbb:vpn:
+USA - Salt Lake City - Utah:265a0e58-24f5-4636-8712-470d8e9df47b:vpn:
+USA - San Jose - California:0a1857f3-32b1-4121-821b-e72e37c6d236:vpn:
+USA - Seattle - Washington:2a8d9320-f6a9-4613-83fd-e4469d70ed03:vpn:
+USA - Secaucus - New Jersey:5b137885-01a8-4972-ad5d-93eb6ca578a4:vpn:
+USA - Washington DC:99f77be9-5332-4b01-881d-3fade3fa1255:vpn:
+Uzbekisan - Tashkent:8a1a3c13-319c-407a-a7fc-b8c246001409:vpn:
+Venezuela - Caracas:97de485d-13b4-4108-a8ce-2cf8cecdea0e:vpn:
+Vietnam - Hanoi:a2fbb76d-ab62-423e-af7c-1be622c95d71:vpn:
+VM8248525:d51bef88-c25d-4436-8a85-07af0122156c:802-11-wireless:
+Wired connection 1:45892adf-bbe7-3d77-9229-59cd1185632c:802-3-ethernet:
+Wired connection 2:992799a4-7870-3fe4-a2a4-020712610490:802-3-ethernet:
+Wired connection 3:c96fa050-d436-3f3c-bd85-4c1f2e9f11e5:802-3-ethernet:
+Yemen - Sana's:4260e13f-07b6-42f4-b8c0-6dcf2bea4b9c:vpn:
+
+[cmd] udevadm info --query=property --name wlan0
+Unknown device "/dev/wlan0": No such device
+
