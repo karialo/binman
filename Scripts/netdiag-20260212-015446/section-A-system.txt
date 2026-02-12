@@ -1,9 +1,0 @@
-hostname: freyja
-kernel:   Linux 6.18.5+kali-amd64 x86_64 GNU/Linux
-distro:   Kali GNU/Linux Rolling
-date:     2026-02-12 01:54:25 +0000
-uptime:   up 1 hour, 51 minutes
-mode:     quick
-json:     0
-iface:    auto
-target:   10.0.0.2
