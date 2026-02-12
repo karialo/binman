@@ -1,2 +1,0 @@
-Quick mode: firewall deep inspection skipped (use --full).
-
