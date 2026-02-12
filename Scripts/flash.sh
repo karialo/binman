@@ -970,6 +970,16 @@ config_has_dwc2_overlay() {
 }
 
 print_post_flash_summary() {
+  if [[ "${IMAGE_TYPE:-}" == "iso" ]]; then
+    say
+    say "========== POST-FLASH SUMMARY =========="
+    say "Mode: ISO raw write"
+    say "Staging: skipped (not applicable to ISO images)"
+    say "Layout: hybrid ISO (iso9660 + optional EFI)"
+    say "Boot: ready for BIOS/UEFI"
+    return 0
+  fi
+
   say
   say "========== POST-FLASH SUMMARY =========="
   say "Layout:"
@@ -1267,6 +1277,7 @@ USER_NAME=""; USER_PASS=""
 DIAGNOSE_MOUNTS=0
 DIAG_BOOTFS=""
 DIAG_ROOTFS=""
+IMAGE_TYPE="image"
 GADGET_FLAG_SET=0
 SUMMARY_BOOT_CFG="not touched"
 SUMMARY_CMDLINE="not touched"
@@ -1361,6 +1372,10 @@ fi
 IMG="$1"
 DEV="${2:-}"
 [[ -f "$IMG" ]] || { err "Image not found: $IMG"; exit 66; }
+case "$IMG" in
+  *.iso) IMAGE_TYPE="iso" ;;
+  *)     IMAGE_TYPE="image" ;;
+esac
 
 # ---------- device picker ----------
 root_disk() { lsblk -no PKNAME "$(findmnt -no SOURCE /)" 2>/dev/null || true; }
@@ -1414,66 +1429,74 @@ read -rp "FINAL WARNING: This will overwrite $DEV. Type YEAH to continue: " FINA
 [[ "$FINAL" == "YEAH" ]] || { err "Aborted."; exit 0; }
 
 # interactive toggles if not provided
-say "=== Optional Staging ==="
-if (( EXPAND==0 )); then
-  read -rp "Expand root partition to fill the device? [y/N]: " Y; [[ "$Y" =~ ^[Yy]$ ]] && EXPAND=1
-fi
-if (( HEADLESS==0 )); then
-  read -rp "Configure Wi-Fi + enable SSH for headless boot? [y/N]: " Y; [[ "$Y" =~ ^[Yy]$ ]] && HEADLESS=1
-fi
-if (( GADGET_FLAG_SET==0 )); then
-  say "Recommendation: enable USB gadget for direct USB SSH (Pi: 10.0.0.2/24, host: 10.0.0.1/24)."
-  read -rp "Enable USB gadget networking (usb0) for easy SSH over USB? [y/N]: " Y
-  [[ "$Y" =~ ^[Yy]$ ]] && GADGET=1
-fi
-if (( HEADLESS )); then
-  [[ -n "$SSID"     ]] || read -rp "SSID: " SSID
-  [[ -n "$PASSWORD" ]] || { read -rsp "Password: " PASSWORD; echo; }
-  if [[ "$SSID" == *$'\n'* || "$SSID" == *$'\r'* ]]; then
-    err "SSID contains a newline which is not supported."
-    exit 64
+if [[ "$IMAGE_TYPE" == "iso" ]]; then
+  say "=== Optional Staging ==="
+  say "Skipping optional staging prompts for ISO mode."
+  EXPAND=0
+  HEADLESS=0
+  GADGET=0
+else
+  say "=== Optional Staging ==="
+  if (( EXPAND==0 )); then
+    read -rp "Expand root partition to fill the device? [y/N]: " Y; [[ "$Y" =~ ^[Yy]$ ]] && EXPAND=1
   fi
-  if [[ "$PASSWORD" == *$'\n'* || "$PASSWORD" == *$'\r'* ]]; then
-    err "Password contains a newline which is not supported."
-    exit 64
+  if (( HEADLESS==0 )); then
+    read -rp "Configure Wi-Fi + enable SSH for headless boot? [y/N]: " Y; [[ "$Y" =~ ^[Yy]$ ]] && HEADLESS=1
   fi
-  # Country auto-detect if not provided: iw reg -> LANG -> GB
-  if [[ -z "$COUNTRY" ]]; then
-    if command -v iw >/dev/null 2>&1; then
-      CC="$(iw reg get 2>/dev/null | awk '/country /{print $2}' | sed 's/:.*//; q')"
-      [[ "$CC" =~ ^[A-Z][A-Z]$ ]] && COUNTRY="$CC"
+  if (( GADGET_FLAG_SET==0 )); then
+    say "Recommendation: enable USB gadget for direct USB SSH (Pi: 10.0.0.2/24, host: 10.0.0.1/24)."
+    read -rp "Enable USB gadget networking (usb0) for easy SSH over USB? [y/N]: " Y
+    [[ "$Y" =~ ^[Yy]$ ]] && GADGET=1
+  fi
+  if (( HEADLESS )); then
+    [[ -n "$SSID"     ]] || read -rp "SSID: " SSID
+    [[ -n "$PASSWORD" ]] || { read -rsp "Password: " PASSWORD; echo; }
+    if [[ "$SSID" == *$'\n'* || "$SSID" == *$'\r'* ]]; then
+      err "SSID contains a newline which is not supported."
+      exit 64
     fi
-    if [[ -z "$COUNTRY" && -n "${LANG:-}" && "$LANG" =~ _([A-Z]{2})\. ]]; then
-      COUNTRY="${BASH_REMATCH[1]}"
+    if [[ "$PASSWORD" == *$'\n'* || "$PASSWORD" == *$'\r'* ]]; then
+      err "Password contains a newline which is not supported."
+      exit 64
     fi
-    COUNTRY="${COUNTRY:-GB}"
+    # Country auto-detect if not provided: iw reg -> LANG -> GB
+    if [[ -z "$COUNTRY" ]]; then
+      if command -v iw >/dev/null 2>&1; then
+        CC="$(iw reg get 2>/dev/null | awk '/country /{print $2}' | sed 's/:.*//; q')"
+        [[ "$CC" =~ ^[A-Z][A-Z]$ ]] && COUNTRY="$CC"
+      fi
+      if [[ -z "$COUNTRY" && -n "${LANG:-}" && "$LANG" =~ _([A-Z]{2})\. ]]; then
+        COUNTRY="${BASH_REMATCH[1]}"
+      fi
+      COUNTRY="${COUNTRY:-GB}"
+    fi
+    COUNTRY="$(require_country_or_exit "$COUNTRY")"
+    read -rp "Is the SSID hidden? [y/N]: " Y; [[ "$Y" =~ ^[Yy]$ ]] && HIDDEN=1
   fi
-  COUNTRY="$(require_country_or_exit "$COUNTRY")"
-  read -rp "Is the SSID hidden? [y/N]: " Y; [[ "$Y" =~ ^[Yy]$ ]] && HIDDEN=1
-fi
-if [[ -z "$USER_NAME" && -z "$USER_PASS" ]]; then
-  read -rp "Create/set a default user on first boot? [y/N]: " Y
-  if [[ "$Y" =~ ^[Yy]$ ]]; then
-    read -rp "Username (e.g., kali): " USER_NAME
-    read -rsp "Password for $USER_NAME: " USER_PASS; echo
+  if [[ -z "$USER_NAME" && -z "$USER_PASS" ]]; then
+    read -rp "Create/set a default user on first boot? [y/N]: " Y
+    if [[ "$Y" =~ ^[Yy]$ ]]; then
+      read -rp "Username (e.g., kali): " USER_NAME
+      read -rsp "Password for $USER_NAME: " USER_PASS; echo
+    fi
   fi
-fi
-if [[ -n "$USER_NAME" || -n "$USER_PASS" ]]; then
-  if [[ -z "$USER_NAME" || -z "$USER_PASS" ]]; then
-    err "Use both --User and --UserPass (or neither)."
-    exit 64
-  fi
-  if [[ "$USER_NAME" == *$'\n'* || "$USER_NAME" == *$'\r'* ]]; then
-    err "Username contains a newline which is not supported."
-    exit 64
-  fi
-  if [[ "$USER_PASS" == *$'\n'* || "$USER_PASS" == *$'\r'* ]]; then
-    err "User password contains a newline which is not supported."
-    exit 64
-  fi
-  if ! is_valid_unix_username "$USER_NAME"; then
-    err "Invalid username '$USER_NAME' (use lowercase letters, digits, '_' or '-', max 32 chars)."
-    exit 64
+  if [[ -n "$USER_NAME" || -n "$USER_PASS" ]]; then
+    if [[ -z "$USER_NAME" || -z "$USER_PASS" ]]; then
+      err "Use both --User and --UserPass (or neither)."
+      exit 64
+    fi
+    if [[ "$USER_NAME" == *$'\n'* || "$USER_NAME" == *$'\r'* ]]; then
+      err "Username contains a newline which is not supported."
+      exit 64
+    fi
+    if [[ "$USER_PASS" == *$'\n'* || "$USER_PASS" == *$'\r'* ]]; then
+      err "User password contains a newline which is not supported."
+      exit 64
+    fi
+    if ! is_valid_unix_username "$USER_NAME"; then
+      err "Invalid username '$USER_NAME' (use lowercase letters, digits, '_' or '-', max 32 chars)."
+      exit 64
+    fi
   fi
 fi
 
@@ -1507,7 +1530,23 @@ ok "Post-write partitions:"
 lsblk -o NAME,SIZE,FSTYPE "$DEV" || true
 fdisk -l "$DEV" | sed -n '1,24p' || true
 
-if find_partitions_for_pi_staging "$DEV"; then
+if [[ "$IMAGE_TYPE" == "iso" ]]; then
+  DETECTED_PI_LAYOUT=0
+  SUMMARY_PI_LAYOUT="skipped (ISO mode)"
+  SUMMARY_LAYOUT_DETAIL="hybrid ISO (iso9660 + optional EFI)"
+  SUMMARY_BOOT_CFG="skipped (not applicable to ISO images)"
+  SUMMARY_CMDLINE="skipped (not applicable to ISO images)"
+  SUMMARY_SSH_TRIGGER="skipped (not applicable to ISO images)"
+  SUMMARY_WIFI_PROFILE="skipped (not applicable to ISO images)"
+  SUMMARY_COUNTRY_TRIGGER="skipped (not applicable to ISO images)"
+  SUMMARY_USER_TRIGGER="skipped (not applicable to ISO images)"
+  SUMMARY_WIFI_SYMLINKS="skipped (not applicable to ISO images)"
+  SUMMARY_USER_SYMLINKS="skipped (not applicable to ISO images)"
+  SUMMARY_GADGET_STATUS="skipped (not applicable to ISO images)"
+  SUMMARY_GADGET_NETWORK="skipped (not applicable to ISO images)"
+  SUMMARY_USB0_SYMLINKS="skipped (not applicable to ISO images)"
+  ok "ISO mode detected; skipping Pi layout detection and staging."
+elif find_partitions_for_pi_staging "$DEV"; then
   DETECTED_PI_LAYOUT=1
   SUMMARY_PI_LAYOUT="yes"
   SUMMARY_LAYOUT_DETAIL="boot=${DETECTED_PI_BOOT_PART:-?} (${DETECTED_PI_BOOT_FSTYPE:-?}), root=${DETECTED_PI_ROOT_PART:-?} (${DETECTED_PI_ROOT_FSTYPE:-?})"
