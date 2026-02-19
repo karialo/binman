@@ -4599,35 +4599,46 @@ doctor_app_one(){
 }
 
 cmd_doctor(){
-  local DO_ALL=0 DRY=0 QUIET=0 PYVER="" tgt=
+  local DO_ALL=0 DRY=0 QUIET=0 PYVER="" tgt= env_shown=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --all) DO_ALL=1;;
       --dry-run) DRY=1;;
-      -q|--quiet) QUIET=1;;
-      --python) shift; PYVER="$1";;
-      -h|--help) say "binman doctor [--all|<name>] [--python X.Y] [--dry-run] [-q]"; return 0;;
+      --quiet) QUIET=1;;
+      --python) shift; PYVER="${1:-}";;
+      -*) die "Unknown option: $1";;
       *) tgt="$1";;
-    esac; shift
+    esac
+    shift
   done
 
   if [[ -z "$tgt" && $DO_ALL -eq 0 ]]; then
     doctor_env
+    env_shown=1
     echo
     tgt="$(_pick_app)" || return 2
   fi
 
   if [[ $DO_ALL -eq 1 ]]; then
-    local fail=0 any=0
-    while read -r n; do
-      [[ -z "$n" ]] && continue
+    doctor_env
+    echo
+    local any=0 fail=0 d
+    for d in "$APP_STORE"/*; do
+      [[ -d "$d" ]] || continue
       any=1
-      doctor_app_one "$n" "$PYVER" "$DRY" "$QUIET" || ((fail++))
-    done < <(_list_apps)
+      doctor_app_one "$(basename "$d")" "$PYVER" "$DRY" "$QUIET" || fail=1
+      echo
+    done
     [[ $any -eq 0 ]] && { warn "No apps installed."; return 0; }
     ((fail==0)) && return 0 || return 2
   else
-    doctor_env; echo; doctor_app_one "$tgt" "$PYVER" "$DRY" "$QUIET"
+    if [[ $env_shown -eq 0 ]]; then
+      doctor_env
+      echo
+    else
+      echo
+    fi
+    doctor_app_one "$tgt" "$PYVER" "$DRY" "$QUIET"
   fi
 }
 

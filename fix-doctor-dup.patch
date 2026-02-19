@@ -1,0 +1,35 @@
+--- a/binman.sh
++++ b/binman.sh
+@@ -4601,7 +4601,7 @@ doctor_app_one(){
+ }
+ 
+ cmd_doctor(){
+-  local DO_ALL=0 DRY=0 QUIET=0 PYVER="" tgt=
++  local DO_ALL=0 DRY=0 QUIET=0 PYVER="" tgt= env_shown=0
+   while [[ $# -gt 0 ]]; do
+     case "$1" in
+       --all) DO_ALL=1;;
+@@ -4612,10 +4612,12 @@ cmd_doctor(){
+     esac; shift
+   done
+ 
+   if [[ -z "$tgt" && $DO_ALL -eq 0 ]]; then
+     doctor_env
++    env_shown=1
+     echo
+     tgt="$(_pick_app)" || return 2
+   fi
+@@ -4627,7 +4629,11 @@ cmd_doctor(){
+     [[ $any -eq 0 ]] && { warn "No apps installed."; return 0; }
+     ((fail==0)) && return 0 || return 2
+   else
+-    doctor_env; echo; doctor_app_one "$tgt" "$PYVER" "$DRY" "$QUIET"
++    if [[ $env_shown -eq 0 ]]; then
++      doctor_env
++      echo
++    else
++      echo
++    fi
++    doctor_app_one "$tgt" "$PYVER" "$DRY" "$QUIET"
+   fi
+ }
