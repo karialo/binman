@@ -858,6 +858,11 @@ skipped_notfound=()
 failed_pkgs=()
 
 for pkg in "${PKGS[@]}"; do
+  pkg="${pkg//$'\r'/}"
+  pkg="${pkg#"${pkg%%[![:space:]]*}"}"
+  pkg="${pkg%"${pkg##*[![:space:]]}"}"
+  [[ -n "$pkg" ]] || continue
+
   class="$(classify_pkg "$pkg")"
   say "→ $pkg"
   say "   class: $class"
@@ -901,7 +906,7 @@ for pkg in "${PKGS[@]}"; do
   fi
 
   candidates=()
-  if [[ "$TOOL" != "unknown" && $repo_avail -ne 1 ]]; then candidates+=("repo"); fi
+  if [[ "$TOOL" != "unknown" && $repo_avail -eq 0 ]]; then candidates+=("repo"); fi
   if (( HAVE_FLATPAK )) && [[ $flat_avail -eq 0 ]]; then candidates+=("flatpak"); fi
   if (( HAVE_BREW )) && [[ $brew_avail -eq 0 ]]; then candidates+=("brew"); fi
 
