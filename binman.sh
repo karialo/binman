@@ -135,6 +135,11 @@ VENV_MODE=0         # --venv : create/activate app-local .venv for entry
 REQ_FILE=""         # --req FILE : requirements file name (default: requirements.txt)
 BOOT_PY="python3"   # --python BIN : bootstrap interpreter to create venv
 
+INSTALL_WIZARD_FORCE=0
+INSTALL_PRO_DIRECTIVE=0
+INSTALL_NAME_OVERRIDE="" # optional app/shim alias during install
+INSTALL_TARGET_ARGS=()
+
 
 # Rollback snapshot controls (env overrides)
 AUTO_BACKUP_WARNED=0
@@ -779,6 +784,8 @@ USAGE: ${SCRIPT_NAME} <install|uninstall|verify|list|update|doctor|docker|new|wi
        ${SCRIPT_NAME} --restore FILE [--force]
 
 Options:
+  install <target> [install-options]
+                   Install exactly one target per run (use --manifest/--from for bulk)
   --from DIR         Operate on all executable files in DIR
   --link             Symlink instead of copying
   --force            Overwrite existing files / restore conflicts
@@ -807,6 +814,7 @@ Extra commands:
 
 Examples:
   ${SCRIPT_NAME} install tool.sh
+  ${SCRIPT_NAME} install tool.sh --system
   ${SCRIPT_NAME} install MyApp/                      # app dir (expects bin/MyApp)
   ${SCRIPT_NAME} install https://.../script.sh       # remote file
   ${SCRIPT_NAME} install --manifest tools.txt        # bulk installs
@@ -2414,6 +2422,570 @@ list_targets(){
   printf '%s\n' "${arr[@]}"
 }
 
+_reset_install_opts(){
+  COPY_MODE="copy"
+  FORCE=0
+  FROM_DIR=""
+  MANIFEST_FILE=""
+  ENTRY_CMD=""
+  ENTRY_CWD=""
+  VENV_MODE=0
+  REQ_FILE=""
+  BOOT_PY="python3"
+  INSTALL_WIZARD_FORCE=0
+  INSTALL_PRO_DIRECTIVE=0
+  INSTALL_NAME_OVERRIDE=""
+  INSTALL_TARGET_ARGS=()
+}
+
+_parse_install_args_single_target(){
+  _reset_install_opts
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --link) COPY_MODE="link"; shift ;;
+      --copy) COPY_MODE="copy"; shift ;;
+      --force|-f) FORCE=1; shift ;;
+      --system) SYSTEM_MODE=1; shift ;;
+
+      --from)
+        shift
+        [[ $# -gt 0 ]] || { err "--from requires DIR"; return 2; }
+        FROM_DIR="$1"
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+      --from=*)
+        FROM_DIR="${1#*=}"
+        [[ -n "$FROM_DIR" ]] || { err "--from requires DIR"; return 2; }
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+
+      --manifest)
+        shift
+        [[ $# -gt 0 ]] || { err "--manifest requires FILE"; return 2; }
+        MANIFEST_FILE="$1"
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+      --manifest=*)
+        MANIFEST_FILE="${1#*=}"
+        [[ -n "$MANIFEST_FILE" ]] || { err "--manifest requires FILE"; return 2; }
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+
+      --entry)
+        shift
+        [[ $# -gt 0 ]] || { err "--entry requires a command"; return 2; }
+        ENTRY_CMD="$1"
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+      --entry=*)
+        ENTRY_CMD="${1#*=}"
+        [[ -n "$ENTRY_CMD" ]] || { err "--entry requires a command"; return 2; }
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+
+      --workdir|--cwd)
+        shift
+        [[ $# -gt 0 ]] || { err "--workdir/--cwd requires a value"; return 2; }
+        ENTRY_CWD="$1"
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+      --workdir=*|--cwd=*)
+        ENTRY_CWD="${1#*=}"
+        [[ -n "$ENTRY_CWD" ]] || { err "--workdir/--cwd requires a value"; return 2; }
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+
+      --venv)
+        VENV_MODE=1
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+      --req)
+        shift
+        [[ $# -gt 0 ]] || { err "--req requires FILE"; return 2; }
+        REQ_FILE="$1"
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+      --req=*)
+        REQ_FILE="${1#*=}"
+        [[ -n "$REQ_FILE" ]] || { err "--req requires FILE"; return 2; }
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+      --boot|--python)
+        shift
+        [[ $# -gt 0 ]] || { err "--boot/--python requires BIN"; return 2; }
+        BOOT_PY="$1"
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+      --boot=*|--python=*)
+        BOOT_PY="${1#*=}"
+        [[ -n "$BOOT_PY" ]] || { err "--boot/--python requires BIN"; return 2; }
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+
+      --name)
+        shift
+        [[ $# -gt 0 ]] || { err "--name requires a value"; return 2; }
+        INSTALL_NAME_OVERRIDE="$1"
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+      --name=*)
+        INSTALL_NAME_OVERRIDE="${1#*=}"
+        [[ -n "$INSTALL_NAME_OVERRIDE" ]] || { err "--name requires a value"; return 2; }
+        INSTALL_PRO_DIRECTIVE=1
+        shift
+        ;;
+
+      --wizard)
+        INSTALL_WIZARD_FORCE=1
+        shift
+        ;;
+
+      --)
+        shift
+        while [[ $# -gt 0 ]]; do
+          INSTALL_TARGET_ARGS+=("$1")
+          shift
+        done
+        break
+        ;;
+      -*)
+        err "Unknown install option: $1"
+        return 2
+        ;;
+      *)
+        INSTALL_TARGET_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+  return 0
+}
+
+# Back-compat wrapper for any legacy call sites.
+_parse_install_args(){
+  _parse_install_args_single_target "$@"
+}
+
+_manifest_items(){
+  local mf="$1"; [[ -f "$mf" ]] || return 1
+  local items=()
+  if [[ "$mf" == *.json ]] && exists jq; then
+    mapfile -t items < <(jq -r '.[] | if type=="object" then .source else . end' "$mf")
+  else
+    local line
+    while IFS= read -r line; do
+      line="${line%%#*}"
+      line="$(trim "$line")"
+      [[ -n "$line" ]] && items+=("$line")
+    done < "$mf"
+  fi
+  printf '%s\n' "${items[@]}"
+}
+
+_resolve_install_target(){
+  local raw="$1"
+  [[ -n "$raw" ]] || return 1
+
+  if is_url "$raw"; then
+    printf '%s\n' "$raw"
+    return 0
+  fi
+
+  local candidate="${raw%/}" path=""
+  if [[ -e "$candidate" ]]; then
+    path="$(realpath_f "$candidate" 2>/dev/null || printf '%s' "$candidate")"
+    printf '%s\n' "$path"
+    return 0
+  fi
+
+  if [[ "$raw" != */* && "$raw" != .* ]]; then
+    _ensure_inventory_arrays || { build_inventory >/dev/null 2>&1 || true; _ensure_inventory_arrays || true; }
+    if [[ ${#NAMES[@]} -gt 0 ]]; then
+      local i inv_path
+      for i in "${!NAMES[@]}"; do
+        [[ "${NAMES[$i]}" == "$raw" ]] || continue
+        inv_path="${TARGETS[$i]:-${PATHS[$i]:-}}"
+        [[ -n "$inv_path" ]] || continue
+        printf '%s\n' "$inv_path"
+        return 0
+      done
+    fi
+  fi
+
+  printf '%s\n' "$raw"
+}
+
+_derive_install_name(){
+  local resolved="$1" raw="$2" base=""
+  if [[ -n "$INSTALL_NAME_OVERRIDE" ]]; then
+    printf '%s\n' "$INSTALL_NAME_OVERRIDE"
+    return 0
+  fi
+  if is_url "$raw"; then
+    base="$(basename "${raw%%\?*}")"
+  else
+    base="$(basename "$resolved")"
+  fi
+  base="${base%/}"
+  base="${base%.*}"
+  [[ -n "$base" ]] || base="tool"
+  printf '%s\n' "$base"
+}
+
+_noninteractive_install_requires_flags(){
+  local target="$1" shown=0 p
+  err "Non-interactive app install requires explicit --entry '<command>'."
+  err "Target: $target"
+  if [[ -d "$target" ]]; then
+    err "Top candidate entry files:"
+    while IFS= read -r p; do
+      err "  - $p"
+      (( ++shown >= 10 )) && break
+    done < <(_list_entry_candidates "$target")
+    (( shown == 0 )) && err "  (no likely entry files found)"
+  fi
+}
+
+_resolve_self_exec_path(){
+  local self_path="${BINMAN_SELF:-$0}" resolved=""
+  if [[ "$self_path" == */* ]]; then
+    resolved="$self_path"
+  else
+    resolved="$(command -v -- "$self_path" 2>/dev/null || printf '%s' "$self_path")"
+  fi
+  if [[ "$resolved" != /* ]]; then
+    resolved="$(realpath_f "$resolved" 2>/dev/null || realpath_f "$PWD/$resolved" 2>/dev/null || printf '%s' "$resolved")"
+  fi
+  printf '%s\n' "$resolved"
+}
+
+_reexec_with_sudo(){
+    local -a argv=("$@")
+    local self_path=""
+
+    command -v sudo >/dev/null 2>&1 || {
+        err "System mode requires sudo for this action."
+        return 1
+    }
+
+    self_path="$(_resolve_self_exec_path)"
+    [[ -n "$self_path" ]] || {
+        err "Unable to resolve BinMan executable path for sudo re-exec."
+        return 1
+    }
+
+    exec sudo env PATH="$PATH" "$self_path" "${argv[@]}"
+}
+
+_guided_pick_entry(){
+  # ARG: appdir suggested_cmd suggested_cwd suggested_req ; OUT: "CMD|CWD|REQ"
+  local d="$1" suggested_cmd="$2" suggested_cwd="$3" suggested_req="$4"
+  local choice="" picked="" triplet="" picked_cmd="" picked_cwd="" picked_req="" custom=""
+
+  while :; do
+    if __has_fzf && [[ -t 1 ]]; then
+      choice="$(
+        {
+          [[ -n "$suggested_cmd" ]] && printf 'SUGGEST\tUse suggested command: %s\n' "$suggested_cmd"
+          printf 'FILE\tPick a file\n'
+          printf 'CUSTOM\tCustom command\n'
+          printf 'ABORT\tAbort install\n'
+        } | fzf_run \
+              --delimiter=$'\t' \
+              --with-nth=2 \
+              --prompt="Entry > " \
+              --height=55% \
+              --reverse \
+              --header="Choose app entry for $(basename "$d")"
+      )"
+      [[ -n "$choice" ]] || return 2
+      choice="${choice%%$'\t'*}"
+    else
+      printf "\nEntry options for %s\n" "$(basename "$d")" > /dev/tty
+      if [[ -n "$suggested_cmd" ]]; then
+        printf "  1) use suggested command: %s\n" "$suggested_cmd" > /dev/tty
+        printf "  2) pick a file\n" > /dev/tty
+        printf "  3) custom command\n" > /dev/tty
+        printf "  q) abort\n" > /dev/tty
+        printf "  Pick selection [1]: " > /dev/tty
+        IFS= read -r choice < /dev/tty || return 2
+        [[ -z "$choice" ]] && choice="1"
+        case "$choice" in
+          1) choice="SUGGEST" ;;
+          2) choice="FILE" ;;
+          3) choice="CUSTOM" ;;
+          q|Q) choice="ABORT" ;;
+          *) warn "Invalid selection."; continue ;;
+        esac
+      else
+        printf "  1) pick a file\n" > /dev/tty
+        printf "  2) custom command\n" > /dev/tty
+        printf "  q) abort\n" > /dev/tty
+        printf "  Pick selection [1]: " > /dev/tty
+        IFS= read -r choice < /dev/tty || return 2
+        [[ -z "$choice" ]] && choice="1"
+        case "$choice" in
+          1) choice="FILE" ;;
+          2) choice="CUSTOM" ;;
+          q|Q) choice="ABORT" ;;
+          *) warn "Invalid selection."; continue ;;
+        esac
+      fi
+    fi
+
+    case "$choice" in
+      SUGGEST)
+        [[ -n "$suggested_cmd" ]] || { warn "No suggested command available."; continue; }
+        echo "$suggested_cmd|$suggested_cwd|$suggested_req"
+        return 0
+        ;;
+      FILE)
+        if ! picked="$(_pick_entry_candidate "$d" "" 0 "")"; then
+          warn "Entry file selection aborted."
+          continue
+        fi
+        if [[ "$picked" == __CMD__:* ]]; then
+          picked_cmd="${picked#__CMD__:}"
+          picked_cwd="$suggested_cwd"
+          picked_req="$suggested_req"
+        else
+          triplet="$(_entry_cmd_from_candidate "$d" "$picked")"
+          picked_cmd="${triplet%%|*}"; triplet="${triplet#*|}"
+          picked_cwd="${triplet%%|*}"; picked_req="${triplet#*|}"
+        fi
+        [[ -n "$picked_cmd" ]] || { warn "Could not build a command from selection."; continue; }
+        echo "$picked_cmd|$picked_cwd|$picked_req"
+        return 0
+        ;;
+      CUSTOM)
+        custom="$(ask "Custom entry command (runs inside app dir)" "${suggested_cmd:-}")"
+        custom="$(trim "$custom")"
+        [[ -n "$custom" ]] || { warn "Entry command cannot be empty."; continue; }
+        echo "$custom|$suggested_cwd|$suggested_req"
+        return 0
+        ;;
+      ABORT)
+        return 2
+        ;;
+      *)
+        warn "Invalid entry option."
+        ;;
+    esac
+  done
+}
+
+_guided_install_target(){
+  local raw_target="$1"
+  local resolved target_name scope_default scope
+  local entry_triplet="" detected="" det_cmd="" det_cwd="" det_req=""
+  local selected_cmd="" selected_cwd="" selected_req=""
+  local effective_req=""
+  local saved_name="$INSTALL_NAME_OVERRIDE"
+  local saved_entry="$ENTRY_CMD" saved_cwd="$ENTRY_CWD" saved_req="$REQ_FILE"
+  local rc
+
+  resolved="$(_resolve_install_target "$raw_target")" || return 2
+  [[ -n "$resolved" ]] || return 2
+
+  if [[ ! -t 0 ]]; then
+    _noninteractive_install_requires_flags "$resolved"
+    return 2
+  fi
+
+  ui_init
+  prompt_init
+
+  target_name="$(_derive_install_name "$resolved" "$raw_target")"
+  target_name="$(ask "Install name (shim)" "$target_name")"
+  target_name="$(trim "$target_name")"
+  [[ -n "$target_name" ]] || { err "Install name cannot be empty."; return 2; }
+
+  scope_default="user"; (( SYSTEM_MODE )) && scope_default="system"
+  while :; do
+    scope="$(ask_choice "Install scope" "user/system" "$scope_default")"
+    case "${scope,,}" in
+      user|u) SYSTEM_MODE=0; scope="user"; break ;;
+      system|s) SYSTEM_MODE=1; scope="system"; break ;;
+      *) warn "Choose 'user' or 'system'." ;;
+    esac
+  done
+
+  if [[ -d "$resolved" ]]; then
+    detected="$(_detect_entry "$resolved")"
+    det_cmd="${detected%%|*}"; detected="${detected#*|}"
+    det_cwd="${detected%%|*}"; det_req="${detected#*|}"
+
+    [[ -n "$ENTRY_CMD" ]] && det_cmd="$ENTRY_CMD"
+    [[ -n "$ENTRY_CWD" ]] && det_cwd="$ENTRY_CWD"
+    [[ -n "$REQ_FILE" ]] && det_req="$REQ_FILE"
+
+    if ! entry_triplet="$(_guided_pick_entry "$resolved" "$det_cmd" "$det_cwd" "$det_req")"; then
+      warn "Install cancelled."
+      return 2
+    fi
+    selected_cmd="${entry_triplet%%|*}"; entry_triplet="${entry_triplet#*|}"
+    selected_cwd="${entry_triplet%%|*}"; selected_req="${entry_triplet#*|}"
+  fi
+
+  say ""
+  say "Install summary:"
+  prompt_kv "Target" "$resolved"
+  prompt_kv "Name" "$target_name"
+  prompt_kv "Scope" "$scope"
+  if [[ -d "$resolved" ]]; then
+    if (( SYSTEM_MODE )); then
+      prompt_kv "App dir" "$SYSTEM_APPS/$target_name"
+      prompt_kv "Shim" "$SYSTEM_BIN/$target_name"
+    else
+      prompt_kv "App dir" "$APP_STORE/$target_name"
+      prompt_kv "Shim" "$BIN_DIR/$target_name"
+    fi
+    prompt_kv "Entry" "$selected_cmd"
+    [[ -n "$selected_cwd" ]] && prompt_kv "Workdir" "$selected_cwd"
+    if (( VENV_MODE )); then
+      prompt_kv "Venv" "enabled"
+      prompt_kv "Python" "${BOOT_PY:-python3}"
+    fi
+    [[ -n "$REQ_FILE" ]] && prompt_kv "Req file" "$REQ_FILE"
+    [[ -z "$REQ_FILE" && -n "$selected_req" ]] && prompt_kv "Req file" "$selected_req"
+  else
+    if (( SYSTEM_MODE )); then
+      prompt_kv "Shim" "$SYSTEM_BIN/$target_name"
+    else
+      prompt_kv "Shim" "$BIN_DIR/$target_name"
+    fi
+  fi
+  ask_yesno "Proceed?" "y" || { warn "Install cancelled."; return 2; }
+
+  if [[ -n "$REQ_FILE" ]]; then
+    effective_req="$REQ_FILE"
+  elif [[ -n "$selected_req" ]]; then
+    effective_req="$selected_req"
+  fi
+
+  if (( SYSTEM_MODE )) && [[ $EUID -ne 0 ]]; then
+    local -a reexec_argv=(install --system "$resolved" --name "$target_name")
+    if [[ -d "$resolved" ]]; then
+      reexec_argv+=(--entry "$selected_cmd")
+      [[ -n "$selected_cwd" ]] && reexec_argv+=(--cwd "$selected_cwd")
+      [[ -n "$effective_req" ]] && reexec_argv+=(--req "$effective_req")
+      if (( VENV_MODE )); then
+        reexec_argv+=(--venv --python "$BOOT_PY")
+      fi
+    fi
+    (( FORCE )) && reexec_argv+=(--force)
+    [[ "$COPY_MODE" == "link" ]] && reexec_argv+=(--link)
+    _reexec_with_sudo "${reexec_argv[@]}"
+    return $?
+  fi
+
+  INSTALL_NAME_OVERRIDE="$target_name"
+  if [[ -d "$resolved" ]]; then
+    ENTRY_CMD="$selected_cmd"
+    ENTRY_CWD="$selected_cwd"
+    [[ -n "$REQ_FILE" ]] || REQ_FILE="$effective_req"
+  else
+    ENTRY_CMD=""
+    ENTRY_CWD=""
+  fi
+
+  op_install "$resolved"
+  rc=$?
+
+  INSTALL_NAME_OVERRIDE="$saved_name"
+  ENTRY_CMD="$saved_entry"
+  ENTRY_CWD="$saved_cwd"
+  REQ_FILE="$saved_req"
+  return $rc
+}
+
+_dispatch_install_cli(){
+  local parse_rc
+  parse_rc=0
+  _parse_install_args_single_target "$@" || parse_rc=$?
+  (( parse_rc == 0 )) || return "$parse_rc"
+
+  if [[ -n "$MANIFEST_FILE" && -n "$FROM_DIR" ]]; then
+    err "Use only one source mode: --manifest or --from."
+    return 2
+  fi
+
+  if [[ -n "$MANIFEST_FILE" || -n "$FROM_DIR" ]]; then
+    if [[ ${#INSTALL_TARGET_ARGS[@]} -gt 0 ]]; then
+      err "Install accepts exactly one target. Use --manifest, --from, or run install multiple times."
+      return 2
+    fi
+    if [[ -n "$MANIFEST_FILE" ]]; then
+      op_install_manifest "$MANIFEST_FILE"
+      return $?
+    fi
+    op_install
+    return $?
+  fi
+
+  if [[ ${#INSTALL_TARGET_ARGS[@]} -eq 0 ]]; then
+    if [[ -t 1 ]]; then
+      __bm_tui_install_flow
+      return 0
+    fi
+    err "No install target provided."
+    return 1
+  fi
+
+  if [[ ${#INSTALL_TARGET_ARGS[@]} -gt 1 ]]; then
+    err "Install accepts exactly one target. Use --manifest, --from, or run install multiple times."
+    return 2
+  fi
+
+  local raw_target resolved_target
+  raw_target="${INSTALL_TARGET_ARGS[0]}"
+  resolved_target="$(_resolve_install_target "$raw_target")" || return 2
+  [[ -n "$resolved_target" ]] || { err "No install target provided."; return 1; }
+
+  if (( INSTALL_WIZARD_FORCE )); then
+    if [[ ! -t 0 || ! -t 1 ]]; then
+      err "Install wizard requires an interactive TTY."
+      return 2
+    fi
+    _guided_install_target "$raw_target"
+    return $?
+  fi
+  if (( INSTALL_PRO_DIRECTIVE )); then
+    if [[ ! -t 0 && -d "$resolved_target" && -z "$ENTRY_CMD" ]]; then
+      _noninteractive_install_requires_flags "$resolved_target"
+      return 2
+    fi
+    op_install "$resolved_target"
+    return $?
+  fi
+
+  if [[ ! -t 0 || ! -t 1 ]]; then
+    if [[ -d "$resolved_target" ]]; then
+      _noninteractive_install_requires_flags "$resolved_target"
+      return 2
+    fi
+    op_install "$resolved_target"
+    return $?
+  fi
+
+  _guided_install_target "$raw_target"
+  return $?
+}
+
 
 
 # --------------------------------------------------------------------------------------------------
@@ -2426,6 +2998,7 @@ ui_init(){
   else
     UI_BOLD=""; UI_DIM=""; UI_RESET=""; UI_CYAN=""; UI_GREEN=""; UI_YELLOW=""; UI_MAGENTA=""
   fi
+
   UI_WIDTH=${COLUMNS:-80}
 }
 
@@ -2501,6 +3074,340 @@ _app_readme_usage(){
 # --------------------------------------------------------------------------------------------------
 # App utilities (entry resolution + shim creation)
 # --------------------------------------------------------------------------------------------------
+_entry_has_shebang(){
+  head -n1 "$1" 2>/dev/null | grep -qE '^#!'
+}
+
+_list_entry_candidates(){
+  local d="$1"
+  [[ -d "$d" ]] || return 0
+
+  local app_name app_norm
+  app_name="$(basename "$d")"
+  app_norm="${app_name,,}"
+  app_norm="${app_norm//-/_}"
+
+  {
+    local f rel base low ext include score depth stem stem_low stem_norm
+    while IFS= read -r -d '' f; do
+      rel="${f#"$d/"}"
+      base="${rel##*/}"
+      low="${base,,}"
+      ext="${low##*.}"
+
+      case "$low" in
+        package.json|pyproject.toml)
+          # Useful language hints, but not runnable entrypoints.
+          continue
+          ;;
+        *.json|*.txt|*.md|*.markdown|*.log|*.ini|*.cfg|*.conf|*.service|*.yml|*.yaml)
+          continue
+          ;;
+      esac
+
+      include=0
+      case "$ext" in
+        sh|py|js|ts|rb|pl|go) include=1 ;;
+      esac
+      if (( ! include )); then
+        if [[ -x "$f" ]] || _entry_has_shebang "$f"; then
+          include=1
+        fi
+      fi
+      (( include )) || continue
+
+      score=0
+      stem="${low%.*}"
+      stem_low="${stem,,}"
+      stem_norm="${stem_low//-/_}"
+      case "$stem_low" in
+        __main__) ((score+=260)) ;;
+        main|app|cli|run|start|server) ((score+=220)) ;;
+        main_*|app_*|cli_*|run_*|start_*|server_*|*_main|*_cli|*_server) ((score+=140)) ;;
+      esac
+      [[ "$stem_norm" == "$app_norm" ]] && ((score+=170))
+
+      depth="${rel//[^\/]/}"
+      depth=${#depth}
+      if (( depth == 0 )); then
+        ((score+=120))
+      elif (( depth == 1 )); then
+        ((score+=70))
+      elif (( depth == 2 )); then
+        ((score+=35))
+      else
+        ((score+=10))
+      fi
+
+      [[ -x "$f" ]] && ((score+=70))
+      _entry_has_shebang "$f" && ((score+=60))
+      case "$rel" in
+        bin/*) ((score+=80)) ;;
+        src/*) ((score+=30)) ;;
+        cmd/*) ((score+=20)) ;;
+      esac
+      case "$ext" in
+        py) ((score+=35)) ;;
+        sh) ((score+=30)) ;;
+        js) ((score+=22)) ;;
+        ts) ((score+=18)) ;;
+        rb|pl) ((score+=16)) ;;
+        go) ((score+=12)) ;;
+      esac
+
+      printf '%s\t%s\n' "$score" "$rel"
+    done < <(
+      find "$d" \
+        \( -type d \( \
+          -name .git -o -name __pycache__ -o -name venv -o -name .venv -o \
+          -name node_modules -o -name dist -o -name build -o -name target -o \
+          -name .pytest_cache -o -name .mypy_cache -o -name .tox -o -name .direnv -o \
+          -name .idea -o -name .vscode \
+        \) -prune \) \
+        -o -type f -print0 2>/dev/null
+    )
+  } | sort -t$'\t' -k1,1nr -k2,2 | cut -f2-
+}
+
+_entry_cmd_relpath(){
+  local cmd="$1" rel=""
+  case "$cmd" in
+    ./*) rel="${cmd#./}" ;;
+    python\ *|python3\ *|node\ *|ruby\ *|perl\ *)
+      rel="${cmd#* }"
+      ;;
+    go\ run\ *)
+      rel="${cmd#go run }"
+      ;;
+    *)
+      rel=""
+      ;;
+  esac
+  [[ -n "$rel" ]] || return 1
+  [[ "$rel" == -m* ]] && return 1
+  rel="${rel#./}"
+  printf '%s\n' "$rel"
+}
+
+_entry_detect_uncertain(){
+  local cmd="$1" d="$2"
+  local -a sample=()
+  case "$cmd" in
+    "npm run start"|"npm start"|"deno task start"|"go run ."|"cargo run --release")
+      mapfile -t sample < <(_list_entry_candidates "$d" | sed -n '1,2p')
+      (( ${#sample[@]} > 1 )) && return 0
+      ;;
+  esac
+  return 1
+}
+
+_prompt_custom_entry_path(){
+  local d="$1" custom=""
+  while :; do
+    printf "  %s?%s Custom entry path (relative to app dir): " "$UI_CYAN" "$UI_RESET" > /dev/tty
+    IFS= read -r custom < /dev/tty || return 1
+    custom="${custom#./}"
+    [[ -n "$custom" ]] || { warn "Entry path cannot be empty."; continue; }
+    [[ "$custom" != /* ]] || { warn "Use a relative path inside the app directory."; continue; }
+    [[ -f "$d/$custom" ]] || { warn "File not found: $custom"; continue; }
+    printf '%s\n' "$custom"
+    return 0
+  done
+}
+
+_pick_entry_candidate(){
+  # ARG: appdir [suggested_rel] [confident] [suggested_cmd]
+  local d="$1" suggested_rel="${2:-}" confident="${3:-0}" suggested_cmd="${4:-}"
+  local -a all=() shown=()
+  local max_show=15 i=0
+  local c
+
+  mapfile -t all < <(_list_entry_candidates "$d")
+  for c in "${all[@]}"; do
+    shown+=("$c")
+    (( ++i >= max_show )) && break
+  done
+
+  if __has_fzf && [[ -t 1 ]]; then
+    local sel kind val rc header
+    header="Select entry file from $(basename "$d")"
+    [[ -n "$suggested_rel" ]] && header="$header (suggested: $suggested_rel)"
+    [[ -n "$suggested_cmd" ]] && header="$header (cmd: $suggested_cmd)"
+    sel="$(
+      {
+        if [[ -n "$suggested_cmd" ]]; then
+          printf 'CMD\t%s\n' "$suggested_cmd"
+        fi
+        if (( confident )) && [[ -n "$suggested_rel" ]]; then
+          printf 'KEEP\t%s\n' "$suggested_rel"
+        fi
+        local p
+        for p in "${shown[@]}"; do printf 'FILE\t%s\n' "$p"; done
+        printf 'CUSTOM\t(custom path)\n'
+        printf 'ABORT\t(abort)\n'
+      } | fzf_run \
+            --delimiter=$'\t' \
+            --with-nth=2 \
+            --prompt="Entry file > " \
+            --height=60% \
+            --reverse \
+            --header="$header"
+    )"
+    rc=$?
+    (( rc == 0 )) || return 2
+    kind="${sel%%$'\t'*}"
+    val="${sel#*$'\t'}"
+    case "$kind" in
+      CMD)
+        printf '__CMD__:%s\n' "$val"
+        return 0
+        ;;
+      KEEP|FILE)
+        printf '%s\n' "$val"
+        return 0
+        ;;
+      CUSTOM)
+        _prompt_custom_entry_path "$d"
+        return $?
+        ;;
+      ABORT)
+        return 2
+        ;;
+      *)
+        return 2
+        ;;
+    esac
+  fi
+
+  while :; do
+    printf "\nSelect entry file for %s\n" "$(basename "$d")" > /dev/tty
+    if [[ -n "$suggested_cmd" ]]; then
+      printf "  s) use suggested command: %s\n" "$suggested_cmd" > /dev/tty
+    fi
+    if [[ -n "$suggested_rel" ]]; then
+      printf "  suggested: %s\n" "$suggested_rel" > /dev/tty
+    fi
+    if ((${#shown[@]})); then
+      local n
+      for n in "${!shown[@]}"; do
+        printf "  %2d) %s\n" "$((n+1))" "${shown[$n]}" > /dev/tty
+      done
+    else
+      printf "  (no likely entry files found)\n" > /dev/tty
+    fi
+    printf "   0) custom path\n" > /dev/tty
+    printf "   q) abort\n" > /dev/tty
+
+    if (( confident )) && [[ -n "$suggested_rel" ]]; then
+      printf "  Pick selection [Enter=%s]: " "$suggested_rel" > /dev/tty
+    else
+      printf "  Pick selection: " > /dev/tty
+    fi
+
+    local choice=""
+    IFS= read -r choice < /dev/tty || return 2
+
+    if [[ -z "$choice" && -n "$suggested_rel" && $confident -eq 1 ]]; then
+      printf '%s\n' "$suggested_rel"
+      return 0
+    fi
+    case "$choice" in
+      s|S)
+        if [[ -n "$suggested_cmd" ]]; then
+          printf '__CMD__:%s\n' "$suggested_cmd"
+          return 0
+        fi
+        warn "No suggested command available."
+        ;;
+      q|Q) return 2 ;;
+      0)
+        _prompt_custom_entry_path "$d"
+        return $?
+        ;;
+      *)
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#shown[@]} )); then
+          printf '%s\n' "${shown[$((choice-1))]}"
+          return 0
+        fi
+        warn "Invalid selection."
+        ;;
+    esac
+  done
+}
+
+_entry_cmd_from_candidate(){
+  # ARG: appdir relpath ; OUT: "CMD|CWD|REQ"
+  local d="$1" rel="$2" req="" ext="" qrel="" cmd=""
+  [[ -f "$d/requirements.txt" ]] && req="requirements.txt"
+
+  rel="${rel#./}"
+  rel="${rel#/}"
+  [[ -n "$rel" && -f "$d/$rel" ]] || { echo "||"; return 1; }
+
+  ext="${rel##*.}"
+  ext="${ext,,}"
+  printf -v qrel '%q' "$rel"
+
+  case "$ext" in
+    py) cmd="python3 $qrel" ;;
+    sh)
+      if [[ -x "$d/$rel" ]] || _entry_has_shebang "$d/$rel"; then
+        cmd="./$qrel"
+      else
+        cmd="bash $qrel"
+      fi
+      ;;
+    js) cmd="node $qrel" ;;
+    ts)
+      if [[ -f "$d/package.json" ]] && grep -qE '"start"[[:space:]]*:' "$d/package.json" 2>/dev/null; then
+        cmd="npm run start"
+      else
+        cmd="node $qrel"
+      fi
+      ;;
+    rb) cmd="ruby $qrel" ;;
+    pl) cmd="perl $qrel" ;;
+    go) cmd="go run $qrel" ;;
+    rs)
+      if [[ -f "$d/Cargo.toml" ]]; then
+        if [[ "$rel" == "src/main.rs" ]]; then
+          cmd="cargo run --release"
+        elif [[ "$rel" == src/bin/*.rs ]]; then
+          local bin_name qbin
+          bin_name="${rel#src/bin/}"
+          bin_name="${bin_name%.rs}"
+          if [[ -n "$bin_name" ]]; then
+            printf -v qbin '%q' "$bin_name"
+            cmd="cargo run --release --bin $qbin"
+          fi
+        fi
+      fi
+      ;;
+    *)  cmd="./$qrel" ;;
+  esac
+
+  [[ -n "$cmd" ]] || { echo "||$req"; return 1; }
+  echo "$cmd||$req"
+}
+
+_entry_selection_error(){
+  local name="$1" d="$2" detected="${3:-}" shown=0 p
+
+  if [[ -n "$detected" ]]; then
+    err "App '$name' auto-detected entry '$detected' but selection is required."
+  else
+    err "App '$name' missing bin/$name and no entry could be detected."
+  fi
+  err "Non-interactive mode: pass --entry manually."
+  err "Likely entry files:"
+  while IFS= read -r p; do
+    err "  - $p"
+    (( ++shown >= 12 )) && break
+  done < <(_list_entry_candidates "$d")
+  (( shown == 0 )) && err "  (no likely entry files found)"
+  err "Try: --entry 'python3 path/to/main.py' [--venv --req requirements.txt]"
+}
+
 _detect_entry(){
   # ARG: appdir; OUT: "CMD|CWD|REQ" (REQ may be blank)
   local d="$1" lang="" req=""
@@ -3104,8 +4011,10 @@ ask_csv_validated(){
 # --------------------------------------------------------------------------------------------------
 _install_app(){
   ensure_apps; ensure_bin
-  local src="$1" name dest mode="copy"
-  name=$(basename "$src"); dest="$APP_STORE/$name"
+  local src="$1" src_name name dest mode="copy"
+  src_name="$(basename "$src")"
+  name="${INSTALL_NAME_OVERRIDE:-$src_name}"
+  dest="$APP_STORE/$name"
 
   rm -rf "$dest"
   if [[ "$COPY_MODE" == "link" ]]; then
@@ -3133,9 +4042,13 @@ _install_app(){
   fi
 
   # Conventional layout?
-  if [[ -x "$dest/bin/$name" ]]; then
+  if [[ -x "$dest/bin/$name" || -x "$dest/bin/$src_name" ]]; then
     local entry_path
-    entry_path="$(_app_entry "$dest")"
+    if [[ -x "$dest/bin/$name" ]]; then
+      entry_path="$dest/bin/$name"
+    else
+      entry_path="$dest/bin/$src_name"
+    fi
     _make_shim "$name" "$entry_path"
     entry="$entry_path"
     version="$(script_version "$dest")"
@@ -3147,8 +4060,13 @@ _install_app(){
   local triplet; triplet="$(_detect_entry "$dest")"
   local cmd="${triplet%%|*}"; triplet="${triplet#*|}"
   local cwd="${triplet%%|*}"; local req="${triplet#*|}"
+  local need_pick=0
+  [[ -z "$cmd" ]] && need_pick=1
+  if [[ -n "$cmd" ]] && _entry_detect_uncertain "$cmd" "$dest"; then
+    need_pick=1
+  fi
 
-  if [[ -n "$cmd" ]]; then
+  if (( ! need_pick )); then
     entry="$cmd"
     if (( VENV_MODE )) || [[ "$cmd" == python* || "$cmd" == */python* ]]; then
       _make_shim_cmd_venv "$name" "$dest" "$cmd" "$cwd" "${REQ_FILE:-$req}" "$BOOT_PY"
@@ -3162,15 +4080,61 @@ _install_app(){
     return 0
   fi
 
-  rm -rf "$dest"
-  err "App '$name' missing bin/$name and no entry could be detected. Try: --entry 'python3 path/to/main.py' [--venv --req requirements.txt]"
-  return 5
+  local suggested_rel=""
+  local suggested_cmd="$cmd"
+  [[ -n "$cmd" ]] && suggested_rel="$(_entry_cmd_relpath "$cmd" || true)"
+
+  if [[ ! -t 0 ]]; then
+    _entry_selection_error "$name" "$dest" "$cmd"
+    rm -rf "$dest"
+    return 5
+  fi
+
+  local picked_sel="" picked_rel="" picked_triplet="" picked_cmd="" picked_cwd="" picked_req=""
+  if ! picked_sel="$(_pick_entry_candidate "$dest" "$suggested_rel" 0 "$suggested_cmd")"; then
+    rm -rf "$dest"
+    err "Entry selection aborted for '$name'."
+    return 5
+  fi
+  if [[ "$picked_sel" == __CMD__:* ]]; then
+    picked_cmd="${picked_sel#__CMD__:}"
+    picked_cwd="$cwd"
+    picked_req="$req"
+  else
+    picked_rel="$picked_sel"
+    picked_triplet="$(_entry_cmd_from_candidate "$dest" "$picked_rel")"
+    picked_cmd="${picked_triplet%%|*}"; picked_triplet="${picked_triplet#*|}"
+    picked_cwd="${picked_triplet%%|*}"; picked_req="${picked_triplet#*|}"
+  fi
+  if [[ -z "$picked_cmd" ]]; then
+    rm -rf "$dest"
+    if [[ -n "$picked_rel" ]]; then
+      err "Could not build an entry command from '$picked_rel'. Try --entry manually."
+    else
+      err "Could not build an entry command. Try --entry manually."
+    fi
+    return 5
+  fi
+
+  entry="$picked_cmd"
+  if (( VENV_MODE )) || [[ "$picked_cmd" == python* || "$picked_cmd" == */python* ]]; then
+    _make_shim_cmd_venv "$name" "$dest" "$picked_cmd" "$picked_cwd" "${REQ_FILE:-$picked_req}" "$BOOT_PY"
+    entry_kind="selected-venv"
+  else
+    _make_shim_cmd "$name" "$dest" "$picked_cmd" "$picked_cwd"
+    entry_kind="selected"
+  fi
+  version="$(script_version "$dest")"
+  printf 'installed\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$dest" "$version" "$mode" "$entry_kind" "$entry"
+  return 0
 }
 
 _install_app_system(){
   ensure_system_write; ensure_system_dirs
-  local src="$1" name dest mode="copy"
-  name=$(basename "$src"); dest="$SYSTEM_APPS/$name"
+  local src="$1" src_name name dest mode="copy"
+  src_name="$(basename "$src")"
+  name="${INSTALL_NAME_OVERRIDE:-$src_name}"
+  dest="$SYSTEM_APPS/$name"
 
   if [[ -e "$dest" || -L "$dest" ]]; then
     if ! _as_root rm -rf "$dest"; then
@@ -3200,9 +4164,13 @@ _install_app_system(){
     return 0
   fi
 
-  if [[ -x "$dest/bin/$name" ]]; then
+  if [[ -x "$dest/bin/$name" || -x "$dest/bin/$src_name" ]]; then
     local entry_path
-    entry_path="$(_app_entry "$dest")"
+    if [[ -x "$dest/bin/$name" ]]; then
+      entry_path="$dest/bin/$name"
+    else
+      entry_path="$dest/bin/$src_name"
+    fi
     _make_shim_system "$name" "$entry_path"
     entry="$entry_path"
     version="$(script_version "$dest")"
@@ -3213,8 +4181,13 @@ _install_app_system(){
   local triplet; triplet="$(_detect_entry "$dest")"
   local cmd="${triplet%%|*}"; triplet="${triplet#*|}"
   local cwd="${triplet%%|*}"; local req="${triplet#*|}"
+  local need_pick=0
+  [[ -z "$cmd" ]] && need_pick=1
+  if [[ -n "$cmd" ]] && _entry_detect_uncertain "$cmd" "$dest"; then
+    need_pick=1
+  fi
 
-  if [[ -n "$cmd" ]]; then
+  if (( ! need_pick )); then
     entry="$cmd"
     if (( VENV_MODE )) || [[ "$cmd" == python* || "$cmd" == */python* ]]; then
       _make_shim_cmd_venv_system "$name" "$dest" "$cmd" "$cwd" "${REQ_FILE:-$req}" "$BOOT_PY"
@@ -3228,9 +4201,53 @@ _install_app_system(){
     return 0
   fi
 
-  rm -rf "$dest"
-  err "App '$name' missing bin/$name and no entry could be detected. Try: --entry 'python3 path/to/main.py' [--venv --req requirements.txt]"
-  return 5
+  local suggested_rel=""
+  local suggested_cmd="$cmd"
+  [[ -n "$cmd" ]] && suggested_rel="$(_entry_cmd_relpath "$cmd" || true)"
+
+  if [[ ! -t 0 ]]; then
+    _entry_selection_error "$name" "$dest" "$cmd"
+    rm -rf "$dest"
+    return 5
+  fi
+
+  local picked_sel="" picked_rel="" picked_triplet="" picked_cmd="" picked_cwd="" picked_req=""
+  if ! picked_sel="$(_pick_entry_candidate "$dest" "$suggested_rel" 0 "$suggested_cmd")"; then
+    rm -rf "$dest"
+    err "Entry selection aborted for '$name'."
+    return 5
+  fi
+  if [[ "$picked_sel" == __CMD__:* ]]; then
+    picked_cmd="${picked_sel#__CMD__:}"
+    picked_cwd="$cwd"
+    picked_req="$req"
+  else
+    picked_rel="$picked_sel"
+    picked_triplet="$(_entry_cmd_from_candidate "$dest" "$picked_rel")"
+    picked_cmd="${picked_triplet%%|*}"; picked_triplet="${picked_triplet#*|}"
+    picked_cwd="${picked_triplet%%|*}"; picked_req="${picked_triplet#*|}"
+  fi
+  if [[ -z "$picked_cmd" ]]; then
+    rm -rf "$dest"
+    if [[ -n "$picked_rel" ]]; then
+      err "Could not build an entry command from '$picked_rel'. Try --entry manually."
+    else
+      err "Could not build an entry command. Try --entry manually."
+    fi
+    return 5
+  fi
+
+  entry="$picked_cmd"
+  if (( VENV_MODE )) || [[ "$picked_cmd" == python* || "$picked_cmd" == */python* ]]; then
+    _make_shim_cmd_venv_system "$name" "$dest" "$picked_cmd" "$picked_cwd" "${REQ_FILE:-$picked_req}" "$BOOT_PY"
+    entry_kind="selected-venv"
+  else
+    _make_shim_cmd_system "$name" "$dest" "$picked_cmd" "$picked_cwd"
+    entry_kind="selected"
+  fi
+  version="$(script_version "$dest")"
+  printf 'installed\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$dest" "$version" "$mode" "$entry_kind" "$entry"
+  return 0
 }
 
 _uninstall_app(){
@@ -3341,6 +4358,10 @@ op_install(){
   local targets=("$@")
   [[ -n "$FROM_DIR" ]] && mapfile -t targets < <(list_targets)
   [[ ${#targets[@]} -gt 0 ]] || { err "Nothing to install"; return 2; }
+  local single_target_name=""
+  if [[ ${#targets[@]} -eq 1 && -n "$INSTALL_NAME_OVERRIDE" ]]; then
+    single_target_name="$INSTALL_NAME_OVERRIDE"
+  fi
 
   maybe_snapshot
 
@@ -3432,13 +4453,15 @@ op_install(){
       continue
     fi
 
-    local base dst tmp mode="copy" name version
+    local base dst tmp mode="copy" name version install_name
     base=$(basename "$src")
+    install_name="${base%.*}"
+    [[ -n "$single_target_name" ]] && install_name="$single_target_name"
     if (( SYSTEM_MODE )); then
-      dst="${target_bin}/${base%.*}"
+      dst="${target_bin}/${install_name}"
       ensure_system_write; ensure_system_dirs
     else
-      dst="${target_bin}/${base%.*}"
+      dst="${target_bin}/${install_name}"
       ensure_bin
     fi
     name=$(basename "$dst")
@@ -6218,19 +7241,7 @@ __bm_run_action_safe() {
   local a="$1"; shift || true
   case "$a" in
     install)
-      # DO NOT shift here — outer dispatcher already shifted the action off.
-      if [[ -n "${MANIFEST_FILE:-}" ]]; then
-        op_install_manifest "$MANIFEST_FILE" "$@"
-      elif [[ $# -gt 0 ]]; then
-        # args present → install exactly what was passed (path/URL), no picker
-        op_install "$@"
-      elif [[ -t 1 ]]; then
-        # interactive and no args → open TUI
-        __bm_tui_install_flow
-      else
-        err "No install target provided."
-        return 1
-      fi
+      _dispatch_install_cli "$@"
       ;;
     uninstall)
       # Use args if provided; only open TUI when no args and interactive
@@ -6302,12 +7313,12 @@ parse_common_opts() {
   set -- "${ARGS_OUT[@]}"
   ARGS_OUT=()
 
-  # nothing or first isn't a flag? nothing to parse
-  [[ $# -gt 0 && "${1:-}" == -* ]] || return 1
+  [[ $# -gt 0 ]] || return 1
 
   local handled=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --system) SYSTEM_MODE=1; shift ;;
       --reindex) REINDEX_REQUEST=1; shift ;;
       -q|--quiet) QUIET=1; shift ;;
       --no-clear) BINMAN_NO_CLEAR=1; shift ;;
@@ -6327,6 +7338,20 @@ parse_common_opts() {
           while [[ $# -gt 0 ]]; do ARGS_OUT+=("$1"); shift; done; break ;;
     esac
   done
+
+  # Allow --system anywhere (e.g., "install X --system") while keeping
+  # command/positional args clean for dispatch.
+  if [[ ${#ARGS_OUT[@]} -gt 0 ]]; then
+    local cleaned=() arg
+    for arg in "${ARGS_OUT[@]}"; do
+      if [[ "$arg" == "--system" ]]; then
+        SYSTEM_MODE=1
+        continue
+      fi
+      cleaned+=("$arg")
+    done
+    ARGS_OUT=("${cleaned[@]}")
+  fi
 
   return $handled
 }
@@ -7119,31 +8144,30 @@ _parse_version(){
 # Main
 # --------------------------------------------------------------------------------------------------
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  # FLAGS ONLY when first arg looks like a flag
-  if [[ "${1:-}" == -* ]]; then
-    if parse_common_opts "$@"; then exit 0; fi
-    set -- "${ARGS_OUT[@]}"
+  _orig_argv=("$@")
+  if parse_common_opts "$@"; then exit 0; fi
 
-    if (( REINDEX_REQUEST )); then
-      bm_force_reindex
-      if build_inventory; then
-        (( QUIET )) || ok "Inventory rebuilt."
-      else
-        warn "No manifest entries found."
-      fi
-      [[ $# -eq 0 ]] && exit 0
+  # Auto-elevate system write actions for CLI parity with TUI system mode.
+  _action="${ARGS_OUT[0]:-}"
+  if (( SYSTEM_MODE )) && [[ $EUID -ne 0 ]]; then
+    case "${_action:-}" in
+      install)
+        _reexec_with_sudo "${_orig_argv[@]}"
+        exit 1
+        ;;
+    esac
+  fi
+
+  set -- "${ARGS_OUT[@]}"
+
+  if (( REINDEX_REQUEST )); then
+    bm_force_reindex
+    if build_inventory; then
+      (( QUIET )) || ok "Inventory rebuilt."
+    else
+      warn "No manifest entries found."
     fi
-
-    if [[ $# -eq 0 ]]; then
-      if __has_fzf && [[ -t 1 ]]; then
-        __bm_menu_loop
-        exit 0
-      else
-        binman_tui
-        exit 0
-      fi
-    fi
-
+    [[ $# -eq 0 ]] && exit 0
   fi
 
   # INTERACTIVE (no args)
@@ -7173,7 +8197,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       bm_render_preview "$@"
       ;;
     *)
-      __bm_run_action_safe "$ACTION" "$@" || :
+      __bm_run_action_safe "$ACTION" "$@"
       ;;
   esac
 fi
