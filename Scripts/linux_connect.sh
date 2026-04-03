@@ -292,7 +292,7 @@ discover_pi_ip() {
     (( ping_attempts >= max_scan_pings )) && break
     [[ -n "${tried_ip[$candidate]+x}" ]] && continue
     tried_ip["$candidate"]=1
-    ((ping_attempts++))
+    ((++ping_attempts))
     if ping -c1 -W1 -I "$ifc" "$candidate" >/dev/null 2>&1; then
       DISCOVERED_PI_IP="$candidate"
       say "Detected Pi peer on $ifc: $DISCOVERED_PI_IP (from neighbor/route discovery)"
@@ -379,7 +379,7 @@ discover_pi_ip() {
     (( ping_attempts >= max_scan_pings )) && break
     [[ -n "${tried_ip[$candidate]+x}" ]] && continue
     tried_ip["$candidate"]=1
-    ((ping_attempts++))
+    ((++ping_attempts))
     if ping -c1 -W1 -I "$ifc" "$candidate" >/dev/null 2>&1; then
       DISCOVERED_PI_IP="$candidate"
       say "Detected Pi peer on $ifc: $DISCOVERED_PI_IP (from neighbor/route discovery)"
@@ -421,7 +421,7 @@ discover_pi_ip() {
       [[ "$ip" == "$host_ip" ]] && continue
       [[ -n "${tried_ip[$ip]+x}" ]] && continue
       tried_ip["$ip"]=1
-      ((ping_attempts++))
+      ((++ping_attempts))
       if ping -c1 -W1 -I "$ifc" "$ip" >/dev/null 2>&1; then
         DISCOVERED_PI_IP="$ip"
         say "Detected Pi peer on $ifc: $DISCOVERED_PI_IP (from bounded 10.* scan)"
@@ -438,7 +438,7 @@ discover_pi_ip() {
       [[ "$ip" == "$host_ip" ]] && continue
       [[ -n "${tried_ip[$ip]+x}" ]] && continue
       tried_ip["$ip"]=1
-      ((ping_attempts++))
+      ((++ping_attempts))
       if ping -c1 -W1 -I "$ifc" "$ip" >/dev/null 2>&1; then
         DISCOVERED_PI_IP="$ip"
         say "Detected Pi peer on $ifc: $DISCOVERED_PI_IP (from bounded 10.* scan)"
@@ -472,7 +472,7 @@ discover_pi_ip() {
         [[ "$ip" == "$hop_host_ip" ]] && continue
         [[ -n "${tried_ip[$ip]+x}" ]] && continue
         tried_ip["$ip"]=1
-        ((ping_attempts++))
+        ((++ping_attempts))
         if ping -c1 -W1 -I "$ifc" "$ip" >/dev/null 2>&1; then
           while read -r addr; do
             ip addr del "$addr" dev "$ifc" 2>/dev/null || true
@@ -497,7 +497,7 @@ discover_pi_ip() {
         [[ "$ip" == "$hop_host_ip" ]] && continue
         [[ -n "${tried_ip[$ip]+x}" ]] && continue
         tried_ip["$ip"]=1
-        ((ping_attempts++))
+        ((++ping_attempts))
         if ping -c1 -W1 -I "$ifc" "$ip" >/dev/null 2>&1; then
           while read -r addr; do
             ip addr del "$addr" dev "$ifc" 2>/dev/null || true
@@ -580,9 +580,9 @@ wait_for_stable_link() {
   local ip="$1" ifc="$2"
   local ok=0 tries=0
   while true; do
-    ((tries++))
+    ((++tries))
     if ping -c1 -W"$PING_TIMEOUT" -I "$ifc" "$ip" &>/dev/null; then
-      ((ok++))
+      ((++ok))
       say "Ping success ($ok/$REQUIRED_PINGS) via $ifc"
       (( ok >= REQUIRED_PINGS )) && return 0
     else
