@@ -168,6 +168,38 @@ find_usb_nics() {
   done
 }
 
+candidate_sort_key() {
+  local ifc="$1"
+  case "$ifc" in
+    usb*|rndis*) echo "0:$ifc" ;;
+    enx*) echo "1:$ifc" ;;
+    enp*u*) echo "2:$ifc" ;;
+    *) echo "9:$ifc" ;;
+  esac
+}
+
+sort_candidate_ifaces() {
+  local ifc
+  for ifc in "$@"; do
+    candidate_sort_key "$ifc"
+  done | sort | cut -d: -f2-
+}
+
+cleanup_host_subnet_from_other_ifaces() {
+  local keep_ifc="$1" host_ip_cidr="$2"
+  local host_ip prefix ifc addr
+  host_ip="${host_ip_cidr%%/*}"
+  prefix="${host_ip%.*}"
+  for ifc in /sys/class/net/*; do
+    ifc="$(basename "$ifc")"
+    [[ "$ifc" == "$keep_ifc" || "$ifc" == "lo" ]] && continue
+    while read -r addr; do
+      [[ -n "$addr" ]] || continue
+      ip addr del "$addr" dev "$ifc" 2>/dev/null || true
+    done < <(ip -o -4 addr show dev "$ifc" 2>/dev/null | awk -v pfx="$prefix" '$4 ~ ("^" pfx "\\.") {print $4}')
+  done
+}
+
 # -----------------------------------------------------------------------------
 # Configure IP + bring link up
 # -----------------------------------------------------------------------------
@@ -664,12 +696,14 @@ main() {
 
   mapfile -t CANDIDATES < <(find_usb_nics)
   (( ${#CANDIDATES[@]} > 0 )) || die "No USB gadget interfaces detected."
+  mapfile -t CANDIDATES < <(sort_candidate_ifaces "${CANDIDATES[@]}")
 
   local auto_peer_found=0 last_iface=""
   for iface in "${CANDIDATES[@]}"; do
     local pi_peer="$PI_IP"
     last_iface="$iface"
     say "Trying $iface..."
+    cleanup_host_subnet_from_other_ifaces "$iface" "$HOST_IP_CIDR"
     configure_usb_iface "$iface" "$HOST_IP_CIDR" || continue
     [[ "$backend" == "nft" ]] && enable_nat_nft "$iface" "$upstream" || enable_nat_iptables "$iface" "$upstream"
 
@@ -679,11 +713,13 @@ main() {
         auto_peer_found=1
       else
         warn "No peer detected on $iface; gadget may not be configured on the Pi side."
+        cleanup_host_subnet_from_other_ifaces "" "$HOST_IP_CIDR"
         continue
       fi
     fi
 
     if wait_for_stable_link "$pi_peer" "$iface"; then
+      cleanup_host_subnet_from_other_ifaces "$iface" "$HOST_IP_CIDR"
       say "Connected successfully via $iface"
       [[ "${PERSIST:-0}" == "1" ]] && install_systemd_timer
 
@@ -700,6 +736,8 @@ main() {
 
       exit 0
     fi
+
+    cleanup_host_subnet_from_other_ifaces "" "$HOST_IP_CIDR"
   done
 
   if [[ -z "$PI_IP" && "$auto_peer_found" -eq 0 ]]; then
