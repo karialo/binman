@@ -188,7 +188,7 @@ after an install target.
 
 ---
 
-### install
+### Install
 
 #### Noob mode
 
@@ -229,7 +229,7 @@ use the app-store venv flow described in [Python environments](#app-detection-an
 
 ---
 
-### uninstall
+### Uninstall
 
 #### Noob mode
 
@@ -251,7 +251,7 @@ snapshot only when `BINMAN_AUTO_BACKUP=1` is enabled.
 
 ---
 
-### verify
+### Verify
 
 #### Noob mode
 
@@ -273,7 +273,7 @@ public `verify` command. Failures use a non-zero status.
 
 ---
 
-### list
+### List
 
 #### Noob mode
 
@@ -294,7 +294,7 @@ may be `unknown` when no supported marker is present.
 
 ---
 
-### scripts
+### Scripts
 
 #### Noob mode
 
@@ -315,7 +315,7 @@ description metadata; BinMan installs the actual third field, the script path.
 
 ---
 
-### update
+### Update
 
 #### Noob mode
 
@@ -336,7 +336,7 @@ current parser does not wire that option into the public update command.
 
 ---
 
-### doctor
+### Doctor
 
 #### Noob mode
 
@@ -366,7 +366,7 @@ installed. It does not reload the current shell.
 
 ---
 
-### docker
+### Docker
 
 #### Noob mode
 
@@ -401,7 +401,7 @@ read the preview before using `remove`, `nuke`, or `prune`.
 
 ---
 
-### backup and restore
+### Backup and Restore
 
 #### Noob mode
 
@@ -430,7 +430,7 @@ does not restore external dependencies or a shell's PATH.
 
 ---
 
-### rollback and prune-rollbacks
+### Rollback and Prune-Rollbacks
 
 #### Noob mode
 
@@ -459,7 +459,7 @@ delete unrelated newer files.
 
 ---
 
-### bundle
+### Bundle
 
 #### Noob mode
 
@@ -478,7 +478,7 @@ runtimes, Docker images, or shell configuration.
 
 ---
 
-### analyze
+### Analyze
 
 #### Noob mode
 
@@ -496,7 +496,9 @@ files found with `find -xdev`. It skips `/proc`, `/sys`, `/dev`, and `/run` in
 the file scan and may use the configured sudo helper for unreadable locations.
 It does not delete anything; use `sysclean` for interactive cleanup.
 
-### new
+---
+
+### New
 
 #### Noob mode
 
@@ -520,7 +522,7 @@ descriptions, authorship, manifests, Git setup, or container choices.
 
 ---
 
-### `wizard`
+### Wizard
 
 #### Noob mode
 
@@ -578,7 +580,7 @@ will build or that the selected entry command is correct.
 
 ---
 
-### `tui`
+### TUI
 
 #### Noob mode
 
@@ -601,7 +603,7 @@ subcommand; invoke `binman` with no arguments instead.
 
 ---
 
-### test, sudo, version, and help
+### Test, Sudo, Version, and Help
 
 #### Noob mode
 
@@ -760,7 +762,7 @@ help text, not on marketing promises from an earlier K.A.R.I. fever dream.
 
 ---
 
-### checksum
+### Checksum
 
 #### Noob mode
 
@@ -783,7 +785,7 @@ Hash length selects MD5/SHA-1/SHA-256/SHA-512; supported tools must exist as
 
 ---
 
-### copy
+### Copy
 
 #### Noob mode
 
@@ -804,7 +806,7 @@ the dry run and understand the permissions of the destination.
 
 ---
 
-### move
+### Move
 
 #### Noob mode
 
@@ -826,7 +828,7 @@ verification mismatch returns status 3 and leaves the source in place.
 
 ---
 
-### verify
+### Verify
 
 #### Noob mode
 
@@ -850,7 +852,7 @@ creating a security guarantee.
 
 ---
 
-### sysclean
+### Sysclean
 
 #### Noob mode
 
@@ -880,7 +882,7 @@ review the proposed paths before confirming.
 
 ---
 
-### flash
+### Flash
 
 #### Noob mode
 
@@ -910,7 +912,7 @@ destroy the selected device; never trust `/dev/sdX` as a literal example.
 
 ---
 
-### prep-headless
+### Prep-Headless
 
 #### Noob mode
 
@@ -930,7 +932,7 @@ the partition is the right device or support hidden-network options.
 
 ---
 
-### sd-list
+### SD-List
 
 #### Noob mode
 
@@ -949,7 +951,7 @@ candidate list, not a complete removable-device classifier; confirm with
 
 ---
 
-### find-pi
+### Find-Pi
 
 #### Noob mode
 
@@ -970,7 +972,7 @@ hostname.
 
 ---
 
-### finder
+### Finder
 
 #### Noob mode
 
@@ -990,7 +992,7 @@ file contents, and suppresses find errors.
 
 ---
 
-### findinfiles
+### Findinfiles
 
 #### Noob mode
 
@@ -1017,7 +1019,7 @@ match and 1 when it finds none.
 
 ---
 
-### scanner
+### Scanner
 
 #### Noob mode
 
@@ -1038,7 +1040,7 @@ inventory scanner, not a stealth tool and not a vulnerability assessment.
 
 ---
 
-### wifi-scanner
+### WiFi-Scanner
 
 #### Noob mode
 
@@ -1061,7 +1063,7 @@ system tool. It scans; it does not connect to networks.
 
 ---
 
-### netdiag
+### Netdiag
 
 #### Noob mode
 
@@ -1086,7 +1088,7 @@ redacted support bundle. A default target may be prompted for or fall back to
 
 ---
 
-### rsync-backup
+### Rsync-Backup
 
 #### Noob mode
 
@@ -1106,7 +1108,7 @@ the intended mount beyond checking that the path is a directory.
 
 ---
 
-### gitprep
+### Gitprep
 
 #### Noob mode
 
@@ -1130,7 +1132,7 @@ create a remote, so run it in the intended project directory.
 
 ---
 
-### gitremove
+### Gitremove
 
 #### Noob mode
 
@@ -1151,7 +1153,7 @@ and is therefore appropriate only for carefully controlled automation.
 
 ---
 
-### push
+### Push
 
 #### Noob mode
 
@@ -1174,7 +1176,7 @@ CLI access.
 
 ---
 
-### kinstall
+### Kinstall
 
 #### Noob mode
 
@@ -1202,7 +1204,7 @@ use `--choose` or an exact identifier when ambiguity matters.
 
 ---
 
-### linux_connect
+### Linux Connect
 
 #### Noob mode
 
@@ -1229,7 +1231,7 @@ remove its rules if your host's network policy is strict.
 
 ---
 
-### refresh-ssh
+### Refresh-SSH
 
 #### Noob mode
 
@@ -1252,7 +1254,7 @@ key.
 
 ---
 
-### flash-adjacent network helpers: find-pi, sd-list, and prep-headless
+### Flash-Adjacent Network Helpers: Find-Pi, SD-List, and Prep-Headless
 
 #### Noob mode
 
@@ -1274,7 +1276,7 @@ until you confirm it independently.
 
 ---
 
-### tailscalesetup
+### Tailscale Setup
 
 #### Noob mode
 
