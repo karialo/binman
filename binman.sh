@@ -6009,18 +6009,15 @@ op_scripts(){
     for path in "${files[@]}"; do
       name="$(basename "$path")"
       ver="$(script_version "$path")"
-      desc="$(script_desc "$path")"
-      desc="${desc:-No description}"
-      if (( ${#desc} > 72 )); then desc="${desc:0:69}..."; fi
-      printf -v display '%-24s %-8s %s' "$name" "${ver:-unknown}" "$desc"
+      printf -v display '%-28s %-8s' "$name" "${ver:-unknown}"
       rows+=("${display}"$'\t'"${path}")
     done
     local preview_cmd
-    preview_cmd='source "$BINMAN_SELF"; p="{2}"; printf "\033[1m%s\033[0m\\n\\nVersion: %s\\nPath: %s\\n\\nDescription:\\n%s\\n\\nInstall with:\\nbinman install %q\\n" "$(basename "$p")" "$(script_version "$p")" "$p" "$(script_desc "$p")" "$p"'
+    preview_cmd='source "$BINMAN_SELF"; p="{2}"; d="$(script_desc "$p")"; printf "\033[1m%s\033[0m\\n\\nVersion: %s\\nPath: %s\\n\\nDescription:\\n" "$(basename "$p")" "$(script_version "$p")" "$p"; printf "%s\\n" "${d:-No description}" | fold -s -w 52; printf "\\nInstall with:\\nbinman install %q\\n" "$p"'
     sel="$(printf '%s\n' "${rows[@]}" | fzf_run --ansi --border --height=100% --layout=reverse \
       --delimiter=$'\t' --with-nth=1 --preview "$preview_cmd" \
       --preview-window=right,55%,wrap --prompt='Bundled Scripts ▸ ' \
-      --header='↑↓ navigate • Enter=Install • Esc=Back')" || true
+      --header='Script                         Version • ↑↓ navigate • Enter=Install • Esc=Back')" || true
     [[ -n "$sel" ]] || { say "Cancelled."; return 0; }
     path="${sel#*$'\t'}"
   else
