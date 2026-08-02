@@ -1,188 +1,328 @@
 # BinMan (Binary Manager)
 
-Because your `~/Downloads` folder is not a filing system, champ. BinMan is the K.A.R.I-approved way to grab your loose scripts, tame your multi-file apps, and make them runnable anywhere without you doing the sacred `cd` dance.
+Because `~/Downloads` is not a filing system, champ.
 
-If you are an IT professional: this is a single Bash tool that installs and manages user or system scoped CLI tools, provides versioning, rollback safety, shims, manifests, and a TUI workflow.
+BinMan turns loose scripts and small multi-file projects into commands you can
+run from anywhere. It is written in Bash, prefers boring portable tools, and
+has enough K.A.R.I. attitude to stop your toolbox becoming a landfill.
 
-If you are a normal human: this is a magic wand that turns random files into proper commands you can run from anywhere.
+This README has two layers throughout:
 
----
+- **Noob mode** explains the idea and gives the shortest useful command.
+- **Pro mode** explains what BinMan actually does, where files go, what can
+  fail, and which assumptions the implementation makes.
 
-Version in this README: **v1.9.0**
+If you only want to install something, start with Noob mode. If you are
+debugging, automating, packaging, or deciding whether to trust an operation,
+read Pro mode too.
+
+Version documented here: **v1.9.0**
 
 ## Table of Contents
 
-- What BinMan Is
-- Quick Install
-- How It Works
-- Repository Layout
-- Commands and Usage
-- App Detection and Overrides
-- Python venv Support
-- Manifests and Bulk Installs
-- Dev Workflows (Link Mode and Updates)
-- Safety, Rollback, and Pruning
-- Included Scripts
-- Examples Folder
-- Tests
-- Optional Dependencies
-- License
+- [What BinMan Is](#what-binman-is)
+- [Quick Start](#quick-start)
+- [How BinMan Stores Things](#how-binman-stores-things)
+- [Command Reference](#command-reference)
+- [App Detection and Python Environments](#app-detection-and-python-environments)
+- [Bulk Installs and Manifests](#bulk-installs-and-manifests)
+- [Safety, Backups, and Rollbacks](#safety-backups-and-rollbacks)
+- [Bundled Scripts](#bundled-scripts)
+- [Examples](#examples)
+- [Testing and Troubleshooting](#testing-and-troubleshooting)
+- [Dependencies and Portability](#dependencies-and-portability)
+- [License](#license)
 
 ---
 
 ## What BinMan Is
 
-BinMan is a personal CLI tool manager written in Bash. It installs and manages:
+### Noob mode
 
-- **Single-file scripts** (Bash, Python, JS, Ruby, etc.)
-- **App directories** (multi-file projects with a real entry point)
-- **Remote scripts** (install directly from raw URLs)
+BinMan installs scripts, app directories, and remote scripts as ordinary
+commands. Give it a file or project, and it puts a runnable command in your
+user bin directory.
 
-It also handles version sniffing, shims, backups, rollbacks, bulk installs, and a TUI for when your brain refuses to parse command flags.
+```bash
+binman install ./my-tool.sh
+my-tool
+```
 
-In short: BinMan makes your tiny tools act like real tools without you turning into a full-time sysadmin.
+It can also browse installed tools, install the bundled utilities in
+`Scripts/`, make backups, restore them, and open a friendly terminal interface.
+
+### Pro mode
+
+BinMan is one Bash executable, `binman.sh`, with these core behaviors:
+
+- A single file is copied to `~/.local/bin/<basename-without-last-extension>`.
+- A directory is copied to
+  `~/.local/share/binman/apps/<name>` and exposed through a shim in
+  `~/.local/bin/<name>`.
+- A URL is downloaded to a temporary directory and then treated as a single
+  file. Downloads use `curl` or `wget`.
+- `--system` changes the destinations to `/usr/local/bin` and
+  `/usr/local/share/binman/apps`; system installs may re-exec through `sudo`.
+- Versions are read from a directory `VERSION` file, or from simple markers
+  such as `VERSION=`, `# Version:`, and `__version__ =`.
+- The inventory cache lives under `${XDG_STATE_HOME:-~/.local/state}/binman`.
+
+BinMan is a manager for personal tools, not a replacement for a distro package
+manager. It does not build every project automatically, and it cannot change
+the parent shell's command hash table from inside a child process. After an
+install it refreshes its own shell process and prints the appropriate parent
+shell command (`rehash` or `hash -r`).
 
 ---
 
-## Quick Install
+## Quick Start
+
+### Noob mode
+
+Install BinMan itself:
 
 ```bash
-git clone https://github.com/karialo/binman
+git clone https://github.com/karialo/binman.git
 cd binman
 chmod +x binman.sh
-./binman.sh install binman.sh
+./binman.sh install ./binman.sh
+```
+
+Refresh the command lookup in your current shell when BinMan asks:
+
+```bash
 rehash 2>/dev/null || hash -r 2>/dev/null || true
 binman
 ```
 
-If `binman` is not found:
+If the command is still not found, add the user bin directory to your PATH:
 
 ```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+For persistence, put that export in the startup file used by your shell, or
+run `binman doctor --fix-path`.
+
+### Pro mode
+
+The installer is interactive when both stdin and stdout are TTYs. In a
+non-interactive command, a single file can be installed directly, but a project
+directory requires an explicit entry command:
+
+```bash
+binman install ./tool.sh
+binman install ./MyApp --entry 'python3 src/main.py' --workdir src
+```
+
+The command itself must already be executable or have a usable interpreter
+shebang when BinMan is choosing a conventional entry. The installed command
+name is derived from the final path component with its last extension removed;
+interactive installs can override that name.
+
+The refresh message is not a failure. A program launched as `binman` is a child
+of Bash, Zsh, Fish, or another shell and cannot mutate the parent's in-memory
+hash table. A shell function wrapper can make that refresh automatic, but
+BinMan does not edit shell startup files merely to install a command.
 
 ---
 
-## How It Works
+## How BinMan Stores Things
 
-### Install locations
+### Noob mode
 
-- **Scripts** are copied or linked into `~/.local/bin/<name>` (extension stripped).
-- **Apps** live in `~/.local/share/binman/apps/<name>` with a shim in `~/.local/bin/<name>`.
-- **System mode** (`--system`) uses `/usr/local/bin` and `/usr/local/share/binman/apps`, and also refreshes a root-visible `/bin/<name>` or `/usr/bin/<name>` symlink when safe.
+User installs go here:
 
-### Shims (for apps)
-
-BinMan creates a tiny shim for apps so you can run them like normal commands:
-
-```bash
-#!/usr/bin/env bash
-exec "$HOME/.local/share/binman/apps/<name>/bin/<name>" "$@"
+```text
+~/.local/bin/                         commands and app shims
+~/.local/share/binman/apps/           copied app directories
+~/.local/share/binman/source/         cached repository used by `binman scripts`
+~/.local/state/binman/                inventory and state
+~/.local/share/binman/rollback/       optional rollback snapshots
 ```
 
-### Version detection
+You normally only need to put `~/.local/bin` in PATH.
 
-BinMan tries to detect versions from:
+### Pro mode
 
-- `VERSION` files
-- Inline markers like `VERSION=`, `# Version:`, or `__version__ =`
+Single-file installs are atomic-ish: BinMan stages a temporary file, checks
+Bash syntax when the file looks like a shell script, makes it executable, and
+moves it into the target bin directory. Existing files are not replaced unless
+`--force` is supplied.
 
-### Rollbacks and safety
+App installs have two layers:
 
-Every destructive operation snapshots your `bin/` and `apps/` trees into:
+1. The project payload is stored under the app store.
+2. A small Bash shim changes into the configured working directory and executes
+   the configured entry command with the user's arguments.
 
-`~/.local/share/binman/rollback/<timestamp>/`
+For a conventional app containing `bin/<name>`, the shim executes that file.
+For a detected or manually supplied command, the shim reconstructs the command
+and then uses `exec`, so signals and the exit status belong to the real tool.
 
-You can roll back any time. So yes, you can un-break things without crying.
+`--link` changes directory-app storage from a copied tree to a symlink. It is
+intended for development workflows. Ordinary single-file installs are still
+copied; `--link` does not turn those into symlinks.
+
+System mode uses `/usr/local/bin` and `/usr/local/share/binman/apps`. When safe,
+BinMan also maintains a root-visible symlink in `/usr/bin` or `/bin`; it only
+removes a symlink if it can prove that the link points at BinMan's own system
+shim.
 
 ---
 
-## Repository Layout
+## Command Reference
 
-- `binman.sh` - the main BinMan script
-- `Scripts/` - bundled utility scripts ready to install
-- `Examples/` - single-file and app-layout examples for multiple languages
-- `touchme.txt` - intentionally empty (yes, really)
+The complete top-level command set is:
 
----
-
-## Commands and Usage
-
-The full command list:
-
-```
-binman <install|scripts|uninstall|verify|list|update|doctor|docker|new|wizard|tui|backup|restore|self-update|rollback|prune-rollbacks|analyze|bundle|test|version|help>
+```text
+install scripts uninstall verify list update doctor docker new wizard tui
+backup restore self-update rollback prune-rollbacks analyze bundle test sudo
+version help
 ```
 
-### Install
+Global flags can appear before the command, and `--system` is also accepted
+after an install target.
+
+### `install`
+
+#### Noob mode
 
 ```bash
-# Single file (extension stripped)
 binman install ./hello.sh
-
-# URL (raw script)
-binman install https://host/path/tool.sh
-
-# App directory (auto-detect entry)
 binman install ./MyApp
-
-# App directory (manual entry)
-binman install ./RepoDir --entry 'python3 src/main.py'
-
-# Bulk from directory
+binman install https://example.org/tool.sh
 binman install --from ./Scripts
-
-# System install
 binman install --system ./MyApp
 ```
 
-### Uninstall
+Install one file, one directory, one URL, or all executable files in a
+directory. Use the interactive wizard if you need to choose an app entry.
+
+#### Pro mode
+
+```text
+binman install TARGET [--entry COMMAND] [--workdir DIR]
+                    [--venv] [--req FILE] [--python INTERPRETER]
+                    [--name NAME] [--link] [--force] [--system]
+binman install --from DIR [--link] [--force]
+binman install --manifest FILE [--force]
+```
+
+`--from` scans for executable files only. It does not recursively install
+every file in a tree. A text manifest ignores blank lines and `#` comments;
+JSON manifests are accepted when `jq` is available and are expected to contain
+an array of strings or objects with a `source` field.
+
+Remote targets are fetched into a temporary directory. BinMan does not provide
+cryptographic verification for a URL before installing it; verify remote
+content yourself when that matters.
+
+Single-file Python targets receive special handling: BinMan creates a stable
+payload under `~/.config/<name>/app.py`, creates a venv under that directory,
+and installs a neighboring `requirements.txt` when present. Directory apps
+use the app-store venv flow described in [Python environments](#app-detection-and-python-environments).
+
+### `uninstall`
+
+#### Noob mode
 
 ```bash
 binman uninstall hello
 binman uninstall MyApp
+binman uninstall --dry-run hello MyApp
 ```
 
-### Verify (integrity check of installed items)
+Remove a command or app. Use `--dry-run` when you want to see the plan first.
+
+#### Pro mode
+
+BinMan checks the active user or system target, removes the app payload and its
+shim when the name identifies an app, and removes a command file otherwise.
+For compatibility, `hello.sh` can resolve to an installed `hello`; a literal
+`.bak` name is never silently stripped. Destructive uninstalls create a
+snapshot only when `BINMAN_AUTO_BACKUP=1` is enabled.
+
+### `verify`
+
+#### Noob mode
 
 ```bash
 binman verify
-binman verify hello
-binman verify MyApp
 ```
 
-### List
+Check all installed items.
+
+#### Pro mode
+
+For commands, verification checks that the installed path exists and is
+executable. For apps, it checks the stored app directory, the expected
+`bin/<name>` entry, and the shim. It does not execute the program, test its
+dependencies, or compare it with the original source checksum. The current
+top-level dispatcher runs the all-items path; although the internal verifier
+has name-filtering logic, positional names are not currently forwarded by the
+public `verify` command. Failures use a non-zero status.
+
+### `list`
+
+#### Noob mode
 
 ```bash
 binman list
 ```
 
-If `fzf` is installed, `list` becomes a fuzzy browser with previews.
+See installed commands and versions. With `fzf`, the list becomes a searchable
+browser with previews.
 
-### Bundled scripts
+#### Pro mode
 
-The full BinMan repository includes utility scripts in `Scripts/`. After a
-self-update (or a fresh repository-based install), browse and install them
-through BinMan's normal installer:
+The inventory scans user and system command/app stores, prefers an app record
+over a same-named shim, extracts metadata, and writes a cache under the BinMan
+state directory. The plain list hides app directories unless
+`BINMAN_INCLUDE_APPS=1`; the fuzzy browser can show richer previews. Versions
+may be `unknown` when no supported marker is present.
+
+### `scripts`
+
+#### Noob mode
 
 ```bash
 binman scripts
 ```
 
-With `fzf`, this provides a searchable picker with version and description
-metadata. Without `fzf`, it falls back to a numbered menu. The repository
-cache is kept at `~/.local/share/binman/source`.
+Browse the bundled utilities. `fzf` gives you search and a preview pane;
+without it, BinMan uses a numbered menu.
 
-### Update
+#### Pro mode
+
+The command reads from the cached repository at
+`~/.local/share/binman/source/Scripts`. A fresh install may not have that cache;
+run `binman self-update` from an installed copy or run BinMan from a repository
+checkout. The selected row carries name, version, absolute path, and
+description metadata; BinMan installs the actual third field, the script path.
+
+### `update`
+
+#### Noob mode
 
 ```bash
 binman update ./hello.sh
 binman update ./MyApp
-binman update --git ~/Projects/MyApp ./MyApp
 ```
 
-### Doctor (environment + app checks)
+Reinstall a tool from its source and overwrite the installed copy.
+
+#### Pro mode
+
+`update` sets `FORCE=1` and routes through the normal installer, so app entry
+detection and Python handling are reused. `--from` can update all executable
+files in a directory. A rollback snapshot is taken only when automatic
+backups are enabled. The help banner still mentions a `--git` option, but the
+current parser does not wire that option into the public update command.
+
+### `doctor`
+
+#### Noob mode
 
 ```bash
 binman doctor
@@ -191,285 +331,397 @@ binman doctor MyApp
 binman doctor --all --python 3.11
 ```
 
-### Docker / Podman management
+Doctor reports paths and optional tools, fixes PATH configuration, and can
+prepare Python apps.
+
+#### Pro mode
+
+With no target, Doctor prints the active mode, bin directory, app store, archive
+tool availability, PATH status, and possible `binman` shadowing, then lets an
+interactive user choose an app. `--all` processes every installed app;
+`--dry-run` reports planned Python work. Python apps get a `.venv`, pip is
+updated best-effort, and dependencies come from `requirements.txt` or a basic
+`pyproject.toml` dependency list. An executable `.binman/doctor.sh` hook is run
+from the app directory.
+
+`--fix-path` appends the user-bin export to existing `.zshrc`, `.zprofile`,
+`.bashrc`, and `.profile` files, and adds a Fish config entry when Fish is
+installed. It does not reload the current shell.
+
+### `docker`
+
+#### Noob mode
 
 ```bash
-# Open the Docker TUI (shows only BinMan-managed containers)
 binman docker
-
-# Managed service actions
 binman docker up MyApp
-binman docker down MyApp
-binman docker restart MyApp
-binman docker logs MyApp --tail 200
-binman docker follow MyApp --tail 200
+binman docker logs MyApp
 binman docker shell MyApp
-binman docker edit MyApp
-binman docker build MyApp
-binman docker remove MyApp
-binman docker nuke MyApp
-binman docker purge MyApp
+binman docker down MyApp
+```
 
-# One-shot runner
-binman docker run MyTool -- --help
+BinMan can manage containers for installed apps when Docker or Podman is
+available.
 
-# Maintenance
+#### Pro mode
+
+```text
+binman docker up|down|restart|logs|follow|shell|edit|build|remove|nuke|purge APP
+binman docker run APP -- COMMAND [ARGS...]
 binman docker prune
 binman docker orphans
 ```
 
-`binman docker edit <app>` lets you tweak ports, mounts, env, restart policy, and network after setup.
+Metadata is stored under `~/.local/share/binman/docker` unless
+`BINMAN_DOCKER_DIR` overrides it. `--engine docker|podman` chooses the backend;
+otherwise BinMan detects a usable engine. `up` creates or starts a managed
+service, `build` builds from the app metadata root, `edit` changes ports,
+mounts, environment, restart policy, and network, `run` performs a one-shot
+execution, and `nuke` removes the managed container and image. `purge` removes
+BinMan metadata for an app. These commands affect real containers and images;
+read the preview before using `remove`, `nuke`, or `prune`.
 
-### Backup and Restore
+### `backup` and `restore`
+
+#### Noob mode
 
 ```bash
 binman backup
-binman backup my-stash.zip
-binman restore binman_backup-20250101-120000.zip
-binman restore my-stash.tgz --force
+binman backup my-tools.zip
+binman restore my-tools.zip
 ```
 
-### Rollback and Prune
+Back up installed commands and apps, then merge them back later.
+
+#### Pro mode
+
+In a TTY, `binman restore` opens BinMan's archive picker; in a non-TTY it
+accepts the archive path directly. The help banner currently advertises a
+`--restore FILE` convenience form, but the current top-level option parser does
+not dispatch that form, so use the `restore` command and provide the path in a
+non-TTY/scripted context.
+
+Backups prefer ZIP when both `zip` and `unzip` exist; otherwise they use
+`.tar.gz`. The archive contains `bin/`, `apps/`, and `meta/info.txt` with the
+BinMan version, paths, timestamp, and host information. Restore accepts `.zip`,
+`.tar.gz`, and `.tgz`, detects a top-level wrapper directory, merges `bin/` and
+`apps/`, and restores executable bits. Restore is not a package lockfile and
+does not restore external dependencies or a shell's PATH.
+
+### `rollback` and `prune-rollbacks`
+
+#### Noob mode
 
 ```bash
+BINMAN_AUTO_BACKUP=1 binman install ./tool.sh
 binman rollback
-binman rollback 20250201-121500
 binman prune-rollbacks
 ```
 
-### Bundle export
+Rollback returns the latest saved BinMan state. Prune removes old snapshots.
 
-```bash
-binman bundle my-env.zip
+#### Pro mode
+
+Automatic snapshots are **disabled by default**. Set `BINMAN_AUTO_BACKUP=1`
+before install, update, uninstall, restore, or other mutating flows to save
+`bin/`, `apps/`, and metadata under:
+
+```text
+~/.local/share/binman/rollback/<timestamp>/
 ```
 
-### Analyze (disk usage)
+`BINMAN_ROLLBACK_KEEP` defaults to 20 snapshots when pruning. `rollback` in the
+current command dispatcher applies the latest snapshot; the interactive TUI
+can select a specific timestamp. Restore/rollback merges files and does not
+delete unrelated newer files.
+
+### `bundle`
+
+#### Noob mode
+
+```bash
+binman bundle my-environment.zip
+```
+
+Export your installed commands and apps into a portable archive.
+
+#### Pro mode
+
+The bundle contains `bin/`, `apps/`, and `manifest.txt`. ZIP is used when
+available; otherwise the output becomes a `.tar.gz`. This is a payload bundle,
+not a full machine image: it does not include package-manager state, language
+runtimes, Docker images, or shell configuration.
+
+### `analyze`
+
+#### Noob mode
 
 ```bash
 binman analyze
 binman analyze --top 10 --root /var
 ```
 
-### Test harness
+See large directories and files so you know what is eating the disk.
 
-```bash
-binman test hello
-binman test resize -- --help
-binman test stress --jobs 8 --verbose --keep
-```
+#### Pro mode
 
-### Self-update
+Analyze prints `df -hT`, the largest `du -xhd1` directories, and the largest
+files found with `find -xdev`. It skips `/proc`, `/sys`, `/dev`, and `/run` in
+the file scan and may use the configured sudo helper for unreadable locations.
+It does not delete anything; use `sysclean` for interactive cleanup.
 
-```bash
-binman self-update
-```
+### `new`, `wizard`, and `tui`
 
-Self-update clones the latest `main` branch of the BinMan repository, checks
-that the checkout contains a valid `binman.sh` and `Scripts/` directory, and
-updates the installed command. The previous source cache and executable are
-kept as `.bak` backups.
-
-### Sudo helper
-
-```bash
-binman sudo my-tool -- --flag
-```
-
-### New (scaffold) and Wizard
+#### Noob mode
 
 ```bash
 binman new tidy.sh
-binman new resize.py
-binman new MyGoTool --app --lang go
-binman new MyRustyApp --app --lang rust
-binman new MyWebby --app --lang node
-binman new MyGem --app --lang ruby
-binman new MyPhpThing --app --lang php
-binman new SmartTool --app --lang python --venv
-
+binman new MyTool --app --lang python --venv
 binman wizard
-```
-
-### TUI
-
-```bash
-binman tui
 binman
 ```
 
-### Version and Help
+Use `new` for a quick scaffold, `wizard` for guided project creation, and
+`binman` with no arguments for the full terminal menu. The help banner lists
+`tui`, but the current action dispatcher does not expose a separate `tui`
+subcommand.
+
+#### Pro mode
+
+The generator supports Bash, Python, Node, TypeScript, Go, Rust, Ruby, and PHP
+templates, plus single-file or app layouts. The wizard collects name, type,
+language, directory, description, author, and optional Python venv settings;
+it can install the result, create a BinMan manifest, and initialize Git. The
+GitHub step prints or uses the available Git tooling; it does not ask BinMan to
+invent credentials.
+
+The TUI is a wrapper over the same install, uninstall, list, doctor, Docker,
+backup, restore, self-update, rollback, bundle, and test functions. `fzf` adds
+search, previews, multi-selection, and keyboard navigation. `BINMAN_NO_CLEAR=1`
+or `--no-clear` prevents screen clearing.
+
+### `test`, `sudo`, `version`, and `help`
+
+#### Noob mode
 
 ```bash
+binman test copy -- --help
+binman test stress --quick
+binman sudo my-tool -- --root-mode
 binman --version
 binman --help
 ```
 
-### Global options (for many commands)
+Test checks a command; sudo runs an installed tool through `sudo`; help and
+version explain what BinMan is running.
 
-```
---from DIR       Operate on all executable files in DIR
---link           Symlink instead of copying (dev workflows)
---force          Overwrite existing files / restore conflicts
---git DIR        Before update: git pull in DIR
---bin DIR        Override bin directory
---apps DIR       Override apps directory
---system         Target system dirs (/usr/local/*)
---fix-path       (doctor) Add ~/.local/bin to shell PATH
---manifest FILE  Bulk install from line list or JSON array
---reindex        Rebuild manifest index before running command
---quiet          Reduce chatter
-```
+#### Pro mode
 
----
+`binman test NAME [-- ARGS]` resolves an installed command and runs it with
+`--help` unless explicit arguments follow `--`. `test stress` creates temporary
+fixtures and exercises copy, link, app, manifest, uninstall, PATH, weird-name,
+backup, and restore paths; `--quick` shortens the run, `--jobs` controls stress
+parallelism, `--verbose` prints more detail, and `--keep` preserves fixtures.
+The stress harness needs a real TTY in some interactive entry paths.
 
-## App Detection and Overrides
-
-When you install a directory, BinMan tries to detect the entry point:
-
-- **Python**: `pyproject.toml` console scripts, `src/<name>/__main__.py`, `main.py`, `app.py`, etc.
-- **Node/TS**: `package.json` "bin" or "scripts.start"; TS uses `tsx` if available.
-- **Deno**: `deno task start`, or common `main.ts`/`main.js` files.
-- **Go**: `cmd/<app>/main.go`, else `main.go`.
-- **Rust**: `Cargo.toml` binaries, `cargo run --release`.
-- **Ruby**: `exe/<name>` or `bin/<name>` (Bundler if Gemfile exists).
-- **PHP**: `composer.json` "bin".
-
-If auto-detection fails (or you want control), use:
-
-```bash
-binman install ./RepoDir --entry 'python3 src/main.py'
-binman install ./RepoDir --entry 'node ./bin/cli.js' --workdir tools
-```
+`binman sudo NAME [ARGS...]` executes the installed command through `sudo`; it
+does not make the install itself system-wide. `--help`, `--version`,
+`--quiet`, `--no-clear`, `--reindex`, `--engine`, and `--system` are parsed as
+top-level options where applicable.
 
 ---
 
-## Python venv Support
+## App Detection and Python Environments
 
-For Python apps, BinMan can manage a private venv:
+### Noob mode
+
+Install a project directory and BinMan tries to find the thing that should run:
 
 ```bash
-binman install ./Harvester --entry 'python3 tool.py' --venv --req requirements.txt
-binman install ./Tool --entry 'python3 -m tool' --venv --python /usr/bin/python3.11
+binman install ./PythonTool
+binman install ./PythonTool --entry 'python3 src/main.py'
+binman install ./PythonTool --entry 'python3 -m tool' --venv
 ```
 
-It will:
+If BinMan cannot decide safely, choose an entry in the wizard or provide
+`--entry` yourself.
 
-- Create `./.venv` on first run
-- Install `requirements.txt` or `pyproject.toml` deps (quietly)
-- Run the app inside its venv
+### Pro mode
+
+Detection is heuristic and language-aware. It recognizes metadata from
+`pyproject.toml`, `setup.cfg`, `setup.py`, `package.json`, `deno.json`,
+`Cargo.toml`, `go.mod`, `Gemfile`/gemspec, and `composer.json`.
+
+The main conventions are:
+
+| Project | Preferred detected command |
+|---|---|
+| Python | console scripts, package `__main__.py`, `src/main.py`, `main.py`, `app.py`, `cli.py` |
+| Node/TypeScript | `package.json` `bin`, then `scripts.start`, then common source files |
+| Deno | `deno task start`, then `main.ts`, `mod.ts`, or JavaScript equivalents |
+| Go | `cmd/<name>/main.go`, then root `main.go` |
+| Rust | first Cargo binary, then `cargo run --release` |
+| Ruby | `exe/<name>`, `bin/<name>`, or `main.rb`, with Bundler when available |
+| PHP | Composer `bin`, `public/index.php`, `index.php`, or `src/main.php` |
+
+When selection is needed, BinMan ranks likely files by names such as `main`,
+`app`, `cli`, `run`, and `start`, executable bits, shebangs, and locations such
+as `bin/`, `src/`, and `cmd/`. A heuristic is not proof; use `--entry` for
+production or automation.
+
+For app venv mode, BinMan creates `<stored-app>/.venv` on first execution,
+installs `--req FILE` or a neighboring `requirements.txt`, changes to
+`--workdir` when supplied, and replaces a leading `python`/`python3` command
+with the venv interpreter. Dependency installation is best-effort in generated
+shims, so inspect failures rather than assuming the app is healthy.
 
 ---
 
-## Manifests and Bulk Installs
+## Bulk Installs and Manifests
 
-You can bulk install from a manifest:
+### Noob mode
 
 ```bash
+binman install --from ./Scripts
 binman install --manifest tools.txt
 ```
 
-`tools.txt` can contain:
+`tools.txt` can contain one local path or URL per line:
 
-```
+```text
+./Scripts/checksum.sh
 ./Scripts/gitprep.sh
-./Scripts/sysclean.sh
-https://example.com/tool.sh
+https://example.org/tool.sh
 ```
 
-If `jq` is installed, `.json` manifests can be a JSON array:
+### Pro mode
 
-```json
-[
-  "./Scripts/gitprep.sh",
-  "./Scripts/sysclean.sh"
-]
-```
+`--from DIR` installs the executable regular files directly in that directory;
+the operation is not a recursive project builder. A line manifest strips
+comments beginning with `#` and ignores blank lines. A `.json` manifest is
+parsed with `jq` as an array; each item may be a string or an object whose
+`source` property is used.
+
+Bulk operations reuse the same single-file installer, including Bash syntax
+validation, Python single-file venv handling, conflict behavior, and status
+events. One bad target does not necessarily prevent later targets from being
+attempted; inspect the final exit status and output.
 
 ---
 
-## Dev Workflows (Link Mode and Updates)
+## Safety, Backups, and Rollbacks
 
-If you are actively editing a tool, use `--link` so changes are live:
+### Noob mode
 
-```bash
-binman install --link ./MyApp
-binman install --link ./Scripts/gitprep.sh
-```
-
-When you are ready to update a released version:
+Before trying risky operations:
 
 ```bash
-binman update ./MyApp
-rehash 2>/dev/null || hash -r 2>/dev/null || true
+export BINMAN_AUTO_BACKUP=1
+binman install --force ./tool.sh
+binman backup before-experiment.zip
 ```
+
+For scripts that can erase disks, delete repositories, alter networking, or
+install packages, read their Pro section below and run their help command
+first. K.A.R.I. is witty; `rm -rf` remains extremely literal.
+
+### Pro mode
+
+BinMan's own destructive operations are conservative about conflicts unless
+`--force` is supplied, and automatic snapshots are opt-in. Archives and
+snapshots are local copies, not encrypted backups. They may contain executable
+code and host/path metadata, so protect them appropriately.
+
+The bundled scripts are separate programs. BinMan does not sandbox them: once
+installed, they run with the permissions of the invoking user and may call
+`sudo`, package managers, `mount`, `ip`, `nft`, `ssh`, `git`, Docker, or remote
+installers. Use `--dry-run` where available and inspect source before running
+as root.
 
 ---
 
-## Safety, Rollback, and Pruning
+## Bundled Scripts
 
-Every destructive command creates a snapshot at:
-
-`~/.local/share/binman/rollback/`
-
-Restore to a previous snapshot:
+The scripts live in `Scripts/` and can be installed individually:
 
 ```bash
-binman rollback
-binman rollback 20250201-121500
+binman install ./Scripts/checksum.sh
 ```
 
-Prune old snapshots:
-
-```bash
-binman prune-rollbacks
-```
-
----
-
-## Included Scripts
-
-These live in `Scripts/`. Install one directly with:
-
-```bash
-binman install ./Scripts/<script>.sh
-```
-
-Or browse the whole bundled collection:
+Or browse them:
 
 ```bash
 binman scripts
 ```
 
-Tip: `Scripts/README.md` contains quick notes where available.
+The descriptions below are based on the current implementation and its actual
+help text, not on marketing promises from an earlier K.A.R.I. fever dream.
 
-### checksum
-Hash or verify files. Auto-detects MD5/SHA1/SHA256/SHA512.
+### `checksum`
+
+#### Noob mode
+
+Calculate or check a file hash:
 
 ```bash
-checksum archlinux.iso
-checksum archlinux.iso e3b0...b855
-checksum archlinux.iso SHA256:e3b0...b855
-checksum archlinux.iso SHA256SUMS
+checksum image.iso
+checksum image.iso SHA256:deadbeef...
+checksum image.iso image.iso-CHECKSUM
 ```
 
-### copy
-Resumable copy with progress (rsync based).
+#### Pro mode
+
+`checksum` prints SHA-256 by default. Verification accepts raw hashes, an
+`algo:hash` prefix, common GNU checksum lines, BSD lines such as
+`SHA256 (file) = hash`, or a checksum file containing a matching basename.
+Hash length selects MD5/SHA-1/SHA-256/SHA-512; supported tools must exist as
+`md5sum`, `sha1sum`, `sha256sum`, or `sha512sum`. Exit status is 0 for success,
+1 for mismatch, and 2 for usage/dependency errors.
+
+### `copy`
+
+#### Noob mode
+
+Copy with progress and resume support:
 
 ```bash
 copy big.iso /mnt/usb/
-copy -n folder/ /backup/
+copy --dry-run folder/ /backup/
 ```
 
-### move
-Resumable move with verification before deletion.
+#### Pro mode
+
+`copy [--dry-run|-n] SRC... DEST` requires `rsync` and uses `-aHAX`,
+`--partial`, `--inplace`, human-readable output, and `--info=progress2`. The
+destination is created when needed. Multiple sources require an existing
+destination directory. It preserves more metadata than a plain `cp`, so use
+the dry run and understand the permissions of the destination.
+
+### `move`
+
+#### Noob mode
+
+Move with a transfer check before deleting the source:
 
 ```bash
-move Downloads/ /mnt/backup/
-move -n big.iso /mnt/usb/
+move Downloads/file.iso /mnt/backup/
+move --dry-run Downloads/ /mnt/backup/
 ```
 
-### verify
-Checksum + virus scan, with watch mode.
+#### Pro mode
+
+`move [--dry-run|-n] SRC... DEST` uses `rsync` to transfer, then performs a
+checksum-based dry-run comparison. It deletes each source only when rsync
+reports no required changes. Verification checks that the source is represented
+at the destination; it does not remove unrelated extra files already there.
+Directories are removed with `rm -rf --one-file-system` after success. A
+verification mismatch returns status 3 and leaves the source in place.
+
+### `verify`
+
+#### Noob mode
+
+Check a file and optionally scan it:
 
 ```bash
 verify file.iso
@@ -477,80 +729,214 @@ verify file.iso SHA256:deadbeef...
 verify --watch ~/Downloads
 ```
 
-### sysclean
-Cross-distro system cleanup (dry-run by default).
+#### Pro mode
+
+This is a separate checksum/ClamAV tool from BinMan's own `binman verify`.
+It accepts a file, directory, expected checksum, checksum file, or recursive
+watch mode. Directories skip checksum comparison but can still be scanned.
+Watch mode focuses on new files, ignores common temporary downloads and
+checksum manifests, and can run verbosely. When available it uses `clamscan`
+for malware checks; missing optional scanners reduce coverage rather than
+creating a security guarantee.
+
+### `sysclean`
+
+#### Noob mode
+
+Inspect cleanup candidates safely first:
 
 ```bash
 sysclean
-sysclean --deep --yes
-sysclean --top 20 --show-only
+sysclean --show-only --top 20
+sysclean --dry-run --deep
 ```
 
-### flash
-Image writer with a wizard, headless Wi-Fi/SSH setup, and optional expand.
+Actually perform selected cleanup only when you mean it:
+
+```bash
+sysclean --deep --yes
+```
+
+#### Pro mode
+
+`sysclean` is dry-run by default. It reports disk use and interactively offers
+cleanup for package caches/orphans, system journals, developer caches, and
+Steam/Heroic/Lutris footprints. `--deep` adds heavier categories; `--no-pkg`
+and `--no-steam` disable categories; `--top N` controls large-file reporting;
+`--raw` avoids human-readable sizes. `--yes` enables actions, while
+`--show-only` only reports. Exact actions depend on detected distro tools, so
+review the proposed paths before confirming.
+
+### `flash`
+
+#### Noob mode
+
+Use the wizard for a disk image:
 
 ```bash
 flash raspios.img
-flash --verify --expand raspios.img /dev/sdX
-flash --headless --SSID "wifi" --Password "pass" --Country US raspios.img /dev/sdX
 ```
 
-### prep-headless
-Prepare a Raspberry Pi boot partition for headless Wi-Fi and SSH.
+Or use direct mode only when you have positively identified the device:
 
 ```bash
-prep-headless /dev/sdX1 "MySSID" "MyPass" US
+flash --verify --expand raspios.img /dev/sdX
 ```
 
-### sd-list
-List block devices to avoid flashing the wrong drive.
+#### Pro mode
+
+`flash` writes compressed or uncompressed images to a block device and can
+verify, expand, configure Raspberry Pi headless Wi-Fi/SSH, and stage USB gadget
+networking. Direct options include `--verify`, `--expand`, `--gadget`,
+`--no-gadget`, `--headless`, `--SSID`, `--Password`, `--Country`, `--Hidden`,
+`--User`, and `--UserPass`. `--diagnose-mounts [boot] [root]` inspects already
+mounted partitions. The script detects modern `boot/firmware` and older boot
+layouts, writes NetworkManager or fallback network configuration, and may
+create first-boot/systemd helpers. It requires root-level operations and can
+destroy the selected device; never trust `/dev/sdX` as a literal example.
+
+### `prep-headless`
+
+#### Noob mode
+
+Stage SSH and Wi-Fi files on a mounted boot partition:
+
+```bash
+prep-headless /dev/sdX1 "MySSID" "MyPassword" GB
+```
+
+#### Pro mode
+
+The script mounts the supplied boot partition into a temporary directory using
+`sudo`, creates an empty `ssh` marker, writes `wpa_supplicant.conf` with the
+country and WPA-PSK network, syncs, and unmounts. It expects at least a boot
+partition, SSID, and PSK; country defaults to `GB`. It does not validate that
+the partition is the right device or support hidden-network options.
+
+### `sd-list`
+
+#### Noob mode
+
+List likely removable/NVMe whole disks before flashing:
 
 ```bash
 sd-list
 ```
 
-### find-pi
-Find Raspberry Pi devices on your LAN.
+#### Pro mode
+
+The script runs `lsblk` for name, size, model, rotation, type, and mountpoint,
+then prints `disk` rows whose names contain `sd`, `mmcblk`, or `nvme`. It is a
+candidate list, not a complete removable-device classifier; confirm with
+`lsblk` yourself before using `flash`.
+
+### `find-pi`
+
+#### Noob mode
+
+Find Raspberry Pi devices on the local network:
 
 ```bash
 find-pi
 ```
 
-### finder
-Recursive name finder (current dir or system-wide).
+#### Pro mode
+
+If `arp-scan` exists, the script runs `sudo arp-scan --localnet` and filters
+Raspberry Pi names and common Pi MAC prefixes. Otherwise it falls back to
+`sudo nmap -sn` over the host's global IPv4 ranges, with short timeouts, and
+filters Raspberry-related output. It needs `arp-scan` or `nmap`, plus `ip` for
+the fallback. Results are heuristic and may miss a Pi with no identifying
+hostname.
+
+### `finder`
+
+#### Noob mode
+
+Find names below the current directory:
 
 ```bash
 finder binman
 finder --all binman
 ```
 
-### findinfiles
-Recursive content search with case-insensitive matching by default, binary-file skipping, context, filters, counts, and file-only output.
+#### Pro mode
+
+`finder [--all] [--tags] PATTERN` uses `find -iname '*PATTERN*'` and sorts the
+paths. `--all` elevates with sudo and searches `/`; `--tags` is currently a
+placeholder flag and does not add tag search behavior. It searches names, not
+file contents, and suppresses find errors.
+
+### `findinfiles`
+
+#### Noob mode
+
+Search file contents, usually case-insensitively:
 
 ```bash
 findinfiles "token"
-findinfiles --root /etc --context 2 "PermitRootLogin"
-findinfiles --ext py,js,md --files-with-matches "TODO"
+findinfiles --root /etc "PermitRootLogin"
+findinfiles --ext py,js,md --files-with-matches TODO
 ```
 
-### scanner
-Portable network scanner (Pi Zero friendly).
+#### Pro mode
+
+This bundled script is Python 3, despite its `.sh` filename. It walks the
+current directory, `/` with `--all`, or `--root DIR`; skips noisy directories
+and common binary extensions by default; ignores files larger than 5 MB by
+default; and also detects NUL bytes in the first 4 KiB. `--case` enables
+case-sensitive matching, `--ignore-case` documents the default, `--ext` filters
+extensions, `--no-skip` disables default directory skipping, `--skip-dir` and
+`--skip-ext` add exclusions, `--max-size` changes the MB limit, `--context N`
+prints nearby lines, `--count` reports counts, `--files-with-matches` prints
+paths, and `--no-color` disables ANSI output. It returns 0 when it finds a
+match and 1 when it finds none.
+
+### `scanner`
+
+#### Noob mode
+
+Scan a local network for responsive hosts and common ports:
 
 ```bash
-scanner
 scanner --range 192.168.1.0/24 --ports 22,80,443
 ```
 
-### wifi-scanner
-Wireless scanner (nmcli/iw/iwlist fallback).
+#### Pro mode
+
+`scanner` performs bounded ICMP and TCP probes with worker concurrency. Options
+are `--concurrency`, `--ports`, `--ping-timeout`, `--tcp-timeout`, `--range`,
+`--verbose`, `--quiet`, and `--no-color`. Defaults are 100 workers, one-second
+timeouts, and ports 22, 80, 443, 5900, 8080, 111, and 5000. If no range is
+provided it tries to derive one from local IPv4 configuration. It is an
+inventory scanner, not a stealth tool and not a vulnerability assessment.
+
+### `wifi-scanner`
+
+#### Noob mode
+
+Scan nearby Wi-Fi networks:
 
 ```bash
-wifi-scanner --interface wlan0
-wifi-scanner --format json --backend auto
+wifi-scanner
+wifi-scanner --interface wlan0 --backend iw
+wifi-scanner --format json --no-color
 ```
 
-### netdiag
-USB gadget and network diagnostic tool with quick/full modes and JSON output.
+#### Pro mode
+
+The scanner selects `nmcli`, `iw`, or `iwlist` automatically, or accepts a
+forced backend. It supports `--interface`, `--backend nmcli|iw|iwlist|auto`,
+`--format table|csv|json`, `--no-color`, `--verbose`, `--quiet`, and `--strict`.
+It can use `fzf` for interface selection. Backend capabilities differ: signal,
+channel, security, and hidden-network fields are only as good as the selected
+system tool. It scans; it does not connect to networks.
+
+### `netdiag`
+
+#### Noob mode
+
+Inspect a host's network setup:
 
 ```bash
 netdiag
@@ -558,148 +944,314 @@ netdiag --full --iface usb0
 netdiag --quick --json
 ```
 
-### rsync-backup
-Quick backup to a mounted device, timestamped.
+#### Pro mode
+
+`netdiag` covers interfaces, addresses, routes, firewall state, kernel and
+NetworkManager information, and a connectivity sanity check. `--quick` is the
+default; `--full` adds slower and more privileged checks. `--iface` focuses on
+one interface, `--target` chooses the ping target, `--no-sudo` forbids
+escalation, `--verbose` prints commands, `--json` emits machine-readable data,
+`--write-report PATH` writes a text report, and `--support-bundle DIR` writes a
+redacted support bundle. A default target may be prompted for or fall back to
+`10.0.0.2`, which reflects the Pi USB-gadget workflow.
+
+### `rsync-backup`
+
+#### Noob mode
+
+Create a timestamped backup directory on a mounted destination:
 
 ```bash
 rsync-backup ~/Projects /mnt/backup
 ```
 
-### gitprep
-Initialize a git repo and optionally create a GitHub remote.
+#### Pro mode
+
+The command requires exactly `SRC DEST_MOUNT`, confirms the destination is a
+directory, creates `backup-YYYYMMDD-HHMM`, and runs `rsync -aHAX --delete` into
+it. Because `--delete` is used, the newly created backup directory mirrors the
+source rather than accumulating stale files. It does not verify the source is
+the intended mount beyond checking that the path is a directory.
+
+### `gitprep`
+
+#### Noob mode
+
+Prepare the current directory as a Git project:
 
 ```bash
 gitprep
-gitprep --public --proto https
 gitprep --no-gh
+gitprep --public --proto https
 ```
 
-By default, GitHub repositories are private. Existing repositories are
-reused when the matching GitHub repository already exists, so the local
-directory can be connected to it instead of trying to create a duplicate.
+#### Pro mode
 
-### gitremove
-Safely remove a local Git repository, optionally deleting its matching GitHub
-remote after explicit confirmation. A failed remote deletion preserves the
-local checkout.
+`gitprep` initializes or reconciles a repository, targets `main` by default,
+seeds `README.md` and `.gitignore` when missing, commits a snapshot, and by
+default uses `gh` to create or connect a GitHub repository and push. Options
+include `--branch`, `--public`, `--private`, `--proto ssh|https`, `--owner`,
+`--name`, `--no-push`, and `--no-gh`. Existing GitHub repositories are reused
+when found. `--no-gh` is the local-only mode. It changes Git history and may
+create a remote, so run it in the intended project directory.
+
+### `gitremove`
+
+#### Noob mode
+
+Preview the repository identity and confirm before deletion:
 
 ```bash
-gitremove
-gitremove --remote
+gitremove ./old-project
 ```
 
-### push
-Commit/push with optional semver bump, tags, and GitHub release.
+#### Pro mode
+
+`gitremove [PATH] [--remote] [--yes]` resolves the containing Git root, prints
+the path and origin, then requires the repository name to be typed. It changes
+to `/tmp` and removes the local repository directory. `--remote` additionally
+requires `gh`, authenticated GitHub access, and a second literal `DELETE`
+confirmation before deleting the GitHub repository. `--yes` skips both prompts
+and is therefore appropriate only for carefully controlled automation.
+
+### `push`
+
+#### Noob mode
+
+Commit and push a message:
 
 ```bash
 push "fix: tidy"
-push -a -m "fix: tidy"
-push -v patch -t
-push -v minor -t -r
+push --dry "show me the plan"
 ```
 
-With a plain quoted message, `push` stages the current working tree, commits
-the changes, and pushes the current branch. The longer option form remains
-available for version bumps, tags, and releases.
+#### Pro mode
 
-### kinstall
-Cross-distro package installer wrapper (apt/dnf/pacman/zypper/rpm-ostree), plus Flatpak and Homebrew if present. Think of it as a polite bouncer for your packages: it checks IDs, skips what you already have, and doesn't throw a tantrum if one guest isn't on the list.
+`push` operates in the current Git repository. A plain message stages all
+changes, commits, and pushes the current branch. `-a` stages all changes,
+`-m MSG` supplies a commit message, `-v patch|minor|major` updates `VERSION`,
+`-t` creates and pushes `v<VERSION>`, `-r` creates a GitHub release through
+`gh`, and `--dry` reports actions without changing Git. Without a remote it
+still commits but skips pushing. Release creation requires a tag and GitHub
+CLI access.
+
+### `kinstall`
+
+#### Noob mode
+
+Install or search for packages across the package tools available on the host:
 
 ```bash
 kinstall ripgrep fd
 kinstall --search neovim
-kinstall -n go git
+kinstall --dry-run go git
 ```
 
-What it does (nerd-friendly, human-readable):
+#### Pro mode
 
-- Per-package pipeline: installs each item independently so one missing package does not kill the whole run.
-- Smart skip logic: detects already-installed packages (dpkg/rpm/pacman/flatpak/brew) and skips with a reason.
-- Search across sources: repo, flatpak, brew. Curated by default; `--full` shows raw output.
-- Candidate picking: ranks exact/prefix/token matches first; avoids sketchy "close enough" picks unless you `--choose`.
-- Atomic-aware: if you're on rpm-ostree and asking for GUI apps, it will prefer flatpak when sensible.
-- Narration + logging: prints demo-friendly status lines and appends to `~/.local/state/kari-install/history.log`.
+`kinstall` detects `rpm-ostree`, apt, dnf, pacman, or zypper for repository
+packages, and optionally Flatpak and Homebrew. It processes packages
+independently, skips already-installed items, curates search results, and logs
+tab-separated history to `~/.local/state/kari-install/history.log`.
 
-Common switches:
+Options are `--search`, `--dry-run`/`-n`, `--yes`, `--fail-fast`,
+`--continue-on-error`, `--prefer auto|repo|flatpak|brew`, `--force-source
+repo|flatpak|brew`, `--choose`, `--limit N`, and `--full`. Repository installs
+use `sudo`; apt may run `apt-get update` once per process. Atomic systems may
+prefer Flatpak for GUI classifications. Candidate matching is heuristic, so
+use `--choose` or an exact identifier when ambiguity matters.
+
+### `linux_connect`
+
+#### Noob mode
+
+Connect a Linux host to a Raspberry Pi USB gadget:
 
 ```bash
-kinstall --search steam
-kinstall --limit 10 --search gimp zsh steam
-kinstall --full --search docker
-kinstall --prefer flatpak gimp
-kinstall --force-source brew zsh
-kinstall --choose steam
-kinstall --fail-fast gimp2 zsh steam
+sudo linux_connect.sh
+sudo linux_connect.sh --persist
 ```
 
-Behavior notes:
+#### Pro mode
 
-- `--dry-run` shows the exact commands that would run, no side effects.
-- `--yes` passes non-interactive flags to backends when supported.
-- If no repo match exists but a Flatpak/Brew option does, it will pick the best candidate unless you force or choose.
-- Missing packages are skipped with a clear reason; your other installs keep rolling.
+The script detects USB gadget NICs, configures the host side by default as
+`10.0.0.1/24`, finds and stabilizes a Pi peer, enables forwarding/NAT through
+nftables or iptables, and can open an inline SSH session. `PI_IP` and
+`HOST_IP_CIDR` may be supplied as positional arguments or environment values;
+`--iface=name` hints the interface, `--upstream=dev` selects the upstream link,
+`--persist` installs a systemd service/timer, `--install` copies the script to
+`/usr/local/sbin/linux_connect.sh`, and `--uninstall` removes that installation
+and units. SSH defaults to user `pi`; it can generate an ed25519 key and offer
+to copy it. The script changes live network state and firewall rules, so use
+`--no-persist`-style assumptions carefully: inspect the source and be ready to
+remove its rules if your host's network policy is strict.
 
-Log format (tab-separated, append-only):
+### `refresh-ssh`
 
+#### Noob mode
+
+Remove a stale host key, then optionally connect:
+
+```bash
+refresh-ssh 10.0.0.2
+refresh-ssh --connect pi@10.0.0.2
 ```
-<ISO-8601 UTC>  <tool>  <package>  <source>  <action>  <status>  <reason>
+
+#### Pro mode
+
+`refresh-ssh [options] HOST` uses `ssh-keygen -R` against
+`~/.ssh/known_hosts`, creating that file with mode 600 when absent. `--all`
+also removes `[host]:port` and `[host]:22` variants, `--file PATH` selects a
+different known-hosts file, `--port PORT` controls the optional connection,
+`--connect` runs SSH afterward, and `--quiet` reduces output. It does not
+disable strict host-key checking; the next connection still verifies the new
+key.
+
+### `flash`-adjacent network helpers: `find-pi`, `sd-list`, and `prep-headless`
+
+#### Noob mode
+
+These are intentionally small helpers for the Pi workflow:
+
+```bash
+sd-list
+find-pi
+prep-headless /dev/sdX1 "SSID" "password" GB
 ```
 
-If you like receipts, this is your receipt. If you don't, ignore it and keep vibe-installing.
+#### Pro mode
 
-### tailscalesetup
-Install Tailscale quickly.
+`sd-list` identifies candidate whole disks, `find-pi` searches local network
+output for Pi fingerprints, and `prep-headless` writes boot-partition SSH and
+Wi-Fi configuration. They do not share state or validate one another's
+results. Treat the device path and discovered hostname/IP as untrusted input
+until you confirm it independently.
+
+### `tailscalesetup`
+
+#### Noob mode
 
 ```bash
 tailscalesetup
 ```
 
+#### Pro mode
+
+This is deliberately a tiny wrapper around:
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+```
+
+It downloads and executes the current official Tailscale installer. That is
+convenient but means behavior changes with the remote script and network
+availability. Review the upstream installer first if you need a controlled or
+auditable deployment; BinMan does not pin a release or verify a checksum here.
+
 ---
 
-## Examples Folder
+## Examples
 
-`Examples/` includes ready-to-install demos:
+### Noob mode
 
-- **Single-file scripts**: `hello-bash.sh`, `hello-python.py`, `hello-js.js`, `hello-deno.ts`, `hello-ruby.rb`, `hello-php.php`, `hello-go.go`, `hello-rust_rs/`.
-- **App layouts**: `BashApp`, `PythonApp`, `JsApp`, `DenoApp`, `GoApp`, `RustApp`, `RubyApp`, `PhpApp`.
-- **Prebuilt binaries**: `hello-go`, `hello-rust`, `hello-deno` (wrapper).
-
-Usage examples:
+The `Examples/` directory contains language samples and app layouts:
 
 ```bash
 binman install Examples/hello-bash.sh
 binman install Examples/hello-python.py
+binman install Examples/PythonApp
 binman install Examples/GoApp
-binman install Examples/RustApp
 ```
+
+### Pro mode
+
+Examples cover Bash, Python, JavaScript, Deno, Go, Rust, Ruby, and PHP, both as
+single files and as directories with `VERSION` and `bin/<name>` conventions.
+Some examples are wrappers or prebuilt artifacts rather than guaranteed
+portable binaries. The app detector uses the same rules described earlier;
+when a sample has multiple plausible entries, pass `--entry` explicitly.
 
 ---
 
-## Tests
+## Testing and Troubleshooting
 
-The repository currently uses BinMan's built-in stress harness and shell
-syntax checks:
+### Noob mode
+
+Run syntax and the quick stress test:
 
 ```bash
 bash -n binman.sh
-binman test stress --jobs 8 --verbose
+binman test stress --quick
 ```
+
+Useful diagnostics:
+
+```bash
+binman doctor
+binman --reindex list
+BINMAN_DEBUG=1 binman list
+```
+
+### Pro mode
+
+The built-in stress harness creates temporary fixtures and exercises single-file
+copy installs, link-mode apps, app shims, manifests, uninstall, PATH handling,
+odd filenames, backup, restore, and related paths. `--jobs N`, `--verbose`,
+`--keep`, and `--quick` tune it. Some TUI paths require a real terminal, so a
+non-TTY runner may report that `/dev/tty` is unavailable even when the core
+installer is healthy.
+
+Common fixes:
+
+| Symptom | Explanation | Fix |
+|---|---|---|
+| `binman: command not found` | `~/.local/bin` is not in PATH or the shell cached a miss | `binman doctor --fix-path`, reload the shell, then `rehash`/`hash -r` |
+| `Bundled scripts are not cached` | No repository source cache exists | Run from a checkout or use `binman self-update` |
+| Directory install refuses non-interactively | BinMan cannot safely choose an entry | Add `--entry '...'`, and optionally `--workdir`/`--venv` |
+| Installed version is `unknown` | No recognized `VERSION` marker was found | Add a `VERSION` file or supported marker |
+| Docker action fails | No usable Docker/Podman engine or metadata | Run `binman doctor`, check `--engine`, and inspect app metadata |
+| A bundled script fails immediately | Its runtime or system dependency is absent | Run `<script> --help`, install the named dependency, and rerun |
 
 ---
 
-## Optional Dependencies
+## Dependencies and Portability
 
-BinMan is Bash-only, but it integrates with optional tools:
+### Noob mode
 
-- `fzf` for fuzzy list and TUI selection
-- `bat` or `tree` for prettier previews
-- `zip`/`unzip` or `tar` for backup/restore
-- `jq` for JSON manifests
-- `git` and `gh` for self-update and repo workflows
-- `docker` or `podman` for container management
-- Language runtimes for apps (python, node, deno, go, rust, ruby, php)
+BinMan itself needs Bash and common Unix tools. Optional tools unlock nicer or
+more specialized features:
 
-If you do not have them, BinMan simply downgrades politely and keeps working.
+```text
+fzf       fuzzy pickers and previews
+bat/tree  prettier previews
+zip/unzip or tar   archives
+jq        JSON manifests
+git/gh    self-update and GitHub workflows
+docker/podman       containers
+language runtimes   Python, Node, Deno, Go, Rust, Ruby, PHP apps
+```
+
+If an optional tool is missing, BinMan usually falls back or explains what is
+unavailable.
+
+### Pro mode
+
+The core script is Bash-oriented and uses tools such as `awk`, `sed`, `find`,
+`sort`, `mktemp`, `install`, `realpath`/fallbacks, and `ps`. Some behavior is
+Linux-specific: system directories, `sudo`, `systemd`, `lsblk`, network
+interfaces, Docker/Podman, and Pi flashing helpers are not portable to every
+Unix or non-Unix host.
+
+Bundled scripts have their own dependencies. `copy` and `move` need `rsync`;
+`findinfiles` needs Python 3; network/Pi tools need combinations of `ip`,
+`ping`, `nmap`, `arp-scan`, `nmcli`, `iw`, `iwlist`, `ssh`, and `sudo`; Git
+helpers need Git and sometimes `gh`; `kinstall` needs whichever backend it is
+using; `flash` and `prep-headless` need root-capable mount/block-device tools;
+and `tailscalesetup` needs `curl` plus network access. Missing dependencies are
+not silently replaced with fake success.
+
+For automation, prefer explicit targets and flags, capture exit statuses, use
+`--dry-run` where supported, and avoid relying on TUI prompts.
 
 ---
 
