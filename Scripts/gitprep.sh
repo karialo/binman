@@ -185,6 +185,33 @@ canonical_https_url() {
   gh repo view "$1" --json url -q .url 2>/dev/null || true
 }
 
+sync_existing_remote() {
+  local ref="origin/${BRANCH}"
+
+  say "Fetching existing remote branch: ${BRANCH}"
+  git fetch origin "$BRANCH" >/dev/null 2>&1 || err "Could not fetch origin/${BRANCH}. Check the remote and branch name."
+
+  if ! git show-ref --verify --quiet "refs/remotes/${ref}"; then
+    warn "Remote branch origin/${BRANCH} does not exist yet; local branch can be pushed."
+    return 0
+  fi
+
+  if git merge-base --is-ancestor "$ref" HEAD; then
+    ok "Local branch already contains origin/${BRANCH}"
+  elif git merge-base --is-ancestor HEAD "$ref"; then
+    git merge --ff-only "$ref" >/dev/null || err "Could not fast-forward from origin/${BRANCH}."
+    ok "Fast-forwarded from origin/${BRANCH}"
+  elif git merge-base HEAD "$ref" >/dev/null 2>&1; then
+    say "Local and remote histories diverged; rebasing local commits onto origin/${BRANCH}"
+    git rebase "$ref" || err "Rebase stopped with conflicts. Resolve them, then run: git rebase --continue"
+    ok "Rebased local commits onto origin/${BRANCH}"
+  else
+    say "Local and remote histories are unrelated; merging origin/${BRANCH}"
+    git merge --allow-unrelated-histories --no-edit "$ref" || err "Merge stopped with conflicts. Resolve them, then commit and run push."
+    ok "Merged origin/${BRANCH} into the local branch"
+  fi
+}
+
 # ---- remote creation / wiring ----------------------------------------------
 if [[ $USE_GH -eq 1 ]]; then
   SLUG="${OWNER}/${REPO_NAME}"
@@ -199,8 +226,10 @@ if [[ $USE_GH -eq 1 ]]; then
     set_origin "$URL"
   else
     ok "Creating GitHub repo: $SLUG (${VISIBILITY})"
-    # Use current branch; set origin and push in one go
-    if gh repo create "$SLUG" --"$VISIBILITY" --source . --remote origin ${PUSH:+--push} -y >/dev/null 2>&1; then
+    # Use current branch; set origin and optionally push in one go.
+    local -a create_args=(repo create "$SLUG" "--${VISIBILITY}" --source . --remote origin -y)
+    (( PUSH )) && create_args+=(--push)
+    if gh "${create_args[@]}" >/dev/null 2>&1; then
       # Ensure origin is the canonical URL format we want
       if [[ "$PROTO" == "https" ]]; then
         URL="$(canonical_https_url "$SLUG")"; [[ -n "$URL" ]] || URL="https://github.com/${SLUG}.git"
@@ -208,7 +237,7 @@ if [[ $USE_GH -eq 1 ]]; then
         URL="$(canonical_ssh_url "$SLUG")"; [[ -n "$URL" ]] || URL="git@github.com:${SLUG}.git"
       fi
       set_origin "$URL"
-      ok "GitHub repo created${PUSH:+ and pushed} → $SLUG"
+      if (( PUSH )); then ok "GitHub repo created and pushed → $SLUG"; else ok "GitHub repo created → $SLUG"; fi
     else
       err "Failed to create GitHub repo via gh. Check auth/permissions or if the name is taken."
     fi
@@ -220,6 +249,9 @@ fi
 # ---- push (if not pushed already) ------------------------------------------
 if [[ $PUSH -eq 1 ]]; then
   if git remote get-url origin >/dev/null 2>&1; then
+    if gh repo view "${OWNER}/${REPO_NAME}" >/dev/null 2>&1; then
+      sync_existing_remote
+    fi
     # If gh already pushed, this will be a no-op fast-forward
     git push -u origin "$BRANCH" >/dev/null 2>&1 || err "Push failed. Check SSH/HTTPS auth."
     ok "Pushed $BRANCH → origin"

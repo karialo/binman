@@ -6718,6 +6718,40 @@ PHP
   fi
 }
 
+stamp_generated_description(){
+  local file="$1" desc="$2" tmp
+  [[ -f "$file" ]] || return 0
+  tmp="$(mktemp "${file}.binman-desc.XXXXXX")" || return 1
+
+  BINMAN_DESC="$desc" awk '
+    BEGIN { d=ENVIRON["BINMAN_DESC"]; done=0 }
+    {
+      if (!done && $0 ~ /^# Description:/) {
+        print "# Description: " d; done=1; next
+      }
+      if (!done && $0 ~ /^\/\/ Description:/) {
+        print "// Description: " d; done=1; next
+      }
+      if (!done && $0 ~ /^<\?php/) {
+        print; print "// Description: " d; done=1; next
+      }
+      if (!done && $0 ~ /^#!/) {
+        print
+        print "# Description: " d
+        done=1
+        next
+      }
+      print
+    }
+    END {
+      if (!done) print "# Description: " d
+    }
+  ' "$file" > "$tmp"
+
+  chmod --reference="$file" "$tmp" 2>/dev/null || chmod +x "$tmp"
+  mv "$tmp" "$file"
+}
+
 # --------------------------------------------------------------------------------------------------
 # Wizard — interactive project scaffolder + optional install + optional git prep
 #   • Reuses ask/ask_choice/ask_yesno which write to /dev/tty (no stdin capture weirdness)
@@ -6844,7 +6878,7 @@ new_wizard(){
   echo; ok "Generating…"
 
   # == Generate ===============================================================
-  local filename path entry_cmd
+  local filename path entry_cmd entry_file cmdname
   if [[ "$kind" == "single" ]]; then
     # choose extension by language if the user didn't provide one
     case "$lang" in
@@ -6863,6 +6897,11 @@ new_wizard(){
     new_cmd "$filename" --lang "$lang" --dir "$target_dir"
     path="${target_dir}/${filename}"
     entry_cmd="./${filename}"
+    cmdname="${filename%.*}"
+    case "$lang" in
+      typescript|go|rust) entry_file="${target_dir}/${cmdname}" ;;
+      *) entry_file="$path" ;;
+    esac
 
     cat > "${target_dir}/README.md" <<EOF
 # ${name}
@@ -6882,6 +6921,7 @@ EOF
     new_cmd "$name" --app --lang "$lang" --dir "$target_dir" "${vflag[@]}"
     path="${target_dir}/${name}"
     entry_cmd="./bin/${name}"
+    entry_file="${path}/bin/${name}"
 
     cat > "${path}/README.md" <<EOF
 # ${name}
@@ -6905,6 +6945,8 @@ ${name} [args]
 EOF
     ok "README.md created → ${path}/README.md"
   fi
+
+  stamp_generated_description "$entry_file" "$desc"
 
   # == Manifest ==============================================================
   local manifest_kind manifest_path manifest_file manifest_run manifest_ext manifest_desc
