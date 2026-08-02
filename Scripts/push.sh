@@ -2,8 +2,9 @@
 # Description: Add/commit/push with optional semver bump, tag, changelog, and GitHub release.
 # App: push
 # Title: Git Push (versioned)
-# Version: 1.0.0
-# Usage: push [-a] [-m "msg"] [-v patch|minor|major] [-t] [-r] [--dry]
+# Version: 1.1.0
+# Usage: push ["message"] [-a] [-m "msg"] [-v patch|minor|major] [-t] [-r] [--dry]
+#   "message"  Stage all changes, commit with this message, and push.
 #   -a            Stage all changes
 #   -m "msg"      Commit message (if omitted and there are staged changes, opens $EDITOR)
 #   -v TYPE       Bump VERSION file (semver): patch|minor|major (creates tag if -t given)
@@ -16,7 +17,7 @@ set -euo pipefail
 shopt -s nocasematch
 
 APP_TITLE="Git Push (versioned)"
-APP_VERSION="1.0.0"
+APP_VERSION="1.1.0"
 
 # ── Styling ────────────────────────────────────────────────────────────────
 c() { tput setaf "$1" 2>/dev/null || true; }
@@ -78,7 +79,14 @@ while (( $# )); do
     -h|--help)
       sed -n '1,40p' "$0" | sed -n '1,25p' | sed 's/^# \{0,1\}//' | sed 's/^$//'
       exit 0;;
-    *) die "Unknown arg: $1";;
+    *)
+      if [[ -z "$MSG" ]]; then
+        STAGE_ALL=1
+        MSG="$1"
+      else
+        die "Unexpected argument: $1"
+      fi
+      ;;
   esac; shift
 done
 
