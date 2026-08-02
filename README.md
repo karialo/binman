@@ -143,11 +143,12 @@ BinMan does not edit shell startup files merely to install a command.
 Read the repository manual without installing it:
 
 ```bash
-man ./binman.1
+man -l ./binman.1
 ```
 
-If your `man` does not accept a relative file, open `binman.1` directly or use
-the README as the friendlier tutorial.
+The `-l` flag tells `man` to load a local file instead of searching the system
+man-page database. If your `man` does not support `-l`, open `binman.1`
+directly or use the README as the friendlier tutorial.
 
 <details>
 <summary><strong>Pro mode</strong> — technical details</summary>
