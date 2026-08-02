@@ -1,10 +1,23 @@
-# BinMan (Binary Manager)
+# BinMan
+
+**A personal command manager for scripts and small applications.**
 
 Because `~/Downloads` is not a filing system, champ.
 
 BinMan turns loose scripts and small multi-file projects into commands you can
 run from anywhere. It is written in Bash, prefers boring portable tools, and
 has enough K.A.R.I. attitude to stop your toolbox becoming a landfill.
+
+```console
+$ binman install ./weather.py
+✓ Installed: ~/.local/bin/weather
+
+$ weather Sunderland
+Rain. Obviously.
+```
+
+No cloud dashboard. No subscription. Just your little tool, promoted from
+"file I hope I can find later" to "command I can run anywhere".
 
 This README has two layers throughout:
 
@@ -14,15 +27,18 @@ This README has two layers throughout:
 
 If you only want to install something, start with Noob mode. If you are
 debugging, automating, packaging, or deciding whether to trust an operation,
-read Pro mode too.
+open Pro mode too. The technical sections still contain the jokes; K.A.R.I.
+has never believed that a warning needs to sound like a tax form.
 
 Version documented here: **v1.9.0**
 
 ## Table of Contents
 
 - [What BinMan Is](#what-binman-is)
+- [Highlights](#highlights)
 - [Quick Start](#quick-start)
-- [Manual Page](#manual-page)
+- [Common Examples](#common-examples)
+- [Compatibility](#compatibility)
 - [How BinMan Stores Things](#how-binman-stores-things)
 - [Command Reference](#command-reference)
   - [Wizard](#wizard)
@@ -33,6 +49,9 @@ Version documented here: **v1.9.0**
 - [Bundled Scripts](#bundled-scripts)
 - [Examples](#examples)
 - [Testing and Troubleshooting](#testing-and-troubleshooting)
+- [Known Limitations](#known-limitations)
+- [Manual Page](#manual-page)
+- [Documentation Map](#documentation-map)
 - [Dependencies and Portability](#dependencies-and-portability)
 - [License](#license)
 
@@ -81,6 +100,35 @@ shell command (`rehash` or `hash -r`).
 
 ---
 
+## Highlights
+
+### Noob mode
+
+BinMan is more than a fancy `cp` command with a hat:
+
+- Install individual scripts, project directories, remote files, or manifests.
+- Turn installed tools into commands in `~/.local/bin`.
+- Detect common app layouts and Python projects.
+- Browse tools with a Wizard, terminal UI, `fzf`, and bundled-script browser.
+- Verify, back up, restore, and roll back your personal command collection.
+- Manage Docker or Podman containers for installed applications.
+- Scaffold new projects in Bash, Python, Node, TypeScript, Go, Rust, Ruby, or PHP.
+
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
+
+The feature set is deliberately layered. The normal install path stays small:
+stage a target, validate what can be validated, install it, and refresh the
+inventory. The surrounding features build a personal tool lifecycle around
+that command: discovery, app entry detection, venv setup, metadata, backups,
+container metadata, diagnostics, and recovery. None of that requires a server
+or a BinMan account. Your toolbox remains gloriously local.
+
+</details>
+
+---
+
 ## Quick Start
 
 ### Noob mode
@@ -90,8 +138,7 @@ Install BinMan itself:
 ```bash
 git clone https://github.com/karialo/binman.git
 cd binman
-chmod +x binman.sh
-./binman.sh install ./binman.sh
+bash binman.sh install binman.sh
 ```
 
 Refresh the command lookup in your current shell when BinMan asks:
@@ -136,35 +183,81 @@ BinMan does not edit shell startup files merely to install a command.
 
 ---
 
-## Manual Page
+## Common Examples
 
 ### Noob mode
 
-Read the repository manual without installing it:
+Start with tasks, not the entire command dictionary. K.A.R.I. approves.
 
 ```bash
-man -l ./binman.1
-```
+# Install a shell script; the .sh suffix becomes optional
+binman install ./cleanup.sh
+cleanup
 
-The `-l` flag tells `man` to load a local file instead of searching the system
-man-page database. If your `man` does not support `-l`, open `binman.1`
-directly or use the README as the friendlier tutorial.
+# Install a project directory
+binman install ./MyApp
+MyApp
+
+# Choose a shorter command name
+binman install ./ridiculously-long-script-name.sh --name tidy
+tidy
+
+# Browse the bundled utilities
+binman scripts
+
+# Open the terminal interface
+binman
+
+# Check the installed command collection
+binman verify
+```
 
 <details>
 <summary><strong>Pro mode</strong> — technical details</summary>
 
 
-The source tree includes `binman.1` in standard roff format. To install it for
-the local system, from the repository run:
+For automation, prefer explicit targets and flags. Directory installs that run
+without a TTY need an explicit entry command; interactive installs can let the
+Wizard or entry picker help you choose one:
 
 ```bash
-sudo install -Dm644 binman.1 /usr/local/share/man/man1/binman.1
-sudo mandb 2>/dev/null || true
-man binman
+binman install ./weather-app --entry 'python3 src/main.py' --venv
+binman install --manifest tools.txt
+binman install --system ./MyApp --entry './bin/MyApp'
+binman doctor --all --python 3.11
+BINMAN_AUTO_BACKUP=1 binman update ./cleanup.sh
 ```
 
-The manual is intentionally compact and command-oriented; the README remains
-the expanded tutorial, implementation guide, and bundled-script catalogue.
+</details>
+
+---
+
+## Compatibility
+
+### Noob mode
+
+BinMan itself runs under Bash. Linux is the primary target. Zsh and Fish users
+can call it normally; BinMan runs as Bash and prints the right shell-refresh
+hint after installs.
+
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
+
+| Platform or shell | Status | Notes |
+|---|---|---|
+| Linux | Primary target | System mode, `sudo`, `systemd`, `lsblk`, networking, and Pi tools are developed here. |
+| WSL | Expected to work | Linux paths and available host integrations determine the result. |
+| macOS | Experimental | BSD utility differences may affect diagnostics and bundled Linux tools. |
+| Bash | Required | `binman.sh` is a Bash program using Bash arrays, maps, and process substitution. |
+| Zsh | Supported as caller | BinMan runs through Bash and reports `rehash` for the parent shell. |
+| Fish | Supported as caller | PATH patching is supported; Fish does not need a hash-table reset. |
+| BusyBox / BSD Unix | Not certified | Some required GNU/Linux utilities and flags may be absent. |
+
+There is no universal compatibility badge hiding in the shrubbery. Features
+such as Pi flashing, systemd persistence, Docker/Podman, and distro package
+installation are necessarily platform-dependent. Test the specific workflow
+on the target system before treating it as portable.
 
 </details>
 
@@ -229,6 +322,34 @@ version help
 
 Global flags can appear before the command, and `--system` is also accepted
 after an install target.
+
+### Core Commands
+
+`install` · `uninstall` · `list` · `verify` · `update`
+
+The everyday toolbox: put things somewhere useful, inspect them, change them,
+and remove them when they have outlived their dramatic little purpose.
+
+### Interactive Commands
+
+`wizard` · `scripts` · `binman` with no arguments
+
+The friendly surfaces: guided project creation, bundled-script browsing, and
+the terminal menu.
+
+### Recovery and Maintenance
+
+`doctor` · `backup` · `restore` · `rollback` · `prune-rollbacks` ·
+`self-update`
+
+The "something happened and now we are being adults" department.
+
+### Advanced Tools
+
+`docker` · `bundle` · `analyze` · `test` · `sudo` · `new`
+
+Container management, portability bundles, disk investigation, test harnesses,
+privileged execution, and scaffolding.
 
 ---
 
@@ -1623,6 +1744,107 @@ not silently replaced with fake success.
 
 For automation, prefer explicit targets and flags, capture exit statuses, use
 `--dry-run` where supported, and avoid relying on TUI prompts.
+
+</details>
+
+---
+
+## Known Limitations
+
+### Noob mode
+
+BinMan is honest about the bits still wearing a little `TODO` hat:
+
+- `binman verify NAME` currently runs the all-items verification path.
+- The help text mentions `update --git`, but that option is not wired through
+  the public update dispatcher yet.
+- The help text advertises `--restore FILE`; use `binman restore FILE` instead.
+- The help text lists `tui`, but `binman` with no arguments is the working TUI
+  entry point.
+
+These do not stop normal installs. They are documented here so nobody has to
+perform archaeology with `bash -x` at 2 a.m.
+
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
+
+These are implementation mismatches, not intentional compatibility promises.
+They should become tracked issues as each is corrected:
+
+| Area | Current behavior | Intended follow-up |
+|---|---|---|
+| Verify filtering | `op_verify` supports names internally, but the public dispatcher does not pass them through. | Forward `"$@"` from the `verify` action. |
+| Update Git pull | `GIT_DIR` and help text exist, but the public parser does not populate it. | Add `--git DIR` to the common/update option path. |
+| Restore shortcut | The usage banner mentions `--restore FILE`, but top-level parsing does not dispatch it. | Implement the shortcut or remove it from usage. |
+| TUI alias | The usage banner lists `tui`, but the dispatcher enters the menu only when no action is supplied. | Add an explicit `tui)` action or remove the alias from help. |
+
+The source and this README are the current source of truth. If you automate
+around one of these edges, test the actual command and capture its exit status;
+K.A.R.I. refuses to certify a feature merely because it has a handsome help
+line.
+
+</details>
+
+---
+
+## Manual Page
+
+### Noob mode
+
+Read the repository manual without installing it:
+
+```bash
+man -l ./binman.1
+```
+
+The `-l` flag tells `man` to load a local file instead of searching the system
+man-page database. If your `man` does not support `-l`, open `binman.1`
+directly or use the README as the friendlier tutorial.
+
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
+The source tree includes `binman.1` in standard roff format. To install it for
+the local system, from the repository run:
+
+```bash
+sudo install -Dm644 binman.1 /usr/local/share/man/man1/binman.1
+sudo mandb 2>/dev/null || true
+man binman
+```
+
+The manual is intentionally compact and command-oriented; the README remains
+the expanded tutorial, implementation guide, and bundled-script catalogue.
+
+</details>
+
+---
+
+## Documentation Map
+
+### Noob mode
+
+Use the document that matches the size of the question:
+
+- **README.md** — the welcoming front door, practical examples, full Noob/Pro
+  explanations, bundled-script catalogue, and K.A.R.I. commentary.
+- **binman.1** — the fast command reference for people who already know what
+  they want to type.
+- **Scripts/README.md** — bundled-script notes and cross-platform dependency
+  guidance.
+- **Examples/** — installable sample scripts and app layouts.
+
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
+
+The repository currently keeps the detailed guide in one README so the
+implementation notes and user instructions do not drift apart. As the command
+surface grows, focused `docs/` pages are the natural next layer for Docker,
+Python apps, manifests, storage, safety, and troubleshooting. Until then,
+`README.md` is authoritative, `binman.1` is concise, and the source remains
+the final judge when documentation and behavior disagree.
 
 </details>
 
