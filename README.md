@@ -581,6 +581,16 @@ binman docker down MyApp
 BinMan can manage containers for installed apps when Docker or Podman is
 available.
 
+![BinMan Docker service build](docs/assets/binman-docker-service-build.png)
+
+*The Wizard scaffolds the app, builds the image, and creates the managed
+service. The robot has been fed and is now listening on the configured ports.*
+
+![BinMan Docker management screen](docs/assets/binman-docker-screen.png)
+
+*The Docker screen exposes the useful bits at a glance: running status, image,
+ports, mounts, restart policy, metadata, and the available management keys.*
+
 <details>
 <summary><strong>Pro mode</strong> — technical details</summary>
 
@@ -615,7 +625,10 @@ binman backup my-tools.zip
 binman restore my-tools.zip
 ```
 
-Back up installed commands and apps, then merge them back later.
+Back up BinMan-curated apps, then merge them back later. Run `binman backup`
+inside a terminal for the guided flow: choose all or selected apps, keep or
+exclude virtual environments, review the size and destination, then approve
+the archive.
 
 <details>
 <summary><strong>Pro mode</strong> — technical details</summary>
@@ -628,11 +641,16 @@ not dispatch that form, so use the `restore` command and provide the path in a
 non-TTY/scripted context.
 
 Backups prefer ZIP when both `zip` and `unzip` exist; otherwise they use
-`.tar.gz`. The archive contains `bin/`, `apps/`, and `meta/info.txt` with the
-BinMan version, paths, timestamp, and host information. Restore accepts `.zip`,
-`.tar.gz`, and `.tgz`, detects a top-level wrapper directory, merges `bin/` and
-`apps/`, and restores executable bits. Restore is not a package lockfile and
-does not restore external dependencies or a shell's PATH.
+`.tar.gz`. The archive contains selected curated app directories, their
+matching BinMan shims under `bin/`, and `meta/info.txt` with the BinMan
+version, paths, timestamp, scope, and host information. Unrelated executables
+in `~/.local/bin` are deliberately excluded. Virtual environments are kept by
+default; `--exclude-venvs` also omits generated caches and build directories.
+
+Restore accepts `.zip`, `.tar.gz`, and `.tgz`, detects a top-level wrapper
+directory, merges `bin/` and `apps/`, and restores executable bits. Restore is
+not a package lockfile and does not restore external dependencies or a shell's
+PATH.
 
 </details>
 
@@ -679,16 +697,18 @@ delete unrelated newer files.
 binman bundle my-environment.zip
 ```
 
-Export your installed commands and apps into a portable archive.
+Export your curated apps and their matching command shims into a portable
+archive.
 
 <details>
 <summary><strong>Pro mode</strong> — technical details</summary>
 
 
-The bundle contains `bin/`, `apps/`, and `manifest.txt`. ZIP is used when
-available; otherwise the output becomes a `.tar.gz`. This is a payload bundle,
-not a full machine image: it does not include package-manager state, language
-runtimes, Docker images, or shell configuration.
+The bundle contains curated `bin/` shims, curated `apps/`, and
+`manifest.txt`. ZIP is used when available; otherwise the output becomes a
+`.tar.gz`. This is a payload bundle, not a full machine image: it does not
+include package-manager state, language runtimes, Docker images, or shell
+configuration.
 
 </details>
 
@@ -975,8 +995,13 @@ Before trying risky operations:
 ```bash
 export BINMAN_AUTO_BACKUP=1
 binman install --force ./tool.sh
-binman backup before-experiment.zip
+binman backup
 ```
+
+The guided backup asks which curated apps to include, whether to keep their
+virtual environments, and where to write the archive. It shows the planned
+scope and an approximate size before asking for final approval. Matching
+BinMan app shims are included; unrelated files in `~/.local/bin` are not.
 
 For scripts that can erase disks, delete repositories, alter networking, or
 install packages, read their Pro section below and run their help command
@@ -990,6 +1015,21 @@ BinMan's own destructive operations are conservative about conflicts unless
 `--force` is supplied, and automatic snapshots are opt-in. Archives and
 snapshots are local copies, not encrypted backups. They may contain executable
 code and host/path metadata, so protect them appropriately.
+
+Backups cover the curated app store under `~/.local/share/binman/apps` and the
+matching app shims only. Virtual environments are included by default because
+rebuilding them can be slow; the guided flow can exclude `.venv` directories
+and generated caches/build trees. For scripts and apps you select manually,
+use the guided TUI flow rather than assuming every executable in `~/.local/bin`
+belongs to BinMan.
+
+The command-line equivalents are:
+
+```bash
+binman backup --apps DemoApp --output demoapp-backup.zip
+binman backup --exclude-venvs --output lean-app-backup.zip
+binman backup --all --force full-app-backup.zip
+```
 
 The bundled scripts are separate programs. BinMan does not sandbox them: once
 installed, they run with the permissions of the invoking user and may call

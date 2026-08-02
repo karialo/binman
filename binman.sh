@@ -5874,97 +5874,192 @@ _backup_filename_default(){
     echo "binman_backup-${ts}.${ext}";
 }
 
-op_backup_subset(){
-  # ARGS: output filename (optional) + selected rows on stdin ("cmd  name" / "app  name")
-  # Example use:
-  #   _tui_pick_cmd_or_app_multi | op_backup_subset "mybundle.zip"
-  local outfile="${1:-}"
-  shift || true
-
-  local tmp sel
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "${tmp:-}"' EXIT
-  mkdir -p "$tmp"/{bin,apps}
-
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    local kind name
-    kind="$(awk '{print $1}' <<<"$line")"
-    name="$(awk '{print $2}' <<<"$line")"
-    if [[ "$kind" == "cmd" && -x "$BIN_DIR/$name" ]]; then
-      cp -a "$BIN_DIR/$name" "$tmp/bin/$name" 2>/dev/null || true
-    elif [[ "$kind" == "app" && -e "$APP_STORE/$name" ]]; then
-      cp -a "$APP_STORE/$name" "$tmp/apps/$name" 2>/dev/null || true
-    fi
-  done
-
-  # If nothing selected, do nothing
-  if ! compgen -G "$tmp/bin/*" >/dev/null && ! compgen -G "$tmp/apps/*" >/dev/null; then
-    warn "Nothing selected; backup skipped."
-    return 0
-  fi
-
-  # Temporarily point BIN/APPS to temp, then call op_backup (so it writes manifest/metadata)
-  local old_bin="$BIN_DIR" old_apps="$APP_STORE"
-  BIN_DIR="$tmp/bin"; APP_STORE="$tmp/apps"
-  op_backup "$outfile"
-  local rc=$?
-  BIN_DIR="$old_bin"; APP_STORE="$old_apps"
-  return $rc
+_backup_app_size_kb(){
+  local app="$1" path="$APP_STORE/$1" size=0
+  [[ -e "$path" ]] || { printf '0\n'; return 0; }
+  size="$(du -sk "$path" 2>/dev/null | awk 'NR == 1 {print $1}')"
+  printf '%s\n' "${size:-0}"
 }
 
-op_backup(){
-  ensure_bin; ensure_apps
+_backup_print_summary(){
+  local include_venvs="$1" outfile="$2" total_kb=0 app size
+  shift 2
+  printf '\n%sBackup summary%s\n' "$UI_BOLD" "$UI_RESET"
+  printf '  Curated apps: %d\n' "$#"
+  printf '  Virtual environments: %s\n' "$([[ "$include_venvs" == "1" ]] && echo included || echo excluded)"
+  printf '  Standalone ~/.local/bin files: excluded\n'
+  printf '  Output: %s\n' "$outfile"
+  for app in "$@"; do
+    size="$(_backup_app_size_kb "$app")"
+    total_kb=$((total_kb + size))
+  done
+  printf '  Approximate app data: %s\n' "$(human_size $((total_kb * 1024)))"
+  printf '\n  Apps:\n'
+  printf '    %s\n' "$@"
+  echo
+}
 
-  local prefer_zip=1 ext
+_backup_copy_curated_to_stage(){
+  local stage="$1" include_venvs="$2" app
+  shift 2
+  mkdir -p "$stage/bin" "$stage/apps" "$stage/meta"
+  for app in "$@"; do
+    [[ -e "$APP_STORE/$app" ]] || continue
+    cp -a "$APP_STORE/$app" "$stage/apps/$app"
+    # An app's matching shim is BinMan-curated; unrelated bin files are not.
+    if [[ -f "$BIN_DIR/$app" ]]; then
+      cp -a "$BIN_DIR/$app" "$stage/bin/$app"
+    fi
+    if [[ "$include_venvs" != "1" ]]; then
+      find "$stage/apps/$app" -type d \( -name .venv -o -name __pycache__ -o -name .cache -o -name node_modules -o -name target -o -name build -o -name dist \) -prune -exec rm -rf -- {} + 2>/dev/null || true
+    fi
+  done
+}
+
+_backup_create_curated(){
+  local outfile="$1" include_venvs="$2" force="$3" app meta_dir tmp
+  shift 3
+  local -a apps=("$@")
+  [[ ${#apps[@]} -gt 0 ]] || { warn "No curated apps selected; backup skipped."; return 0; }
+  mkdir -p "$(dirname "$outfile")"
+
+  local prefer_zip=0 ext
   if exists zip && exists unzip; then
-    ext="zip"
+    prefer_zip=1; ext="zip"
   else
-    prefer_zip=0
     ext="tar.gz"
     warn "zip/unzip not fully available; using .tar.gz"
   fi
 
-  # Normalize outfile: add ext if missing; make relative paths land in $PWD
-  local outfile="${1:-$(_backup_filename_default "$ext")}"
-  [[ "$outfile" != *.zip && "$outfile" != *.tar.gz && "$outfile" != *.tgz ]] && outfile="${outfile}.${ext}"
-  case "$outfile" in
-    /*) : ;;                   # absolute → keep
-    *)  outfile="$PWD/$outfile" ;;
-  esac
-  mkdir -p "$(dirname "$outfile")"
+  if [[ "$outfile" != *.zip && "$outfile" != *.tar.gz && "$outfile" != *.tgz ]]; then
+    outfile="${outfile}.${ext}"
+  fi
+  if [[ -e "$outfile" && "$force" != "1" ]]; then
+    err "Backup already exists: $outfile (use --force or choose another path)"
+    return 2
+  fi
+  rm -f -- "$outfile"
 
   (
     set -e
-    # subshell keeps tmp in scope until EXIT → no nounset trap blowups
     tmp="$(mktemp -d)"
     trap 'rm -rf "${tmp:-}"' EXIT
-
-    mkdir -p "$tmp"/{bin,apps,meta}
-    [[ -d "$BIN_DIR"   ]] && cp -a "$BIN_DIR"/.   "$tmp/bin"  2>/dev/null || true
-    [[ -d "$APP_STORE" ]] && cp -a "$APP_STORE"/. "$tmp/apps" 2>/dev/null || true
-
+    _backup_copy_curated_to_stage "$tmp" "$include_venvs" "${apps[@]}"
     cat > "$tmp/meta/info.txt" <<EOF
 Created: $(iso_now)
 BinMan:  ${SCRIPT_NAME} v${VERSION}
 BIN_DIR: ${BIN_DIR}
 APP_STORE: ${APP_STORE}
+Scope: curated apps only
+Virtual environments: $([[ "$include_venvs" == "1" ]] && echo included || echo excluded)
 Host: $(uname -a)
 EOF
-
-    if [[ $prefer_zip -eq 1 ]]; then
+    if (( prefer_zip )); then
       (cd "$tmp" && zip -qr "$outfile" bin apps meta)
     else
       (cd "$tmp" && tar -czf "$outfile" bin apps meta)
     fi
-
-    abs_out="$(realpath_f "$outfile")"
+    local abs_out; abs_out="$(realpath_f "$outfile")"
     if (( JSON_MODE )); then
       emit_json_object event=backup path="$abs_out" status=ok
     else
       ok "Backup created: ${abs_out}"
     fi
   )
+}
+
+_backup_guided(){
+  ensure_bin; ensure_apps
+  local -a all_apps selected_apps
+  mapfile -t all_apps < <(_get_installed_app_names)
+  (( ${#all_apps[@]} > 0 )) || { warn "No curated apps are installed."; return 0; }
+
+  local scope choice include_venvs outfile default_out
+  scope="$(ask_choice "Apps to back up" "all/select" "all")"
+  if [[ "${scope,,}" == select* ]]; then
+    if exists fzf; then
+      local picked
+      picked="$(printf '%s\n' "${all_apps[@]}" | fzf_run --multi --prompt='Backup apps > ' --height=60% --reverse || true)"
+      [[ -n "$picked" ]] || { warn "Backup cancelled."; return 0; }
+      mapfile -t selected_apps <<< "$picked"
+    else
+      local names
+      names="$(ask "App names (space-separated)" "")"
+      read -r -a selected_apps <<< "$names"
+    fi
+  else
+    selected_apps=("${all_apps[@]}")
+  fi
+
+  local -a valid_apps=()
+  local app
+  for app in "${selected_apps[@]}"; do
+    [[ -n "$app" && -d "$APP_STORE/$app" ]] && valid_apps+=("$app") || warn "Skipping unknown app: $app"
+  done
+  (( ${#valid_apps[@]} > 0 )) || { warn "No valid curated apps selected."; return 0; }
+
+  include_venvs=1
+  choice="$(ask_choice "Virtual environments" "keep/exclude" "keep")"
+  [[ "${choice,,}" == exclude* ]] && include_venvs=0
+  default_out="$PWD/$(_backup_filename_default zip)"
+  outfile="$(ask "Output archive" "$default_out")"
+  [[ "$outfile" == /* ]] || outfile="$PWD/$outfile"
+  [[ "$outfile" == *.zip || "$outfile" == *.tar.gz || "$outfile" == *.tgz ]] || outfile="${outfile}.zip"
+
+  _backup_print_summary "$include_venvs" "$outfile" "${valid_apps[@]}"
+  ask_yesno "Create this backup?" "n" || { warn "Backup cancelled."; return 0; }
+  _backup_create_curated "$outfile" "$include_venvs" 1 "${valid_apps[@]}"
+}
+
+op_backup(){
+  local include_venvs=1 force=0 outfile="" guided=0
+  local -a selected_apps=()
+  if [[ $# -eq 0 && -t 1 ]]; then
+    _backup_guided
+    return $?
+  fi
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --exclude-venvs|--no-venvs|--lean) include_venvs=0; shift;;
+      --include-venvs|--full) include_venvs=1; shift;;
+      --apps)
+        [[ -n "${2:-}" ]] || { err "backup --apps requires comma-separated names"; return 2; }
+        IFS=',' read -r -a selected_apps <<< "$2"; shift 2;;
+      --all) selected_apps=(); shift;;
+      --force) force=1; shift;;
+      -o|--output) outfile="${2:-}"; [[ -n "$outfile" ]] || { err "backup $1 requires a path"; return 2; }; shift 2;;
+      -h|--help)
+        cat <<'EOF'
+binman backup [FILE] [OPTIONS]
+  Back up BinMan-curated apps and their matching shims.
+  With no arguments in a terminal, opens the guided backup flow.
+
+Options:
+  --apps A,B       Back up only the named curated apps
+  --all            Back up all curated apps (default)
+  --exclude-venvs  Exclude .venv and generated caches/build directories
+  --include-venvs  Include virtual environments (default)
+  --force          Replace an existing archive
+  -o, --output F   Write to F
+EOF
+        return 0;;
+      -*) err "Unknown backup option: $1"; return 2;;
+      *) [[ -z "$outfile" ]] && outfile="$1" || { err "Only one backup output path is allowed"; return 2; }; shift;;
+    esac
+  done
+
+  ensure_apps
+  if [[ -z "$outfile" ]]; then
+    local ext="zip"; exists zip && exists unzip || ext="tar.gz"
+    outfile="$PWD/$(_backup_filename_default "$ext")"
+  else
+    [[ "$outfile" == /* ]] || outfile="$PWD/$outfile"
+  fi
+  if [[ ${#selected_apps[@]} -eq 0 ]]; then
+    mapfile -t selected_apps < <(_get_installed_app_names)
+  fi
+  _backup_create_curated "$outfile" "$include_venvs" "$force" "${selected_apps[@]}"
 }
 
 _detect_extract_root(){
@@ -6134,6 +6229,9 @@ op_bundle(){
   ensure_bin; ensure_apps
 
   local out="${1:-binman_bundle-$(date +%Y%m%d-%H%M%S).zip}"
+  local -a apps=()
+  mapfile -t apps < <(_get_installed_app_names)
+  (( ${#apps[@]} > 0 )) || { warn "No curated apps available to bundle."; return 0; }
   case "$out" in
     /*) : ;;
     *)  out="$PWD/$out" ;;
@@ -6145,9 +6243,7 @@ op_bundle(){
     tmp="$(mktemp -d)"
     trap 'rm -rf "${tmp:-}"' EXIT
 
-    mkdir -p "$tmp"/{bin,apps}
-    [[ -d "$BIN_DIR"   ]] && cp -a "$BIN_DIR"/.   "$tmp/bin"  2>/dev/null || true
-    [[ -d "$APP_STORE" ]] && cp -a "$APP_STORE"/. "$tmp/apps" 2>/dev/null || true
+    _backup_copy_curated_to_stage "$tmp" 1 "${apps[@]}"
 
     {
       echo "# BinMan bundle manifest"
@@ -7462,7 +7558,7 @@ __bm_run_action_safe() {
     update)          op_update "$@" ;;
     new)             new_cmd ;;
     wizard)          new_wizard ;;
-    backup)          op_backup ;;
+    backup)          op_backup "$@" ;;
     restore)
       if [[ -t 1 ]]; then
         local f; f="$(_tui_pick_archive)"
@@ -7479,7 +7575,7 @@ __bm_run_action_safe() {
       ;;
     prune-rollbacks) cmd_prune_rollbacks ;;
     analyze)         cmd_analyze ;;
-    bundle)          op_bundle ;;
+    bundle)          op_bundle "$@" ;;
     test)            op_test ;;
     sudo)            op_sudo "$@" ;;
     toggle_system|toggle_system_mode|toggle-system)
@@ -7724,40 +7820,8 @@ binman_tui(){
 
       6) new_wizard; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r;;
 
-      7)  # Backup — pick ALL or a subset of cmds/apps
-        if exists fzf; then
-          mapfile -t _cmds < <(_get_installed_cmd_names)
-          mapfile -t _apps < <(_get_installed_app_names)
-          choices=("ALL (everything)")
-          for c in "${_cmds[@]}"; do choices+=("cmd  $c"); done
-          for a in "${_apps[@]}"; do choices+=("app  $a"); done
-
-          sel="$(printf '%s\n' "${choices[@]}" | fzf_run --multi --prompt="Backup > " --height=60% --reverse || true)"
-          [[ -z "$sel" ]] && { echo "Cancelled."; printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r; continue; }
-
-          if grep -qx "ALL (everything)" <<< "$sel"; then
-            op_backup
-          else
-            tmp="$(mktemp -d)"; trap 'rm -rf "${tmp:-}"' RETURN
-            mkdir -p "$tmp/bin" "$tmp/apps"
-            while IFS= read -r line; do
-              typ="${line%%[[:space:]]*}"; name="${line##*  }"
-              if [[ "$typ" == "cmd"  && -f "$BIN_DIR/$name"   ]]; then cp -a "$BIN_DIR/$name"   "$tmp/bin/";  fi
-              if [[ "$typ" == "app"  && -e "$APP_STORE/$name" ]]; then cp -a "$APP_STORE/$name" "$tmp/apps/"; fi
-            done <<< "$sel"
-
-            out="binman_backup-$(date +%Y%m%d-%H%M%S).zip"
-            if exists zip && exists unzip; then
-              (cd "$tmp" && zip -qr "$PWD/$out" bin apps)
-            else
-              out="${out%.zip}.tar.gz"
-              (cd "$tmp" && tar -czf "$PWD/$out" bin apps)
-            fi
-            ok "Backup created: $(realpath_f "$PWD/$out")"
-          fi
-        else
-          op_backup
-        fi
+      7)  # Backup — guided curated-app backup
+        op_backup
         printf "%sPress Enter...%s" "$UI_DIM" "$UI_RESET"; read -r
         ;;
 

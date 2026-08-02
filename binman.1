@@ -69,8 +69,12 @@ Run the interactive project, manifest, Git, optional GitHub, install, and
 container scaffolding workflow.
 .TP
 .B backup [FILE]
-Archive installed \fBbin/\fR and \fBapps/\fR trees. ZIP is preferred when
-\fBzip\fR and \fBunzip\fR are available; otherwise tar.gz is used.
+Archive BinMan-curated app directories and their matching shims. Virtual
+environments are included by default. With no arguments in a TTY, the guided
+flow asks which apps to include, whether to keep virtual environments, and
+where to write the archive before showing a confirmation summary. Use
+\fB--exclude-venvs\fR for a lean archive; unrelated files in the user's
+\fB~/.local/bin\fR are not included.
 .TP
 .B restore FILE
 Merge a ZIP, tar.gz, or tgz archive into the active target directories. In a
@@ -90,7 +94,7 @@ Remove rollback snapshots beyond \fBBINMAN_ROLLBACK_KEEP\fR.
 Report filesystem, directory, and large-file usage without deleting anything.
 .TP
 .B bundle [FILE]
-Export installed \fBbin/\fR, \fBapps/\fR, and a manifest into an archive.
+Export installed curated apps, matching shims, and a manifest into an archive.
 .TP
 .B test NAME [-- ARGS]
 Run an installed command with \fB--help\fR, or with explicit arguments after
