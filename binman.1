@@ -1,0 +1,227 @@
+.TH BINMAN 1 "2026-08-02" "BinMan 1.9.0" "User Commands"
+.SH NAME
+binman \- install and manage personal command-line tools
+.SH SYNOPSIS
+.B binman
+.RI [ global-options ]
+.RI command
+.RI [ arguments ]
+.br
+.B binman install
+.RI target
+.RI [ install-options ]
+.br
+.B binman test
+.RI name
+.RI [ \-\- args ]
+.SH DESCRIPTION
+BinMan installs single-file scripts, multi-file application directories, and
+remote scripts as commands. It provides user or system installation targets,
+app shims, entry-point detection, Python virtual environments, backups,
+rollback snapshots, manifests, a terminal UI, Docker/Podman management, and
+a collection of bundled utility scripts.
+.PP
+The default user command directory is
+.IR ~/.local/bin .
+The default user app store is
+.IR ~/.local/share/binman/apps .
+.SH COMMANDS
+.TP
+.B install TARGET
+Install one file, directory, or HTTP(S) URL. A file becomes a command with its
+last extension removed. A directory is stored as an app and exposed through a
+shim.
+.TP
+.B scripts
+Browse and install scripts from the cached BinMan repository.
+.TP
+.B uninstall NAME [NAME...]
+Remove installed commands or apps. Use \fB--dry-run\fR to preview removal.
+.TP
+.B verify
+Verify installed command executability and app payload, entry, and shim paths.
+.TP
+.B list
+List installed commands. With \fBfzf\fR available, use the interactive
+browser and previews.
+.TP
+.B update TARGET
+Reinstall a target with overwrite enabled. \fB--from\fR updates executable
+files in a directory.
+.TP
+.B doctor [APP]
+Report environment state and optionally prepare Python app environments.
+\fB--all\fR checks every installed app; \fB--fix-path\fR patches common shell
+startup files.
+.TP
+.B docker [ACTION] [APP]
+Manage BinMan Docker/Podman containers. Actions include \fBup\fR, \fBdown\fR,
+\fBrestart\fR, \fBlogs\fR, \fBfollow\fR, \fBshell\fR, \fBedit\fR, \fBbuild\fR,
+\fBremove\fR, \fBnuke\fR, \fBpurge\fR, \fBprune\fR, \fBorphans\fR, and
+\fBrun\fR.
+.TP
+.B new NAME
+Create a language-specific single-file or app scaffold. Options include
+\fB--app\fR, \fB--lang\fR, \fB--dir\fR, and \fB--venv\fR.
+.TP
+.B wizard
+Run the interactive project, manifest, Git, optional GitHub, install, and
+container scaffolding workflow.
+.TP
+.B backup [FILE]
+Archive installed \fBbin/\fR and \fBapps/\fR trees. ZIP is preferred when
+\fBzip\fR and \fBunzip\fR are available; otherwise tar.gz is used.
+.TP
+.B restore FILE
+Merge a ZIP, tar.gz, or tgz archive into the active target directories. In a
+TTY the command opens the archive picker.
+.TP
+.B self-update
+Clone the configured BinMan repository, validate the source, refresh the
+source cache, and reinstall the running command.
+.TP
+.B rollback
+Apply the latest automatic rollback snapshot.
+.TP
+.B prune-rollbacks
+Remove rollback snapshots beyond \fBBINMAN_ROLLBACK_KEEP\fR.
+.TP
+.B analyze
+Report filesystem, directory, and large-file usage without deleting anything.
+.TP
+.B bundle [FILE]
+Export installed \fBbin/\fR, \fBapps/\fR, and a manifest into an archive.
+.TP
+.B test NAME [-- ARGS]
+Run an installed command with \fB--help\fR, or with explicit arguments after
+\fB--\fR. \fBtest stress\fR runs the temporary-fixture stress harness.
+.TP
+.B sudo NAME [ARGS...]
+Run an installed command through \fBsudo\fR.
+.SH INSTALL OPTIONS
+.TP
+.B --from DIR
+Install executable regular files directly inside DIR. The scan is not
+recursive.
+.TP
+.B --manifest FILE
+Install a line manifest, or a JSON array when \fBjq\fR is available.
+.TP
+.B --entry COMMAND
+Set the app command explicitly, for example \fBpython3 src/main.py\fR.
+.TP
+.B --workdir DIR, --cwd DIR
+Change to a directory inside the stored app before running its entry.
+.TP
+.B --venv
+Use an app-local Python virtual environment.
+.TP
+.B --req FILE
+Use a named requirements file for app venv setup.
+.TP
+.B --python BIN
+Choose the Python interpreter used to bootstrap a venv.
+.TP
+.B --name NAME
+Override the installed command or shim name.
+.TP
+.B --link
+Store a directory app as a symlink for development. Ordinary single files are
+still copied.
+.TP
+.B --force
+Overwrite an existing target.
+.TP
+.B --system
+Use /usr/local/bin and /usr/local/share/binman/apps; sudo may be used.
+.SH GLOBAL OPTIONS
+.TP
+.B --quiet
+Reduce output.
+.TP
+.B --no-clear
+Do not clear the terminal in interactive views.
+.TP
+.B --reindex
+Rebuild the inventory cache before dispatching the command.
+.TP
+.B --engine docker|podman
+Prefer a container engine for Docker actions.
+.TP
+.B --version
+Print the BinMan version.
+.TP
+.B --help
+Print command help.
+.SH FILES
+.TP
+.I ~/.local/bin
+User-installed command files and app shims.
+.TP
+.I ~/.local/share/binman/apps
+User-installed app payloads.
+.TP
+.I ~/.local/share/binman/source
+Cached repository used by \fBbinman scripts\fR.
+.TP
+.I ~/.local/state/binman
+Inventory cache and BinMan state.
+.TP
+.I ~/.local/share/binman/rollback
+Automatic snapshots when \fBBINMAN_AUTO_BACKUP=1\fR is enabled.
+.TP
+.I ~/.local/share/binman/docker
+Container metadata; override with \fBBINMAN_DOCKER_DIR\fR.
+.SH ENVIRONMENT
+.TP
+.B BINMAN_AUTO_BACKUP=1
+Enable pre-change rollback snapshots. Disabled by default.
+.TP
+.B BINMAN_ROLLBACK_KEEP=N
+Keep N rollback snapshots; the default is 20.
+.TP
+.B BINMAN_SOURCE_DIR=DIR
+Override the cached repository source directory.
+.TP
+.B BINMAN_REPO_URL=URL
+Override the repository cloned by self-update.
+.TP
+.B BINMAN_DOCKER_DIR=DIR
+Override Docker/Podman metadata storage.
+.TP
+.B BINMAN_DEBUG=1
+Enable verbose inventory and manifest diagnostics.
+.TP
+.B BINMAN_NO_CLEAR=1
+Disable terminal clearing in interactive views.
+.SH EXAMPLES
+.nf
+binman install ./tool.sh
+binman install ./MyApp --entry 'python3 src/main.py' --venv
+binman install --manifest tools.txt
+binman list
+binman doctor --fix-path
+binman backup tools.zip
+binman restore tools.zip
+BINMAN_AUTO_BACKUP=1 binman update ./tool.sh
+binman test tool -- --help
+.fi
+.SH SAFETY
+BinMan does not sandbox installed scripts. Bundled scripts may invoke sudo,
+mount, package managers, firewall tools, SSH, GitHub CLI, Docker, or remote
+installers. Review scripts before running them with elevated privileges.
+.PP
+Automatic rollback snapshots are opt-in. Archives are local, unencrypted
+copies and may contain executable code and host/path metadata.
+.PP
+A BinMan child process cannot mutate its parent shell's command hash table. On
+install and uninstall BinMan refreshes its own process and prints the suitable
+parent-shell command, usually \fBrehash\fR for Zsh or \fBhash -r\fR for Bash.
+.SH SEE ALSO
+.BR bash (1),
+.BR fzf (1),
+.BR git (1),
+.BR rsync (1)
+.SH BUGS
+Report bugs and implementation mismatches at the BinMan repository:
+.IR https://github.com/karialo/binman .

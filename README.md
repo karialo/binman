@@ -22,6 +22,7 @@ Version documented here: **v1.9.0**
 
 - [What BinMan Is](#what-binman-is)
 - [Quick Start](#quick-start)
+- [Manual Page](#manual-page)
 - [How BinMan Stores Things](#how-binman-stores-things)
 - [Command Reference](#command-reference)
   - [Wizard](#wizard)
@@ -53,7 +54,8 @@ my-tool
 It can also browse installed tools, install the bundled utilities in
 `Scripts/`, make backups, restore them, and open a friendly terminal interface.
 
-### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
 
 BinMan is one Bash executable, `binman.sh`, with these core behaviors:
 
@@ -74,6 +76,8 @@ manager. It does not build every project automatically, and it cannot change
 the parent shell's command hash table from inside a child process. After an
 install it refreshes its own shell process and prints the appropriate parent
 shell command (`rehash` or `hash -r`).
+
+</details>
 
 ---
 
@@ -106,7 +110,8 @@ export PATH="$HOME/.local/bin:$PATH"
 For persistence, put that export in the startup file used by your shell, or
 run `binman doctor --fix-path`.
 
-### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
 
 The installer is interactive when both stdin and stdout are TTYs. In a
 non-interactive command, a single file can be installed directly, but a project
@@ -127,6 +132,41 @@ of Bash, Zsh, Fish, or another shell and cannot mutate the parent's in-memory
 hash table. A shell function wrapper can make that refresh automatic, but
 BinMan does not edit shell startup files merely to install a command.
 
+</details>
+
+---
+
+## Manual Page
+
+### Noob mode
+
+Read the repository manual without installing it:
+
+```bash
+man ./binman.1
+```
+
+If your `man` does not accept a relative file, open `binman.1` directly or use
+the README as the friendlier tutorial.
+
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
+
+The source tree includes `binman.1` in standard roff format. To install it for
+the local system, from the repository run:
+
+```bash
+sudo install -Dm644 binman.1 /usr/local/share/man/man1/binman.1
+sudo mandb 2>/dev/null || true
+man binman
+```
+
+The manual is intentionally compact and command-oriented; the README remains
+the expanded tutorial, implementation guide, and bundled-script catalogue.
+
+</details>
+
 ---
 
 ## How BinMan Stores Things
@@ -145,7 +185,8 @@ User installs go here:
 
 You normally only need to put `~/.local/bin` in PATH.
 
-### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
 
 Single-file installs are atomic-ish: BinMan stages a temporary file, checks
 Bash syntax when the file looks like a shell script, makes it executable, and
@@ -170,6 +211,8 @@ System mode uses `/usr/local/bin` and `/usr/local/share/binman/apps`. When safe,
 BinMan also maintains a root-visible symlink in `/usr/bin` or `/bin`; it only
 removes a symlink if it can prove that the link points at BinMan's own system
 shim.
+
+</details>
 
 ---
 
@@ -203,7 +246,9 @@ binman install --system ./MyApp
 Install one file, one directory, one URL, or all executable files in a
 directory. Use the interactive wizard if you need to choose an app entry.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 ```text
 binman install TARGET [--entry COMMAND] [--workdir DIR]
@@ -227,6 +272,8 @@ payload under `~/.config/<name>/app.py`, creates a venv under that directory,
 and installs a neighboring `requirements.txt` when present. Directory apps
 use the app-store venv flow described in [Python environments](#app-detection-and-python-environments).
 
+</details>
+
 ---
 
 ### Uninstall
@@ -241,13 +288,17 @@ binman uninstall --dry-run hello MyApp
 
 Remove a command or app. Use `--dry-run` when you want to see the plan first.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 BinMan checks the active user or system target, removes the app payload and its
 shim when the name identifies an app, and removes a command file otherwise.
 For compatibility, `hello.sh` can resolve to an installed `hello`; a literal
 `.bak` name is never silently stripped. Destructive uninstalls create a
 snapshot only when `BINMAN_AUTO_BACKUP=1` is enabled.
+
+</details>
 
 ---
 
@@ -261,7 +312,9 @@ binman verify
 
 Check all installed items.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 For commands, verification checks that the installed path exists and is
 executable. For apps, it checks the stored app directory, the expected
@@ -270,6 +323,8 @@ dependencies, or compare it with the original source checksum. The current
 top-level dispatcher runs the all-items path; although the internal verifier
 has name-filtering logic, positional names are not currently forwarded by the
 public `verify` command. Failures use a non-zero status.
+
+</details>
 
 ---
 
@@ -284,13 +339,17 @@ binman list
 See installed commands and versions. With `fzf`, the list becomes a searchable
 browser with previews.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The inventory scans user and system command/app stores, prefers an app record
 over a same-named shim, extracts metadata, and writes a cache under the BinMan
 state directory. The plain list hides app directories unless
 `BINMAN_INCLUDE_APPS=1`; the fuzzy browser can show richer previews. Versions
 may be `unknown` when no supported marker is present.
+
+</details>
 
 ---
 
@@ -305,13 +364,17 @@ binman scripts
 Browse the bundled utilities. `fzf` gives you search and a preview pane;
 without it, BinMan uses a numbered menu.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The command reads from the cached repository at
 `~/.local/share/binman/source/Scripts`. A fresh install may not have that cache;
 run `binman self-update` from an installed copy or run BinMan from a repository
 checkout. The selected row carries name, version, absolute path, and
 description metadata; BinMan installs the actual third field, the script path.
+
+</details>
 
 ---
 
@@ -326,13 +389,17 @@ binman update ./MyApp
 
 Reinstall a tool from its source and overwrite the installed copy.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `update` sets `FORCE=1` and routes through the normal installer, so app entry
 detection and Python handling are reused. `--from` can update all executable
 files in a directory. A rollback snapshot is taken only when automatic
 backups are enabled. The help banner still mentions a `--git` option, but the
 current parser does not wire that option into the public update command.
+
+</details>
 
 ---
 
@@ -350,7 +417,9 @@ binman doctor --all --python 3.11
 Doctor reports paths and optional tools, fixes PATH configuration, and can
 prepare Python apps.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 With no target, Doctor prints the active mode, bin directory, app store, archive
 tool availability, PATH status, and possible `binman` shadowing, then lets an
@@ -363,6 +432,8 @@ from the app directory.
 `--fix-path` appends the user-bin export to existing `.zshrc`, `.zprofile`,
 `.bashrc`, and `.profile` files, and adds a Fish config entry when Fish is
 installed. It does not reload the current shell.
+
+</details>
 
 ---
 
@@ -381,7 +452,9 @@ binman docker down MyApp
 BinMan can manage containers for installed apps when Docker or Podman is
 available.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 ```text
 binman docker up|down|restart|logs|follow|shell|edit|build|remove|nuke|purge APP
@@ -399,6 +472,8 @@ execution, and `nuke` removes the managed container and image. `purge` removes
 BinMan metadata for an app. These commands affect real containers and images;
 read the preview before using `remove`, `nuke`, or `prune`.
 
+</details>
+
 ---
 
 ### Backup and Restore
@@ -413,7 +488,9 @@ binman restore my-tools.zip
 
 Back up installed commands and apps, then merge them back later.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 In a TTY, `binman restore` opens BinMan's archive picker; in a non-TTY it
 accepts the archive path directly. The help banner currently advertises a
@@ -427,6 +504,8 @@ BinMan version, paths, timestamp, and host information. Restore accepts `.zip`,
 `.tar.gz`, and `.tgz`, detects a top-level wrapper directory, merges `bin/` and
 `apps/`, and restores executable bits. Restore is not a package lockfile and
 does not restore external dependencies or a shell's PATH.
+
+</details>
 
 ---
 
@@ -442,7 +521,9 @@ binman prune-rollbacks
 
 Rollback returns the latest saved BinMan state. Prune removes old snapshots.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 Automatic snapshots are **disabled by default**. Set `BINMAN_AUTO_BACKUP=1`
 before install, update, uninstall, restore, or other mutating flows to save
@@ -457,6 +538,8 @@ current command dispatcher applies the latest snapshot; the interactive TUI
 can select a specific timestamp. Restore/rollback merges files and does not
 delete unrelated newer files.
 
+</details>
+
 ---
 
 ### Bundle
@@ -469,12 +552,16 @@ binman bundle my-environment.zip
 
 Export your installed commands and apps into a portable archive.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The bundle contains `bin/`, `apps/`, and `manifest.txt`. ZIP is used when
 available; otherwise the output becomes a `.tar.gz`. This is a payload bundle,
 not a full machine image: it does not include package-manager state, language
 runtimes, Docker images, or shell configuration.
+
+</details>
 
 ---
 
@@ -489,12 +576,16 @@ binman analyze --top 10 --root /var
 
 See large directories and files so you know what is eating the disk.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 Analyze prints `df -hT`, the largest `du -xhd1` directories, and the largest
 files found with `find -xdev`. It skips `/proc`, `/sys`, `/dev`, and `/run` in
 the file scan and may use the configured sudo helper for unreadable locations.
 It does not delete anything; use `sysclean` for interactive cleanup.
+
+</details>
 
 ---
 
@@ -509,7 +600,9 @@ binman new tidy.sh
 binman new MyTool --app --lang python --venv
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `new NAME [--app] [--lang LANGUAGE] [--dir DIRECTORY] [--venv]` supports Bash,
 Python, Node, TypeScript, Go, Rust, Ruby, and PHP. Filename extensions infer a
@@ -519,6 +612,8 @@ metadata and launchers. Python app mode can create `.venv` immediately.
 
 `new` is intentionally fast and opinionated. Use the Wizard when you want
 descriptions, authorship, manifests, Git setup, or container choices.
+
+</details>
 
 ---
 
@@ -537,7 +632,9 @@ as a BinMan command, can prepare Git/GitHub, and can optionally generate Docker
 files and BinMan container metadata. It ends with a celebratory K.A.R.I.
 message, because even scaffolding deserves a tiny parade.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The Wizard is a complete interactive workflow with the following stages.
 
@@ -578,6 +675,8 @@ external state, so review the prompts rather than blindly accepting every
 default. Container generation is scaffolding, not a guarantee that the image
 will build or that the selected entry command is correct.
 
+</details>
+
 ---
 
 ### TUI
@@ -592,7 +691,9 @@ Run BinMan with no arguments to open the terminal menu. Choose Install,
 Uninstall, List, Doctor, Wizard, Backup, Restore, Self-Update, Rollback,
 Bundle, Test, Docker, or Bundled Scripts.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The menu is the TUI front end over the same functions used by the CLI. With
 `fzf`, it adds fuzzy selection, previews, multi-select, and keyboard navigation;
@@ -600,6 +701,8 @@ without `fzf`, it falls back to prompts and numbered choices. `BINMAN_NO_CLEAR=1
 or `--no-clear` prevents screen clearing. The help banner lists a `tui` word,
 but the current action dispatcher does not expose a separate `binman tui`
 subcommand; invoke `binman` with no arguments instead.
+
+</details>
 
 ---
 
@@ -618,7 +721,9 @@ binman --help
 Test checks a command; sudo runs an installed tool through `sudo`; help and
 version explain what BinMan is running.
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `binman test NAME [-- ARGS]` resolves an installed command and runs it with
 `--help` unless explicit arguments follow `--`. `test stress` creates temporary
@@ -631,6 +736,8 @@ The stress harness needs a real TTY in some interactive entry paths.
 does not make the install itself system-wide. `--help`, `--version`,
 `--quiet`, `--no-clear`, `--reindex`, `--engine`, and `--system` are parsed as
 top-level options where applicable.
+
+</details>
 
 ---
 
@@ -649,7 +756,9 @@ binman install ./PythonTool --entry 'python3 -m tool' --venv
 If BinMan cannot decide safely, choose an entry in the wizard or provide
 `--entry` yourself.
 
-### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 Detection is heuristic and language-aware. It recognizes metadata from
 `pyproject.toml`, `setup.cfg`, `setup.py`, `package.json`, `deno.json`,
@@ -678,6 +787,8 @@ installs `--req FILE` or a neighboring `requirements.txt`, changes to
 with the venv interpreter. Dependency installation is best-effort in generated
 shims, so inspect failures rather than assuming the app is healthy.
 
+</details>
+
 ---
 
 ## Bulk Installs and Manifests
@@ -697,7 +808,9 @@ binman install --manifest tools.txt
 https://example.org/tool.sh
 ```
 
-### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `--from DIR` installs the executable regular files directly in that directory;
 the operation is not a recursive project builder. A line manifest strips
@@ -709,6 +822,8 @@ Bulk operations reuse the same single-file installer, including Bash syntax
 validation, Python single-file venv handling, conflict behavior, and status
 events. One bad target does not necessarily prevent later targets from being
 attempted; inspect the final exit status and output.
+
+</details>
 
 ---
 
@@ -728,7 +843,9 @@ For scripts that can erase disks, delete repositories, alter networking, or
 install packages, read their Pro section below and run their help command
 first. K.A.R.I. is witty; `rm -rf` remains extremely literal.
 
-### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 BinMan's own destructive operations are conservative about conflicts unless
 `--force` is supplied, and automatic snapshots are opt-in. Archives and
@@ -740,6 +857,8 @@ installed, they run with the permissions of the invoking user and may call
 `sudo`, package managers, `mount`, `ip`, `nft`, `ssh`, `git`, Docker, or remote
 installers. Use `--dry-run` where available and inspect source before running
 as root.
+
+</details>
 
 ---
 
@@ -774,7 +893,9 @@ checksum image.iso SHA256:deadbeef...
 checksum image.iso image.iso-CHECKSUM
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `checksum` prints SHA-256 by default. Verification accepts raw hashes, an
 `algo:hash` prefix, common GNU checksum lines, BSD lines such as
@@ -782,6 +903,8 @@ checksum image.iso image.iso-CHECKSUM
 Hash length selects MD5/SHA-1/SHA-256/SHA-512; supported tools must exist as
 `md5sum`, `sha1sum`, `sha256sum`, or `sha512sum`. Exit status is 0 for success,
 1 for mismatch, and 2 for usage/dependency errors.
+
+</details>
 
 ---
 
@@ -796,13 +919,17 @@ copy big.iso /mnt/usb/
 copy --dry-run folder/ /backup/
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `copy [--dry-run|-n] SRC... DEST` requires `rsync` and uses `-aHAX`,
 `--partial`, `--inplace`, human-readable output, and `--info=progress2`. The
 destination is created when needed. Multiple sources require an existing
 destination directory. It preserves more metadata than a plain `cp`, so use
 the dry run and understand the permissions of the destination.
+
+</details>
 
 ---
 
@@ -817,7 +944,9 @@ move Downloads/file.iso /mnt/backup/
 move --dry-run Downloads/ /mnt/backup/
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `move [--dry-run|-n] SRC... DEST` uses `rsync` to transfer, then performs a
 checksum-based dry-run comparison. It deletes each source only when rsync
@@ -825,6 +954,8 @@ reports no required changes. Verification checks that the source is represented
 at the destination; it does not remove unrelated extra files already there.
 Directories are removed with `rm -rf --one-file-system` after success. A
 verification mismatch returns status 3 and leaves the source in place.
+
+</details>
 
 ---
 
@@ -840,7 +971,9 @@ verify file.iso SHA256:deadbeef...
 verify --watch ~/Downloads
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 This is a separate checksum/ClamAV tool from BinMan's own `binman verify`.
 It accepts a file, directory, expected checksum, checksum file, or recursive
@@ -849,6 +982,8 @@ Watch mode focuses on new files, ignores common temporary downloads and
 checksum manifests, and can run verbosely. When available it uses `clamscan`
 for malware checks; missing optional scanners reduce coverage rather than
 creating a security guarantee.
+
+</details>
 
 ---
 
@@ -870,7 +1005,9 @@ Actually perform selected cleanup only when you mean it:
 sysclean --deep --yes
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `sysclean` is dry-run by default. It reports disk use and interactively offers
 cleanup for package caches/orphans, system journals, developer caches, and
@@ -879,6 +1016,8 @@ and `--no-steam` disable categories; `--top N` controls large-file reporting;
 `--raw` avoids human-readable sizes. `--yes` enables actions, while
 `--show-only` only reports. Exact actions depend on detected distro tools, so
 review the proposed paths before confirming.
+
+</details>
 
 ---
 
@@ -898,7 +1037,9 @@ Or use direct mode only when you have positively identified the device:
 flash --verify --expand raspios.img /dev/sdX
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `flash` writes compressed or uncompressed images to a block device and can
 verify, expand, configure Raspberry Pi headless Wi-Fi/SSH, and stage USB gadget
@@ -909,6 +1050,8 @@ mounted partitions. The script detects modern `boot/firmware` and older boot
 layouts, writes NetworkManager or fallback network configuration, and may
 create first-boot/systemd helpers. It requires root-level operations and can
 destroy the selected device; never trust `/dev/sdX` as a literal example.
+
+</details>
 
 ---
 
@@ -922,13 +1065,17 @@ Stage SSH and Wi-Fi files on a mounted boot partition:
 prep-headless /dev/sdX1 "MySSID" "MyPassword" GB
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The script mounts the supplied boot partition into a temporary directory using
 `sudo`, creates an empty `ssh` marker, writes `wpa_supplicant.conf` with the
 country and WPA-PSK network, syncs, and unmounts. It expects at least a boot
 partition, SSID, and PSK; country defaults to `GB`. It does not validate that
 the partition is the right device or support hidden-network options.
+
+</details>
 
 ---
 
@@ -942,12 +1089,16 @@ List likely removable/NVMe whole disks before flashing:
 sd-list
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The script runs `lsblk` for name, size, model, rotation, type, and mountpoint,
 then prints `disk` rows whose names contain `sd`, `mmcblk`, or `nvme`. It is a
 candidate list, not a complete removable-device classifier; confirm with
 `lsblk` yourself before using `flash`.
+
+</details>
 
 ---
 
@@ -961,7 +1112,9 @@ Find Raspberry Pi devices on the local network:
 find-pi
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 If `arp-scan` exists, the script runs `sudo arp-scan --localnet` and filters
 Raspberry Pi names and common Pi MAC prefixes. Otherwise it falls back to
@@ -969,6 +1122,8 @@ Raspberry Pi names and common Pi MAC prefixes. Otherwise it falls back to
 filters Raspberry-related output. It needs `arp-scan` or `nmap`, plus `ip` for
 the fallback. Results are heuristic and may miss a Pi with no identifying
 hostname.
+
+</details>
 
 ---
 
@@ -983,12 +1138,16 @@ finder binman
 finder --all binman
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `finder [--all] [--tags] PATTERN` uses `find -iname '*PATTERN*'` and sorts the
 paths. `--all` elevates with sudo and searches `/`; `--tags` is currently a
 placeholder flag and does not add tag search behavior. It searches names, not
 file contents, and suppresses find errors.
+
+</details>
 
 ---
 
@@ -1004,7 +1163,9 @@ findinfiles --root /etc "PermitRootLogin"
 findinfiles --ext py,js,md --files-with-matches TODO
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 This bundled script is Python 3, despite its `.sh` filename. It walks the
 current directory, `/` with `--all`, or `--root DIR`; skips noisy directories
@@ -1016,6 +1177,8 @@ extensions, `--no-skip` disables default directory skipping, `--skip-dir` and
 prints nearby lines, `--count` reports counts, `--files-with-matches` prints
 paths, and `--no-color` disables ANSI output. It returns 0 when it finds a
 match and 1 when it finds none.
+
+</details>
 
 ---
 
@@ -1029,7 +1192,9 @@ Scan a local network for responsive hosts and common ports:
 scanner --range 192.168.1.0/24 --ports 22,80,443
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `scanner` performs bounded ICMP and TCP probes with worker concurrency. Options
 are `--concurrency`, `--ports`, `--ping-timeout`, `--tcp-timeout`, `--range`,
@@ -1037,6 +1202,8 @@ are `--concurrency`, `--ports`, `--ping-timeout`, `--tcp-timeout`, `--range`,
 timeouts, and ports 22, 80, 443, 5900, 8080, 111, and 5000. If no range is
 provided it tries to derive one from local IPv4 configuration. It is an
 inventory scanner, not a stealth tool and not a vulnerability assessment.
+
+</details>
 
 ---
 
@@ -1052,7 +1219,9 @@ wifi-scanner --interface wlan0 --backend iw
 wifi-scanner --format json --no-color
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The scanner selects `nmcli`, `iw`, or `iwlist` automatically, or accepts a
 forced backend. It supports `--interface`, `--backend nmcli|iw|iwlist|auto`,
@@ -1060,6 +1229,8 @@ forced backend. It supports `--interface`, `--backend nmcli|iw|iwlist|auto`,
 It can use `fzf` for interface selection. Backend capabilities differ: signal,
 channel, security, and hidden-network fields are only as good as the selected
 system tool. It scans; it does not connect to networks.
+
+</details>
 
 ---
 
@@ -1075,7 +1246,9 @@ netdiag --full --iface usb0
 netdiag --quick --json
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `netdiag` covers interfaces, addresses, routes, firewall state, kernel and
 NetworkManager information, and a connectivity sanity check. `--quick` is the
@@ -1085,6 +1258,8 @@ escalation, `--verbose` prints commands, `--json` emits machine-readable data,
 `--write-report PATH` writes a text report, and `--support-bundle DIR` writes a
 redacted support bundle. A default target may be prompted for or fall back to
 `10.0.0.2`, which reflects the Pi USB-gadget workflow.
+
+</details>
 
 ---
 
@@ -1098,13 +1273,17 @@ Create a timestamped backup directory on a mounted destination:
 rsync-backup ~/Projects /mnt/backup
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The command requires exactly `SRC DEST_MOUNT`, confirms the destination is a
 directory, creates `backup-YYYYMMDD-HHMM`, and runs `rsync -aHAX --delete` into
 it. Because `--delete` is used, the newly created backup directory mirrors the
 source rather than accumulating stale files. It does not verify the source is
 the intended mount beyond checking that the path is a directory.
+
+</details>
 
 ---
 
@@ -1120,7 +1299,9 @@ gitprep --no-gh
 gitprep --public --proto https
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `gitprep` initializes or reconciles a repository, targets `main` by default,
 seeds `README.md` and `.gitignore` when missing, commits a snapshot, and by
@@ -1129,6 +1310,8 @@ include `--branch`, `--public`, `--private`, `--proto ssh|https`, `--owner`,
 `--name`, `--no-push`, and `--no-gh`. Existing GitHub repositories are reused
 when found. `--no-gh` is the local-only mode. It changes Git history and may
 create a remote, so run it in the intended project directory.
+
+</details>
 
 ---
 
@@ -1142,7 +1325,9 @@ Preview the repository identity and confirm before deletion:
 gitremove ./old-project
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `gitremove [PATH] [--remote] [--yes]` resolves the containing Git root, prints
 the path and origin, then requires the repository name to be typed. It changes
@@ -1150,6 +1335,8 @@ to `/tmp` and removes the local repository directory. `--remote` additionally
 requires `gh`, authenticated GitHub access, and a second literal `DELETE`
 confirmation before deleting the GitHub repository. `--yes` skips both prompts
 and is therefore appropriate only for carefully controlled automation.
+
+</details>
 
 ---
 
@@ -1164,7 +1351,9 @@ push "fix: tidy"
 push --dry "show me the plan"
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `push` operates in the current Git repository. A plain message stages all
 changes, commits, and pushes the current branch. `-a` stages all changes,
@@ -1173,6 +1362,8 @@ changes, commits, and pushes the current branch. `-a` stages all changes,
 `gh`, and `--dry` reports actions without changing Git. Without a remote it
 still commits but skips pushing. Release creation requires a tag and GitHub
 CLI access.
+
+</details>
 
 ---
 
@@ -1188,7 +1379,9 @@ kinstall --search neovim
 kinstall --dry-run go git
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `kinstall` detects `rpm-ostree`, apt, dnf, pacman, or zypper for repository
 packages, and optionally Flatpak and Homebrew. It processes packages
@@ -1201,6 +1394,8 @@ repo|flatpak|brew`, `--choose`, `--limit N`, and `--full`. Repository installs
 use `sudo`; apt may run `apt-get update` once per process. Atomic systems may
 prefer Flatpak for GUI classifications. Candidate matching is heuristic, so
 use `--choose` or an exact identifier when ambiguity matters.
+
+</details>
 
 ---
 
@@ -1215,7 +1410,9 @@ sudo linux_connect.sh
 sudo linux_connect.sh --persist
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The script detects USB gadget NICs, configures the host side by default as
 `10.0.0.1/24`, finds and stabilizes a Pi peer, enables forwarding/NAT through
@@ -1228,6 +1425,8 @@ and units. SSH defaults to user `pi`; it can generate an ed25519 key and offer
 to copy it. The script changes live network state and firewall rules, so use
 `--no-persist`-style assumptions carefully: inspect the source and be ready to
 remove its rules if your host's network policy is strict.
+
+</details>
 
 ---
 
@@ -1242,7 +1441,9 @@ refresh-ssh 10.0.0.2
 refresh-ssh --connect pi@10.0.0.2
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `refresh-ssh [options] HOST` uses `ssh-keygen -R` against
 `~/.ssh/known_hosts`, creating that file with mode 600 when absent. `--all`
@@ -1251,6 +1452,8 @@ different known-hosts file, `--port PORT` controls the optional connection,
 `--connect` runs SSH afterward, and `--quiet` reduces output. It does not
 disable strict host-key checking; the next connection still verifies the new
 key.
+
+</details>
 
 ---
 
@@ -1266,13 +1469,17 @@ find-pi
 prep-headless /dev/sdX1 "SSID" "password" GB
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 `sd-list` identifies candidate whole disks, `find-pi` searches local network
 output for Pi fingerprints, and `prep-headless` writes boot-partition SSH and
 Wi-Fi configuration. They do not share state or validate one another's
 results. Treat the device path and discovered hostname/IP as untrusted input
 until you confirm it independently.
+
+</details>
 
 ---
 
@@ -1284,7 +1491,9 @@ until you confirm it independently.
 tailscalesetup
 ```
 
-#### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 This is deliberately a tiny wrapper around:
 
@@ -1296,6 +1505,8 @@ It downloads and executes the current official Tailscale installer. That is
 convenient but means behavior changes with the remote script and network
 availability. Review the upstream installer first if you need a controlled or
 auditable deployment; BinMan does not pin a release or verify a checksum here.
+
+</details>
 
 ---
 
@@ -1312,13 +1523,17 @@ binman install Examples/PythonApp
 binman install Examples/GoApp
 ```
 
-### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 Examples cover Bash, Python, JavaScript, Deno, Go, Rust, Ruby, and PHP, both as
 single files and as directories with `VERSION` and `bin/<name>` conventions.
 Some examples are wrappers or prebuilt artifacts rather than guaranteed
 portable binaries. The app detector uses the same rules described earlier;
 when a sample has multiple plausible entries, pass `--entry` explicitly.
+
+</details>
 
 ---
 
@@ -1341,7 +1556,9 @@ binman --reindex list
 BINMAN_DEBUG=1 binman list
 ```
 
-### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The built-in stress harness creates temporary fixtures and exercises single-file
 copy installs, link-mode apps, app shims, manifests, uninstall, PATH handling,
@@ -1360,6 +1577,8 @@ Common fixes:
 | Installed version is `unknown` | No recognized `VERSION` marker was found | Add a `VERSION` file or supported marker |
 | Docker action fails | No usable Docker/Podman engine or metadata | Run `binman doctor`, check `--engine`, and inspect app metadata |
 | A bundled script fails immediately | Its runtime or system dependency is absent | Run `<script> --help`, install the named dependency, and rerun |
+
+</details>
 
 ---
 
@@ -1383,7 +1602,9 @@ language runtimes   Python, Node, Deno, Go, Rust, Ruby, PHP apps
 If an optional tool is missing, BinMan usually falls back or explains what is
 unavailable.
 
-### Pro mode
+<details>
+<summary><strong>Pro mode</strong> — technical details</summary>
+
 
 The core script is Bash-oriented and uses tools such as `awk`, `sed`, `find`,
 `sort`, `mktemp`, `install`, `realpath`/fallbacks, and `ps`. Some behavior is
@@ -1401,6 +1622,8 @@ not silently replaced with fake success.
 
 For automation, prefer explicit targets and flags, capture exit statuses, use
 `--dry-run` where supported, and avoid relying on TUI prompts.
+
+</details>
 
 ---
 
