@@ -24,6 +24,8 @@ Version documented here: **v1.9.0**
 - [Quick Start](#quick-start)
 - [How BinMan Stores Things](#how-binman-stores-things)
 - [Command Reference](#command-reference)
+  - [Wizard](#wizard)
+  - [TUI](#tui)
 - [App Detection and Python Environments](#app-detection-and-python-environments)
 - [Bulk Installs and Manifests](#bulk-installs-and-manifests)
 - [Safety, Backups, and Rollbacks](#safety-backups-and-rollbacks)
@@ -184,7 +186,9 @@ version help
 Global flags can appear before the command, and `--system` is also accepted
 after an install target.
 
-### `install`
+---
+
+### install
 
 #### Noob mode
 
@@ -223,7 +227,9 @@ payload under `~/.config/<name>/app.py`, creates a venv under that directory,
 and installs a neighboring `requirements.txt` when present. Directory apps
 use the app-store venv flow described in [Python environments](#app-detection-and-python-environments).
 
-### `uninstall`
+---
+
+### uninstall
 
 #### Noob mode
 
@@ -243,7 +249,9 @@ For compatibility, `hello.sh` can resolve to an installed `hello`; a literal
 `.bak` name is never silently stripped. Destructive uninstalls create a
 snapshot only when `BINMAN_AUTO_BACKUP=1` is enabled.
 
-### `verify`
+---
+
+### verify
 
 #### Noob mode
 
@@ -263,7 +271,9 @@ top-level dispatcher runs the all-items path; although the internal verifier
 has name-filtering logic, positional names are not currently forwarded by the
 public `verify` command. Failures use a non-zero status.
 
-### `list`
+---
+
+### list
 
 #### Noob mode
 
@@ -282,7 +292,9 @@ state directory. The plain list hides app directories unless
 `BINMAN_INCLUDE_APPS=1`; the fuzzy browser can show richer previews. Versions
 may be `unknown` when no supported marker is present.
 
-### `scripts`
+---
+
+### scripts
 
 #### Noob mode
 
@@ -301,7 +313,9 @@ run `binman self-update` from an installed copy or run BinMan from a repository
 checkout. The selected row carries name, version, absolute path, and
 description metadata; BinMan installs the actual third field, the script path.
 
-### `update`
+---
+
+### update
 
 #### Noob mode
 
@@ -320,7 +334,9 @@ files in a directory. A rollback snapshot is taken only when automatic
 backups are enabled. The help banner still mentions a `--git` option, but the
 current parser does not wire that option into the public update command.
 
-### `doctor`
+---
+
+### doctor
 
 #### Noob mode
 
@@ -348,7 +364,9 @@ from the app directory.
 `.bashrc`, and `.profile` files, and adds a Fish config entry when Fish is
 installed. It does not reload the current shell.
 
-### `docker`
+---
+
+### docker
 
 #### Noob mode
 
@@ -381,7 +399,9 @@ execution, and `nuke` removes the managed container and image. `purge` removes
 BinMan metadata for an app. These commands affect real containers and images;
 read the preview before using `remove`, `nuke`, or `prune`.
 
-### `backup` and `restore`
+---
+
+### backup and restore
 
 #### Noob mode
 
@@ -408,7 +428,9 @@ BinMan version, paths, timestamp, and host information. Restore accepts `.zip`,
 `apps/`, and restores executable bits. Restore is not a package lockfile and
 does not restore external dependencies or a shell's PATH.
 
-### `rollback` and `prune-rollbacks`
+---
+
+### rollback and prune-rollbacks
 
 #### Noob mode
 
@@ -435,7 +457,9 @@ current command dispatcher applies the latest snapshot; the interactive TUI
 can select a specific timestamp. Restore/rollback merges files and does not
 delete unrelated newer files.
 
-### `bundle`
+---
+
+### bundle
 
 #### Noob mode
 
@@ -452,7 +476,9 @@ available; otherwise the output becomes a `.tar.gz`. This is a payload bundle,
 not a full machine image: it does not include package-manager state, language
 runtimes, Docker images, or shell configuration.
 
-### `analyze`
+---
+
+### analyze
 
 #### Noob mode
 
@@ -470,37 +496,112 @@ files found with `find -xdev`. It skips `/proc`, `/sys`, `/dev`, and `/run` in
 the file scan and may use the configured sudo helper for unreadable locations.
 It does not delete anything; use `sysclean` for interactive cleanup.
 
-### `new`, `wizard`, and `tui`
+### new
 
 #### Noob mode
+
+Create a starter file or app without answering a parade of questions:
 
 ```bash
 binman new tidy.sh
 binman new MyTool --app --lang python --venv
-binman wizard
-binman
 ```
-
-Use `new` for a quick scaffold, `wizard` for guided project creation, and
-`binman` with no arguments for the full terminal menu. The help banner lists
-`tui`, but the current action dispatcher does not expose a separate `tui`
-subcommand.
 
 #### Pro mode
 
-The generator supports Bash, Python, Node, TypeScript, Go, Rust, Ruby, and PHP
-templates, plus single-file or app layouts. The wizard collects name, type,
-language, directory, description, author, and optional Python venv settings;
-it can install the result, create a BinMan manifest, and initialize Git. The
-GitHub step prints or uses the available Git tooling; it does not ask BinMan to
-invent credentials.
+`new NAME [--app] [--lang LANGUAGE] [--dir DIRECTORY] [--venv]` supports Bash,
+Python, Node, TypeScript, Go, Rust, Ruby, and PHP. Filename extensions infer a
+language unless `--lang` overrides it. Single-file scaffolds get a runnable
+file; app scaffolds get `bin/`, `src/`, and `VERSION`, plus language-specific
+metadata and launchers. Python app mode can create `.venv` immediately.
 
-The TUI is a wrapper over the same install, uninstall, list, doctor, Docker,
-backup, restore, self-update, rollback, bundle, and test functions. `fzf` adds
-search, previews, multi-selection, and keyboard navigation. `BINMAN_NO_CLEAR=1`
-or `--no-clear` prevents screen clearing.
+`new` is intentionally fast and opinionated. Use the Wizard when you want
+descriptions, authorship, manifests, Git setup, or container choices.
 
-### `test`, `sudo`, `version`, and `help`
+---
+
+### `wizard`
+
+#### Noob mode
+
+Run the guided project builder:
+
+```bash
+binman wizard
+```
+
+Press Enter to accept defaults. The Wizard creates the project, can install it
+as a BinMan command, can prepare Git/GitHub, and can optionally generate Docker
+files and BinMan container metadata. It ends with a celebratory K.A.R.I.
+message, because even scaffolding deserves a tiny parade.
+
+#### Pro mode
+
+The Wizard is a complete interactive workflow with the following stages.
+
+1. **Basics** — asks for a no-space project name, `single` or `app` type,
+   language (`bash`, `python`, `node`, `typescript`, `go`, `rust`, `ruby`, or
+   `php`), destination directory, description, and author.
+2. **Python options** — for Python apps only, offers to create `.venv`; the
+   default is yes.
+3. **Summary** — displays every choice and requires confirmation before
+   generation.
+4. **Generation** — delegates to the same templates used by `binman new`.
+   Single projects receive a language-appropriate filename and a README. Apps
+   receive a project directory, `bin/<name>`, `src/`, `VERSION`, and a README.
+   Generated entry files receive the chosen description metadata.
+5. **Manifest** — writes a manifest under the active user app store as
+   `<name>.cmd` for a single file or `<name>.app` for an app. The manifest
+   records name, type, version `0.1.0`, source path, run target, preview, and
+   help text. Existing manifests are not overwritten.
+6. **Optional install** — asks whether to install immediately and whether to
+   copy or symlink the generated target. The actual install then uses BinMan's
+   normal app/file rules.
+7. **Git** — asks whether to initialize a repository and asks for the default
+   branch. If the bundled `gitprep` command is available it uses that; otherwise
+   it performs a local `git init`, seeds `.gitignore` when needed, and commits.
+   It can then configure a GitHub SSH origin, use `gh repo create` when
+   available, or print/manual-wire the origin and attempt a push.
+8. **Containerize** — offers `none`, `oneshot`, or `service`. When a container
+   engine is available it creates a language-appropriate `Dockerfile` and
+   `.dockerignore`, asks for ports, environment, network, mounts, and (for a
+   service) restart policy, then stores metadata for `binman docker`. Existing
+   Dockerfiles are not overwritten unless confirmed. Service mode defaults to
+   mounts under `~/.config`, `~/.local/share`, and `~/.cache` for the app.
+
+The Wizard is interactive and reads/writes `/dev/tty`; it is not suitable for
+headless automation. For automation use `binman new`, explicit `binman install`
+flags, and checked-in project files. GitHub creation and pushes can change
+external state, so review the prompts rather than blindly accepting every
+default. Container generation is scaffolding, not a guarantee that the image
+will build or that the selected entry command is correct.
+
+---
+
+### `tui`
+
+#### Noob mode
+
+```bash
+binman
+```
+
+Run BinMan with no arguments to open the terminal menu. Choose Install,
+Uninstall, List, Doctor, Wizard, Backup, Restore, Self-Update, Rollback,
+Bundle, Test, Docker, or Bundled Scripts.
+
+#### Pro mode
+
+The menu is the TUI front end over the same functions used by the CLI. With
+`fzf`, it adds fuzzy selection, previews, multi-select, and keyboard navigation;
+without `fzf`, it falls back to prompts and numbered choices. `BINMAN_NO_CLEAR=1`
+or `--no-clear` prevents screen clearing. The help banner lists a `tui` word,
+but the current action dispatcher does not expose a separate `binman tui`
+subcommand; invoke `binman` with no arguments instead.
+
+---
+
+### test, sudo, version, and help
 
 #### Noob mode
 
@@ -657,7 +758,9 @@ binman scripts
 The descriptions below are based on the current implementation and its actual
 help text, not on marketing promises from an earlier K.A.R.I. fever dream.
 
-### `checksum`
+---
+
+### checksum
 
 #### Noob mode
 
@@ -678,7 +781,9 @@ Hash length selects MD5/SHA-1/SHA-256/SHA-512; supported tools must exist as
 `md5sum`, `sha1sum`, `sha256sum`, or `sha512sum`. Exit status is 0 for success,
 1 for mismatch, and 2 for usage/dependency errors.
 
-### `copy`
+---
+
+### copy
 
 #### Noob mode
 
@@ -697,7 +802,9 @@ destination is created when needed. Multiple sources require an existing
 destination directory. It preserves more metadata than a plain `cp`, so use
 the dry run and understand the permissions of the destination.
 
-### `move`
+---
+
+### move
 
 #### Noob mode
 
@@ -717,7 +824,9 @@ at the destination; it does not remove unrelated extra files already there.
 Directories are removed with `rm -rf --one-file-system` after success. A
 verification mismatch returns status 3 and leaves the source in place.
 
-### `verify`
+---
+
+### verify
 
 #### Noob mode
 
@@ -739,7 +848,9 @@ checksum manifests, and can run verbosely. When available it uses `clamscan`
 for malware checks; missing optional scanners reduce coverage rather than
 creating a security guarantee.
 
-### `sysclean`
+---
+
+### sysclean
 
 #### Noob mode
 
@@ -767,7 +878,9 @@ and `--no-steam` disable categories; `--top N` controls large-file reporting;
 `--show-only` only reports. Exact actions depend on detected distro tools, so
 review the proposed paths before confirming.
 
-### `flash`
+---
+
+### flash
 
 #### Noob mode
 
@@ -795,7 +908,9 @@ layouts, writes NetworkManager or fallback network configuration, and may
 create first-boot/systemd helpers. It requires root-level operations and can
 destroy the selected device; never trust `/dev/sdX` as a literal example.
 
-### `prep-headless`
+---
+
+### prep-headless
 
 #### Noob mode
 
@@ -813,7 +928,9 @@ country and WPA-PSK network, syncs, and unmounts. It expects at least a boot
 partition, SSID, and PSK; country defaults to `GB`. It does not validate that
 the partition is the right device or support hidden-network options.
 
-### `sd-list`
+---
+
+### sd-list
 
 #### Noob mode
 
@@ -830,7 +947,9 @@ then prints `disk` rows whose names contain `sd`, `mmcblk`, or `nvme`. It is a
 candidate list, not a complete removable-device classifier; confirm with
 `lsblk` yourself before using `flash`.
 
-### `find-pi`
+---
+
+### find-pi
 
 #### Noob mode
 
@@ -849,7 +968,9 @@ filters Raspberry-related output. It needs `arp-scan` or `nmap`, plus `ip` for
 the fallback. Results are heuristic and may miss a Pi with no identifying
 hostname.
 
-### `finder`
+---
+
+### finder
 
 #### Noob mode
 
@@ -867,7 +988,9 @@ paths. `--all` elevates with sudo and searches `/`; `--tags` is currently a
 placeholder flag and does not add tag search behavior. It searches names, not
 file contents, and suppresses find errors.
 
-### `findinfiles`
+---
+
+### findinfiles
 
 #### Noob mode
 
@@ -892,7 +1015,9 @@ prints nearby lines, `--count` reports counts, `--files-with-matches` prints
 paths, and `--no-color` disables ANSI output. It returns 0 when it finds a
 match and 1 when it finds none.
 
-### `scanner`
+---
+
+### scanner
 
 #### Noob mode
 
@@ -911,7 +1036,9 @@ timeouts, and ports 22, 80, 443, 5900, 8080, 111, and 5000. If no range is
 provided it tries to derive one from local IPv4 configuration. It is an
 inventory scanner, not a stealth tool and not a vulnerability assessment.
 
-### `wifi-scanner`
+---
+
+### wifi-scanner
 
 #### Noob mode
 
@@ -932,7 +1059,9 @@ It can use `fzf` for interface selection. Backend capabilities differ: signal,
 channel, security, and hidden-network fields are only as good as the selected
 system tool. It scans; it does not connect to networks.
 
-### `netdiag`
+---
+
+### netdiag
 
 #### Noob mode
 
@@ -955,7 +1084,9 @@ escalation, `--verbose` prints commands, `--json` emits machine-readable data,
 redacted support bundle. A default target may be prompted for or fall back to
 `10.0.0.2`, which reflects the Pi USB-gadget workflow.
 
-### `rsync-backup`
+---
+
+### rsync-backup
 
 #### Noob mode
 
@@ -973,7 +1104,9 @@ it. Because `--delete` is used, the newly created backup directory mirrors the
 source rather than accumulating stale files. It does not verify the source is
 the intended mount beyond checking that the path is a directory.
 
-### `gitprep`
+---
+
+### gitprep
 
 #### Noob mode
 
@@ -995,7 +1128,9 @@ include `--branch`, `--public`, `--private`, `--proto ssh|https`, `--owner`,
 when found. `--no-gh` is the local-only mode. It changes Git history and may
 create a remote, so run it in the intended project directory.
 
-### `gitremove`
+---
+
+### gitremove
 
 #### Noob mode
 
@@ -1014,7 +1149,9 @@ requires `gh`, authenticated GitHub access, and a second literal `DELETE`
 confirmation before deleting the GitHub repository. `--yes` skips both prompts
 and is therefore appropriate only for carefully controlled automation.
 
-### `push`
+---
+
+### push
 
 #### Noob mode
 
@@ -1035,7 +1172,9 @@ changes, commits, and pushes the current branch. `-a` stages all changes,
 still commits but skips pushing. Release creation requires a tag and GitHub
 CLI access.
 
-### `kinstall`
+---
+
+### kinstall
 
 #### Noob mode
 
@@ -1061,7 +1200,9 @@ use `sudo`; apt may run `apt-get update` once per process. Atomic systems may
 prefer Flatpak for GUI classifications. Candidate matching is heuristic, so
 use `--choose` or an exact identifier when ambiguity matters.
 
-### `linux_connect`
+---
+
+### linux_connect
 
 #### Noob mode
 
@@ -1086,7 +1227,9 @@ to copy it. The script changes live network state and firewall rules, so use
 `--no-persist`-style assumptions carefully: inspect the source and be ready to
 remove its rules if your host's network policy is strict.
 
-### `refresh-ssh`
+---
+
+### refresh-ssh
 
 #### Noob mode
 
@@ -1107,7 +1250,9 @@ different known-hosts file, `--port PORT` controls the optional connection,
 disable strict host-key checking; the next connection still verifies the new
 key.
 
-### `flash`-adjacent network helpers: `find-pi`, `sd-list`, and `prep-headless`
+---
+
+### flash-adjacent network helpers: find-pi, sd-list, and prep-headless
 
 #### Noob mode
 
@@ -1127,7 +1272,9 @@ Wi-Fi configuration. They do not share state or validate one another's
 results. Treat the device path and discovered hostname/IP as untrusted input
 until you confirm it independently.
 
-### `tailscalesetup`
+---
+
+### tailscalesetup
 
 #### Noob mode
 
