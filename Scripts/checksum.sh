@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# checksum — hash or verify a file
+# Description: Calculate file hashes and verify MD5, SHA-1, SHA-256, or SHA-512 checksums from values or manifest files.
 # Usage:
 #   checksum <file>                      # prints sha256(file)
 #   checksum <file> <expected-checksum>  # verifies against expected

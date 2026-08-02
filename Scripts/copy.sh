@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# copy — resumable copy with progress (files or directories)
+# Description: Copy files or directories with rsync resume support, progress reporting, and a dry-run mode.
 # Usage: copy [--dry-run|-n] SRC... DEST
 VERSION="0.2.0"
 set -Eeuo pipefail

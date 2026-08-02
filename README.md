@@ -524,6 +524,15 @@ finder binman
 finder --all binman
 ```
 
+### findinfiles
+Recursive content search with case-insensitive matching by default, binary-file skipping, context, filters, counts, and file-only output.
+
+```bash
+findinfiles "token"
+findinfiles --root /etc --context 2 "PermitRootLogin"
+findinfiles --ext py,js,md --files-with-matches "TODO"
+```
+
 ### scanner
 Portable network scanner (Pi Zero friendly).
 

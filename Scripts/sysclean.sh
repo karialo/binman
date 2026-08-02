@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sysclean — cross-distro system janitor for BinMan
+# Description: Report disk usage and interactively clean caches, package data, journals, developer caches, and game footprints.
 # v1.0.1 — human-readable Top N, aligned, colored; --raw to show bytes
 # Safe-by-default: dry-run unless --yes is passed.
 

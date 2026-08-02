@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gitprep — initialize the CURRENT directory as a clean git repo and auto-create GitHub remote
+# Description: Initialize or reconcile the current Git repository, seed project files, and create or connect a private GitHub remote.
 # Author: K.A.R.I. for Daddy
 # Version: 1.2.0
 

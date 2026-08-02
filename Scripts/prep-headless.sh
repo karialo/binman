@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# prep-headless <boot-partition> <SSID> <PSK> [COUNTRY]
+# Description: Mount a Raspberry Pi boot partition and stage SSH plus WPA Wi-Fi configuration for headless boot.
 VERSION="0.1.0"
 
 set -euo pipefail

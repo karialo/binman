@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# refresh-ssh.sh — refresh SSH known_hosts entries (and optionally reconnect)
+# Description: Remove stale SSH known_hosts entries safely and optionally reconnect to the refreshed host.
 # v0.1.1
 #
 # Usage:

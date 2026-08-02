@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# find-pi - finds devices with raspberry pi OUI/vendor
+# Description: Discover Raspberry Pi devices on the local network using arp-scan or an nmap fallback.
 VERSION="0.1.0"
 if command -v arp-scan >/dev/null 2>&1; then
   sudo arp-scan --localnet | egrep -i 'raspberry|b8:27:eb|dc:a6:32|raspberrypi'

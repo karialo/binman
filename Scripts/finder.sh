@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# finder — recursive name finder (CWD or system-wide)
+# Description: Recursively find files and directories by name in the current directory or across the system.
 # Author: K.A.R.I. for Daddy
 # Version: 1.0.0
 

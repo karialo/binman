@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Cross-distro package installer wrapper (apt/dnf/pacman/zypper/rpm-ostree)
+# Description: Search and install packages across distro repositories, Flatpak, and Homebrew with dry-run, source selection, and logging.
 VERSION="0.1.0"
 set -Eeuo pipefail
 

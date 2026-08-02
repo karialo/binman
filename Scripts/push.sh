@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Add/commit/push with optional semver bump, tag, changelog, and GitHub release.
+# Description: Stage, commit, and push the current Git project with optional semantic-version bumps, tags, changelogs, and releases.
 # App: push
 # Title: Git Push (versioned)
 # Version: 1.1.0

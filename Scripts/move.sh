@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# move — safe resumable move with progress (rsync + verify + remove)
+# Description: Move files or directories with resumable rsync transfer, checksum verification, and source deletion only after success.
 # Usage: move [--dry-run|-n] SRC... DEST
 VERSION="0.2.0"
 set -Eeuo pipefail

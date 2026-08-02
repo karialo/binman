@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# linux_connect.sh  —  plug · detect · connect · persist
+# Description: Configure and persist Raspberry Pi USB-gadget networking, NAT, peer discovery, and inline SSH connections.
 VERSION="0.1.0"
 
 # -----------------------------------------------------------------------------

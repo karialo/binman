@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Safely remove the current local Git repository, optionally deleting its GitHub remote.
+# Description: Safely remove a local Git repository and optionally delete its GitHub remote after explicit confirmation.
 # App: gitremove
 # Title: Git Remove
 # Version: 0.1.0

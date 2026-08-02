@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# wscan.sh - Portable wireless scanner (Bash Master style)
+# Description: Scan nearby Wi-Fi networks through nmcli, iw, or iwlist with table, CSV, JSON, and interactive interface selection.
 #
 # Usage: ./wscan.sh [--interface IFACE] [--backend nmcli|iw|iwlist|auto]
 #                   [--format table|csv|json] [--verbose] [--quiet] [--no-color]

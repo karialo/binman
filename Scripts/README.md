@@ -442,10 +442,10 @@ finder.sh [--all] [--tags] <pattern>
 - `--tags`: placeholder for future tag index feature.
 
 <a id="findinfiles-sh"></a>
-### `findinfiles.sh` (Python script)
+### `findinfiles.sh` (v1.0.0, Python script)
 
 **Designed for**
-- Grep-like recursive text search with context, filters, and better defaults.
+- Recursive, case-insensitive-by-default text search with context, filters, binary detection, and compact count modes.
 
 **Usage**
 ```bash
@@ -471,6 +471,7 @@ findinfiles.sh [options] <term>
 - Walks files recursively with skip lists for noisy dirs and binary-ish extensions.
 - Binary detection by NUL-byte sniffing.
 - Highlights matches in color when TTY supports it.
+- Skips files larger than 5 MB by default unless `--max-size` is changed.
 - Returns `0` when matches found, `1` when none.
 
 <a id="copy-sh"></a>
@@ -544,7 +545,7 @@ rsync-backup.sh SRC DEST_MOUNT
 ### `sd-list.sh` (v0.1.0)
 
 **Designed for**
-- One-glance block-device listing before you do anything regrettable.
+- One-glance listing of whole-disk candidates before a destructive flash operation.
 
 **Usage**
 ```bash
@@ -552,7 +553,7 @@ rsync-backup.sh SRC DEST_MOUNT
 ```
 
 **How it works**
-- Prints disk devices with `lsblk` and columns for name, size, model, rota, type, mountpoint.
+- Prints `sd`, `mmcblk`, and `nvme` disks—not partitions—with name, size, model, rotational flag, type, and mountpoint.
 
 <a id="sysclean-sh"></a>
 ### `sysclean.sh` (v1.0.1)
@@ -727,7 +728,7 @@ push.sh ["message"] [-a] [-m "msg"] [-v patch|minor|major] [-t] [-r] [--dry]
 ### `tailscalesetup.sh` (v0.1.0)
 
 **Designed for**
-- One-liner convenience wrapper for installing Tailscale.
+- Minimal wrapper around Tailscale's official installer URL.
 
 **Usage**
 ```bash
@@ -738,7 +739,7 @@ push.sh ["message"] [-a] [-m "msg"] [-v patch|minor|major] [-t] [-r] [--dry]
 - Executes: `curl -fsSL https://tailscale.com/install.sh | sh`
 
 **Caution**
-- This is intentionally minimal. Review upstream installer behavior before use in locked-down environments.
+- This downloads and executes a remote shell script as root through the upstream installer; review it first in locked-down environments.
 
 ## Typical Workflows
 

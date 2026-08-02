@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Network diagnostics CLI for usb0/wlan0 and related interfaces
+# Description: Diagnose USB-gadget and wireless networking with interface, route, firewall, kernel, NetworkManager, JSON, and support-bundle reports.
 VERSION="0.1.0"
 set -u -o pipefail
 

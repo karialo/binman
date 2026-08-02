@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scanner.sh - portable network scanner (Pi Zero 2W friendly)
+# Description: Scan a CIDR network for responsive hosts and selected TCP ports with bounded concurrency and table output.
 
 set -Euo pipefail
 set -o errtrace

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify — checksum + virus scan in one command (+ watch mode)
+# Description: Verify checksums and scan files or directories with ClamAV, including automatic manifests and new-file watch mode.
 #
 # Usage:
 #   verify <file|dir>

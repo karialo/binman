@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Description: Recursively search file contents with filters, binary detection, context, counts, and colored output.
 """
 findinfiles — like finder, but searches inside files.
 
@@ -12,6 +13,8 @@ Examples:
 """
 
 from __future__ import annotations
+
+VERSION="1.0.0"
 
 import argparse
 import os
@@ -297,4 +300,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

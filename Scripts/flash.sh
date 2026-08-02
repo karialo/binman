@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# flash — image writer with interactive wizard + expand + headless Wi-Fi/SSH + first-boot user setup
+# Description: Safely flash compressed images to removable disks with Pi headless Wi-Fi/SSH, USB gadget staging, expansion, and diagnostics.
 # Wizard: flash <image.(img|iso|xz|gz|bz2|zst)>
 # Direct : flash [--verify] [--expand] [--gadget|--no-gadget] [--headless --SSID "name" --Password "pass" --Country CC [--Hidden]] [--User NAME --UserPass PASS] <image> <device>
 # Diagnose: flash --diagnose-mounts [bootfs_mount] [rootfs_mount]

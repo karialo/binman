@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Description: Hello from script
+# Description: Download and run Tailscale's official installation script.
 VERSION="0.1.0"
 set -Eeuo pipefail
 

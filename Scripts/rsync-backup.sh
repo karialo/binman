@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rsync-backup SRC DEST_MOUNTPOINT
+# Description: Create a timestamped rsync backup inside a mounted destination, mirroring source contents safely.
 VERSION="0.1.0"
 
 set -euo pipefail
