@@ -6018,7 +6018,7 @@ op_scripts(){
       --delimiter=$'\t' --with-nth=1 --preview "$preview_cmd" \
       --preview-window=right,55%,wrap --prompt='Bundled Scripts ▸ ' \
       --header='Script                         Version • ↑↓ navigate • Enter=Install • Esc=Back')" || true
-    [[ -n "$sel" ]] || { say "Cancelled."; return 0; }
+    [[ -n "$sel" ]] || return 0
     path="${sel#*$'\t'}"
   else
     echo
@@ -6029,7 +6029,7 @@ op_scripts(){
     done
     printf 'Install script number (Enter to cancel): '
     IFS= read -r choice
-    [[ -n "$choice" ]] || { say "Cancelled."; return 0; }
+    [[ -n "$choice" ]] || return 0
     [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#files[@]} ]] || { err "Invalid script selection."; return 2; }
     path="${files[$((choice-1))]}"
   fi
