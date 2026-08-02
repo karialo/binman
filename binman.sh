@@ -6005,21 +6005,23 @@ op_scripts(){
   ((${#files[@]} > 0)) || { warn "No bundled scripts found in $scripts_dir"; return 1; }
 
   if __has_fzf && [[ -t 1 ]]; then
-    local -a rows=()
-    for path in "${files[@]}"; do
-      name="$(basename "$path")"
-      ver="$(script_version "$path")"
-      printf -v display '%-28s %-8s' "$name" "${ver:-unknown}"
-      rows+=("${display}"$'\t'"${path}")
-    done
-    local preview_cmd
-    preview_cmd='source "$BINMAN_SELF"; p="{2}"; d="$(script_desc "$p")"; printf "\033[1m%s\033[0m\\n\\nVersion: %s\\nPath: %s\\n\\nDescription:\\n" "$(basename "$p")" "$(script_version "$p")" "$p"; printf "%s\\n" "${d:-No description}" | fold -s -w 52; printf "\\nInstall with:\\nbinman install %q\\n" "$p"'
-    sel="$(printf '%s\n' "${rows[@]}" | fzf_run --ansi --border --height=100% --layout=reverse \
-      --delimiter=$'\t' --with-nth=1 --preview "$preview_cmd" \
-      --preview-window=right,55%,wrap --prompt='Bundled Scripts ▸ ' \
-      --header='Script                         Version • ↑↓ navigate • Enter=Install • Esc=Back')" || true
-    [[ -n "$sel" ]] || return 0
-    path="${sel#*$'\t'}"
+      local -a rows=()
+      for path in "${files[@]}"; do
+        name="$(basename "$path")"
+        ver="$(script_version "$path")"
+        desc="$(script_desc "$path")"
+        rows+=("${name}"$'\t'"${ver:-unknown}"$'\t'"${path}"$'\t'"${desc}")
+      done
+      local preview_cmd
+      preview_cmd='"$BINMAN_SELF" --_preview_fields script "{1}" "{2}" "{3}" "{4}"'
+      sel="$(printf '%s\n' "${rows[@]}" | fzf_run --ansi --border --height=100% --layout=reverse \
+        --delimiter=$'\t' --with-nth=1,2 --preview "$preview_cmd" \
+        --preview-window=right,55%,wrap --prompt='Bundled Scripts ▸ ' \
+        --header='Script                         Version • ↑↓ navigate • Enter=Install • Esc=Back')" || true
+      [[ -n "$sel" ]] || return 0
+      path="${sel#*$'\t'}"
+      path="${path#*$'\t'}"
+      path="${path#*$'\t'}"
   else
     echo
     printf '%sBundled scripts%s\n' "$UI_BOLD" "$UI_RESET"
