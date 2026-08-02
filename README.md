@@ -103,8 +103,6 @@ You can roll back any time. So yes, you can un-break things without crying.
 - `binman.sh` - the main BinMan script
 - `Scripts/` - bundled utility scripts ready to install
 - `Examples/` - single-file and app-layout examples for multiple languages
-- `tests/` - basic test harnesses
-- `Scripts.zip` - zipped bundle of the `Scripts/` folder
 - `touchme.txt` - intentionally empty (yes, really)
 
 ---
@@ -114,7 +112,7 @@ You can roll back any time. So yes, you can un-break things without crying.
 The full command list:
 
 ```
-binman <install|uninstall|verify|list|update|doctor|docker|new|wizard|tui|backup|restore|self-update|rollback|prune-rollbacks|analyze|bundle|test|version|help>
+binman <install|scripts|uninstall|verify|list|update|doctor|docker|new|wizard|tui|backup|restore|self-update|rollback|prune-rollbacks|analyze|bundle|test|version|help>
 ```
 
 ### Install
@@ -161,6 +159,20 @@ binman list
 ```
 
 If `fzf` is installed, `list` becomes a fuzzy browser with previews.
+
+### Bundled scripts
+
+The full BinMan repository includes utility scripts in `Scripts/`. After a
+self-update (or a fresh repository-based install), browse and install them
+through BinMan's normal installer:
+
+```bash
+binman scripts
+```
+
+With `fzf`, this provides a searchable picker with version and description
+metadata. Without `fzf`, it falls back to a numbered menu. The repository
+cache is kept at `~/.local/share/binman/source`.
 
 ### Update
 
@@ -250,8 +262,12 @@ binman test stress --jobs 8 --verbose --keep
 
 ```bash
 binman self-update
-binman --git ~/Projects/binman self-update
 ```
+
+Self-update clones the latest `main` branch of the BinMan repository, checks
+that the checkout contains a valid `binman.sh` and `Scripts/` directory, and
+updates the installed command. The previous source cache and executable are
+kept as `.bak` backups.
 
 ### Sudo helper
 
@@ -412,10 +428,16 @@ binman prune-rollbacks
 
 ## Included Scripts
 
-These live in `Scripts/`. Install them with:
+These live in `Scripts/`. Install one directly with:
 
 ```bash
 binman install ./Scripts/<script>.sh
+```
+
+Or browse the whole bundled collection:
+
+```bash
+binman scripts
 ```
 
 Tip: `Scripts/README.md` contains quick notes where available.
@@ -543,22 +565,41 @@ gitprep --public --proto https
 gitprep --no-gh
 ```
 
+By default, GitHub repositories are private. Existing repositories are
+reused when the matching GitHub repository already exists, so the local
+directory can be connected to it instead of trying to create a duplicate.
+
+### gitremove
+Safely remove a local Git repository, optionally deleting its matching GitHub
+remote after explicit confirmation. A failed remote deletion preserves the
+local checkout.
+
+```bash
+gitremove
+gitremove --remote
+```
+
 ### push
 Commit/push with optional semver bump, tags, and GitHub release.
 
 ```bash
+push "fix: tidy"
 push -a -m "fix: tidy"
 push -v patch -t
 push -v minor -t -r
 ```
 
-### kari-install
+With a plain quoted message, `push` stages the current working tree, commits
+the changes, and pushes the current branch. The longer option form remains
+available for version bumps, tags, and releases.
+
+### kinstall
 Cross-distro package installer wrapper (apt/dnf/pacman/zypper/rpm-ostree), plus Flatpak and Homebrew if present. Think of it as a polite bouncer for your packages: it checks IDs, skips what you already have, and doesn't throw a tantrum if one guest isn't on the list.
 
 ```bash
-kari-install ripgrep fd
-kari-install --search neovim
-kari-install -n go git
+kinstall ripgrep fd
+kinstall --search neovim
+kinstall -n go git
 ```
 
 What it does (nerd-friendly, human-readable):
@@ -573,13 +614,13 @@ What it does (nerd-friendly, human-readable):
 Common switches:
 
 ```bash
-kari-install --search steam
-kari-install --limit 10 --search gimp zsh steam
-kari-install --full --search docker
-kari-install --prefer flatpak gimp
-kari-install --force-source brew zsh
-kari-install --choose steam
-kari-install --fail-fast gimp2 zsh steam
+kinstall --search steam
+kinstall --limit 10 --search gimp zsh steam
+kinstall --full --search docker
+kinstall --prefer flatpak gimp
+kinstall --force-source brew zsh
+kinstall --choose steam
+kinstall --fail-fast gimp2 zsh steam
 ```
 
 Behavior notes:
@@ -627,10 +668,12 @@ binman install Examples/RustApp
 
 ## Tests
 
-`tests/uninstall.sh` verifies uninstall behavior for shims and backup copies:
+The repository currently uses BinMan's built-in stress harness and shell
+syntax checks:
 
 ```bash
-bash tests/uninstall.sh
+bash -n binman.sh
+binman test stress --jobs 8 --verbose
 ```
 
 ---

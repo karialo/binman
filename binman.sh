@@ -110,6 +110,8 @@ SYSTEM_APPS="/usr/local/share/binman/apps"
 BINMAN_STATE_DIR="${BINMAN_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/binman}"
 mkdir -p "$BINMAN_STATE_DIR" 2>/dev/null || true
 BINMAN_LIST_CACHE="${BINMAN_LIST_CACHE:-$BINMAN_STATE_DIR/inventory.tsv}"
+BINMAN_SOURCE_DIR="${BINMAN_SOURCE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/binman/source}"
+BINMAN_REPO_URL="${BINMAN_REPO_URL:-https://github.com/karialo/binman.git}"
 
 # Docker/Podman metadata
 DOCKER_STATE_DIR="${BINMAN_DOCKER_DIR:-$HOME/.local/share/binman/docker}"
@@ -779,13 +781,14 @@ usage(){ cat <<USAGE
 ${SCRIPT_NAME} v${VERSION}
 Manage personal CLI scripts in ${BIN_DIR} and apps in ${APP_STORE}
 
-USAGE: ${SCRIPT_NAME} <install|uninstall|verify|list|update|doctor|docker|new|wizard|tui|backup|restore|self-update|rollback|prune-rollbacks|analyze|bundle|test|version|help> [args] [options]
+USAGE: ${SCRIPT_NAME} <install|scripts|uninstall|verify|list|update|doctor|docker|new|wizard|tui|backup|restore|self-update|rollback|prune-rollbacks|analyze|bundle|test|version|help> [args] [options]
        ${SCRIPT_NAME} --backup [FILE]
        ${SCRIPT_NAME} --restore FILE [--force]
 
 Options:
   install <target> [install-options]
                    Install exactly one target per run (use --manifest/--from for bulk)
+  scripts            Browse and install bundled BinMan scripts
   --from DIR         Operate on all executable files in DIR
   --link             Symlink instead of copying
   --force            Overwrite existing files / restore conflicts
@@ -804,7 +807,7 @@ Backup/Restore convenience:
   --restore FILE     Restore archive into target dirs (merge; --force to clobber)
 
 Extra commands:
-  self-update          Update BinMan from its git repo then reinstall the shim
+  self-update          Clone the full BinMan repo and update the installed command
   rollback [ID]        Restore the latest (or specific) rollback snapshot
   prune-rollbacks      Prune rollback snapshots beyond BINMAN_ROLLBACK_KEEP (default 20)
   analyze [opts]       Inspect disk usage hotspots (--top N --root DIR)
@@ -5930,48 +5933,104 @@ op_restore(){
 
 
 # --------------------------------------------------------------------------------------------------
-# SELF-UPDATE — pull repo and reinstall the binman shim
+# SELF-UPDATE — clone the full repo and reinstall the binman shim
 # --------------------------------------------------------------------------------------------------
-op_self_update(){
-  local url="https://raw.githubusercontent.com/karialo/binman/main/binman.sh"
-
-  local dest
-  dest="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
-
-  local tmp bak
-  tmp="$(mktemp "${TMPDIR:-/tmp}/binman.update.XXXXXX")" || { err "mktemp failed"; return 2; }
-  trap '[ -n "${tmp:-}" ] && rm -f "$tmp"' EXIT
-
-  if exists curl; then
-    curl -fsSL "$url" -o "$tmp" || { err "Download failed."; return 2; }
-  elif exists wget; then
-    wget -q "$url" -O "$tmp" || { err "Download failed."; return 2; }
-  else
-    err "Need curl or wget for self-update"; return 2
-  fi
-
-  chmod 755 "$tmp"
-
-  if ! grep -q 'case "\$ACTION"' "$tmp"; then
-    err "Fetched file doesn't look like binman.sh"; return 2
-  fi
-
-  if cmp -s "$dest" "$tmp"; then
-    ok "Already up to date."
-    return 0
-  fi
-
-  bak="${dest}.bak"  # single rotating backup
-  cp -p -- "$dest" "$bak" 2>/dev/null || true
-
-  if install -m 755 "$tmp" "$dest" 2>/dev/null; then
-    ok "Self-update complete → $dest (backup: $bak)"
-  elif command -v sudo >/dev/null 2>&1 && sudo install -m 755 "$tmp" "$dest"; then
-    ok "Self-update complete (sudo) → $dest (backup: $bak)"
-  else
-    err "Couldn't write to $dest. Try: sudo install -m 755 \"$tmp\" \"$dest\""
+_clone_binman_source(){
+  local target="$1" tmp_repo
+  command -v git >/dev/null 2>&1 || { err "Need git for self-update"; return 2; }
+  tmp_repo="$(mktemp -d "${TMPDIR:-/tmp}/binman.source.XXXXXX")" || { err "mktemp failed"; return 2; }
+  if ! git clone --depth 1 --branch main "$BINMAN_REPO_URL" "$tmp_repo/repo" >/dev/null 2>&1; then
+    rm -rf -- "$tmp_repo"
+    err "Could not clone BinMan repository: $BINMAN_REPO_URL"
     return 2
   fi
+  printf '%s\n' "$tmp_repo/repo"
+}
+
+_validate_binman_source(){
+  local repo="$1"
+  [[ -f "$repo/binman.sh" && -d "$repo/Scripts" ]] || { err "Downloaded repository is missing binman.sh or Scripts/"; return 2; }
+  bash -n "$repo/binman.sh" || { err "Downloaded binman.sh failed bash syntax validation"; return 2; }
+  grep -q 'case "\$ACTION"' "$repo/binman.sh" || { err "Downloaded file does not look like binman.sh"; return 2; }
+}
+
+op_self_update(){
+  local dest repo_stage source_parent source_backup bak
+  dest="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
+  repo_stage="$(_clone_binman_source)" || return $?
+  trap '[ -n "${repo_stage:-}" ] && rm -rf -- "$(dirname "$repo_stage")"' EXIT
+  _validate_binman_source "$repo_stage" || return $?
+
+  source_parent="$(dirname "$BINMAN_SOURCE_DIR")"
+  mkdir -p "$source_parent"
+  source_backup="${BINMAN_SOURCE_DIR}.bak"
+  rm -rf -- "$source_backup"
+  if [[ -e "$BINMAN_SOURCE_DIR" ]]; then
+    mv -- "$BINMAN_SOURCE_DIR" "$source_backup"
+  fi
+  mv -- "$repo_stage" "$BINMAN_SOURCE_DIR"
+  repo_stage=""
+
+  bak="${dest}.bak"
+  cp -p -- "$dest" "$bak" 2>/dev/null || true
+  if install -m 755 "$BINMAN_SOURCE_DIR/binman.sh" "$dest" 2>/dev/null; then
+    ok "Self-update complete → $dest"
+  elif command -v sudo >/dev/null 2>&1 && sudo install -m 755 "$BINMAN_SOURCE_DIR/binman.sh" "$dest"; then
+    ok "Self-update complete (sudo) → $dest"
+  else
+    err "Couldn't write to $dest. Backup preserved at: $bak"
+    return 2
+  fi
+  ok "Full source repository cached → $BINMAN_SOURCE_DIR"
+}
+
+binman_source_scripts_dir(){
+  if [[ -d "$BINMAN_SOURCE_DIR/Scripts" ]]; then
+    printf '%s\n' "$BINMAN_SOURCE_DIR/Scripts"
+    return 0
+  fi
+  return 1
+}
+
+op_scripts(){
+  local scripts_dir script sel path name ver desc choice i
+  scripts_dir="$(binman_source_scripts_dir || true)"
+  if [[ -z "$scripts_dir" ]]; then
+    warn "Bundled scripts are not cached yet. Run 'binman self-update' first."
+    return 2
+  fi
+
+  local -a files=()
+  while IFS= read -r path; do files+=("$path"); done < <(find "$scripts_dir" -maxdepth 1 -type f -name '*.sh' -print | sort)
+  ((${#files[@]} > 0)) || { warn "No bundled scripts found in $scripts_dir"; return 1; }
+
+  if __has_fzf && [[ -t 1 ]]; then
+    local -a rows=()
+    for path in "${files[@]}"; do
+      name="$(basename "$path")"
+      ver="$(script_version "$path")"
+      desc="$(script_desc "$path")"
+      rows+=("${name}\t${ver:-unknown}\t${desc:-No description}\t${path}")
+    done
+    sel="$(printf '%s\n' "${rows[@]}" | fzf_run --prompt='Bundled scripts > ' --height=70% --reverse \
+      --delimiter=$'\t' --with-nth=1,2,3 --header='Select a bundled script to install')" || true
+    [[ -n "$sel" ]] || { say "Cancelled."; return 0; }
+    IFS=$'\t' read -r name ver desc path <<<"$sel"
+  else
+    echo
+    printf '%sBundled scripts%s\n' "$UI_BOLD" "$UI_RESET"
+    for ((i=0; i<${#files[@]}; i++)); do
+      path="${files[$i]}"
+      printf '%2d) %-24s [%s] %s\n' "$((i+1))" "$(basename "$path")" "$(script_version "$path")" "$(script_desc "$path")"
+    done
+    printf 'Install script number (Enter to cancel): '
+    IFS= read -r choice
+    [[ -n "$choice" ]] || { say "Cancelled."; return 0; }
+    [[ "$choice" =~ ^[0-9]+$ && "$choice" -ge 1 && "$choice" -le ${#files[@]} ]] || { err "Invalid script selection."; return 2; }
+    path="${files[$((choice-1))]}"
+  fi
+
+  op_install "$path"
 }
 
 
@@ -7206,10 +7265,10 @@ EOF
   printf "%s6)%s Wizard    %s7)%s Backup    %s8)%s Restore     %s9)%s Self-Update   %sa)%s Rollback   %sb)%s Bundle   %sc)%s Test\n" \
     "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET" "$UI_CYAN" "$UI_RESET"
 
-  printf "%sd)%s Docker\n" \
+  printf "%sd)%s Docker     %ss)%s Bundled Scripts\n" \
     "$UI_CYAN" "$UI_RESET"
 
-  printf "%ss)%s Toggle System Mode %s(currently: %s)%s    %sq)%s Quit\n" \
+  printf "%st)%s Toggle System Mode %s(currently: %s)%s    %sq)%s Quit\n" \
     "$UI_CYAN" "$UI_RESET" "$UI_DIM" "$([[ $SYSTEM_MODE -eq 1 ]] && echo "ON" || echo "OFF")" "$UI_RESET" "$UI_CYAN" "$UI_RESET"
     
   ui_hr
@@ -7246,6 +7305,7 @@ tsv=$(
 3	List	list	Browse all items with live preview and quick actions.
 4	Doctor	doctor	Run diagnostics and environment checks.
 d	Docker	docker	Manage BinMan-managed containers (Docker/Podman).
+s	Bundled Scripts	scripts	Browse and install scripts shipped with BinMan.
 6	Wizard	wizard	Create a new app/cmd manifest via guided prompts.
 7	Backup	backup	Create a backup archive of installed items.
 8	Restore	restore	Restore from a backup archive.
@@ -7285,6 +7345,7 @@ __bm_run_action_safe() {
     install)
       _dispatch_install_cli "$@"
       ;;
+    scripts)         op_scripts ;;
     uninstall)
       # Use args if provided; only open TUI when no args and interactive
       if [[ $# -gt 0 ]]; then

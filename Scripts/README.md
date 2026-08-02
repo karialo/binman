@@ -36,13 +36,14 @@ If you only remember one rule, make it this:
 17. [Script: rsync-backup.sh](#rsync-backup-sh)
 18. [Script: sd-list.sh](#sd-list-sh)
 19. [Script: sysclean.sh](#sysclean-sh)
-20. [Script: kari-install.sh](#kari-install-sh)
+20. [Script: kinstall.sh](#kinstall-sh)
 21. [Script: gitprep.sh](#gitprep-sh)
-22. [Script: push.sh](#push-sh)
-23. [Script: tailscalesetup.sh](#tailscalesetup-sh)
-24. [Typical Workflows](#typical-workflows)
-25. [Troubleshooting](#troubleshooting)
-26. [Final Notes](#final-notes)
+22. [Script: gitremove.sh](#gitremove-sh)
+23. [Script: push.sh](#push-sh)
+24. [Script: tailscalesetup.sh](#tailscalesetup-sh)
+25. [Typical Workflows](#typical-workflows)
+26. [Troubleshooting](#troubleshooting)
+27. [Final Notes](#final-notes)
 
 ## Quick Tool Picker
 
@@ -63,8 +64,9 @@ If you only remember one rule, make it this:
 | `move.sh` | Resumable rsync move with verification before delete |
 | `rsync-backup.sh` | Timestamped rsync backup to mounted destination |
 | `sysclean.sh` | Guided cross-distro cleanup (safe by default) |
-| `kari-install.sh` | Cross-distro package installer/search wrapper |
+| `kinstall.sh` | Cross-distro package installer/search wrapper |
 | `gitprep.sh` | Initialize repo and wire/create GitHub remote |
+| `gitremove.sh` | Safely remove a local repo, optionally deleting its GitHub remote |
 | `push.sh` | Add/commit/push with optional semver bump/tag/release |
 | `sd-list.sh` | List block devices quickly before flashing |
 | `tailscalesetup.sh` | Run Tailscale install script |
@@ -82,7 +84,7 @@ Package names can vary slightly by distro release, but this gets you 95% of the 
 | Wi-Fi scanning | `wifi-scanner.sh` | `network-manager iw wireless-tools jq fzf` | `NetworkManager iw wireless-tools jq fzf` | `networkmanager iw wireless_tools jq fzf` | `NetworkManager iw wireless-tools jq fzf` |
 | Antivirus + watch events | `verify.sh` | `clamav inotify-tools` | `clamav inotify-tools` | `clamav inotify-tools` | `clamav inotify-tools` |
 | Git + GitHub release flow | `gitprep.sh`, `push.sh` | `git gh` | `git gh` | `git github-cli` | `git gh` |
-| Package-source abstraction | `kari-install.sh` | `flatpak` (optional), `brew` (optional) | `flatpak` (optional), `brew` (optional) | `flatpak` (optional), `brew` (optional) | `flatpak` (optional), `brew` (optional) |
+| Package-source abstraction | `kinstall.sh` | `flatpak` (optional), `brew` (optional) | `flatpak` (optional), `brew` (optional) | `flatpak` (optional), `brew` (optional) | `flatpak` (optional), `brew` (optional) |
 
 Quick install examples:
 ```bash
@@ -588,8 +590,8 @@ sysclean.sh [options]
 **K.A.R.I note**
 - It is a janitor, not a demolition crew. Dry-run is default for a reason.
 
-<a id="kari-install-sh"></a>
-### `kari-install.sh` (v0.1.0)
+<a id="kinstall-sh"></a>
+### `kinstall.sh` (v0.1.0)
 
 **Designed for**
 - Unified package install/search across repo, Flatpak, and Homebrew.
@@ -597,8 +599,8 @@ sysclean.sh [options]
 
 **Usage**
 ```bash
-kari-install.sh [options] <package> [more packages...]
-kari-install.sh --search <term> [more terms...]
+kinstall.sh [options] <package> [more packages...]
+kinstall.sh --search <term> [more terms...]
 ```
 
 **Key options**
@@ -613,11 +615,11 @@ kari-install.sh --search <term> [more terms...]
 
 **Examples**
 ```bash
-./kari-install.sh ripgrep fd
-./kari-install.sh --search neovim
-./kari-install.sh --prefer flatpak gimp
-./kari-install.sh --choose steam
-./kari-install.sh --dry-run --force-source brew jq
+./kinstall.sh ripgrep fd
+./kinstall.sh --search neovim
+./kinstall.sh --prefer flatpak gimp
+./kinstall.sh --choose steam
+./kinstall.sh --dry-run --force-source brew jq
 ```
 
 **How it works**
@@ -665,23 +667,39 @@ gitprep.sh [options]
 - Seeds `README.md` and `.gitignore` if absent.
 - Commits initial snapshot.
 - If `gh` enabled:
-  - detects/creates GitHub repo,
+  - detects, reuses, or creates the matching GitHub repo,
   - sets canonical origin URL,
   - pushes branch (unless `--no-push`).
 
+<a id="gitremove-sh"></a>
+### `gitremove.sh` (v0.1.0)
+
+**Designed for**
+- Removing a local repository directory after explicit confirmation.
+- Optionally deleting the matching GitHub repository with `--remote`.
+
+**Usage**
+```bash
+gitremove [PATH] [--remote] [--yes]
+```
+
+Remote deletion requires GitHub CLI authentication with permission to delete
+repositories. If remote deletion fails, the local repository is preserved.
+
 <a id="push-sh"></a>
-### `push.sh` (v1.0.0)
+### `push.sh` (v1.1.0)
 
 **Designed for**
 - One command for stage/commit/push, optionally version/tag/release flow.
 
 **Usage**
 ```bash
-push.sh [-a] [-m "msg"] [-v patch|minor|major] [-t] [-r] [--dry]
+push.sh ["message"] [-a] [-m "msg"] [-v patch|minor|major] [-t] [-r] [--dry]
 ```
 
 **Key options**
 - `-a`: `git add -A`.
+- A quoted positional message stages all changes, commits with that message, and pushes.
 - `-m`: commit message (or opens editor if omitted and staged changes exist).
 - `-v patch|minor|major`: bump `VERSION` file semver.
 - `-t`: create annotated tag `v<VERSION>`.
@@ -690,6 +708,7 @@ push.sh [-a] [-m "msg"] [-v patch|minor|major] [-t] [-r] [--dry]
 
 **Examples**
 ```bash
+./push.sh "fix: wifi parser"
 ./push.sh -a -m "fix: wifi parser"
 ./push.sh -a -v patch -t
 ./push.sh -a -v minor -t -r
@@ -854,7 +873,7 @@ Problem: `find-pi.sh` returns nothing
 - Fallback `nmap` mode is slower and can miss quickly-disappearing hosts.
 - Ensure you are on same L2 network/VLAN.
 
-### `kari-install.sh`
+### `kinstall.sh`
 
 Problem: `unsupported system` / no package backend found
 - Install or expose one of: `apt`, `dnf`, `pacman`, `zypper`, `rpm-ostree`, `flatpak`, `brew`.
@@ -866,7 +885,7 @@ Problem: Package exists but script says not found
   - `--prefer flatpak`
   - `--force-source repo|flatpak|brew`
 - Search first:
-  - `./kari-install.sh --search <name>`
+  - `./kinstall.sh --search <name>`
 
 Problem: Install fails and summary just says failed
 - Check history log for details:
