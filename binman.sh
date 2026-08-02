@@ -1266,8 +1266,13 @@ docker_meta_write(){
 
   ensure_docker_dir
   local file; file="$(docker_meta_path "$app")"
+  local tmp_file
+  tmp_file="$(mktemp "${file}.tmp.XXXXXX")" || {
+    err "Unable to create temporary Docker metadata file for $app"
+    return 1
+  }
 
-  {
+  if ! {
     printf '{\n'
     printf '  "engine": "%s",\n' "$(json_escape "$engine")"
     printf '  "image_tag": "%s",\n' "$(json_escape "$image")"
@@ -1276,7 +1281,7 @@ docker_meta_write(){
     if ((${#ports[@]})); then
       local i=0
       for p in "${ports[@]}"; do
-        ((i++))
+        ((++i))
         printf '%s"%s"' "$([[ $i -gt 1 ]] && echo ", " || echo "")" "$(json_escape "$p")"
       done
     fi
@@ -1285,7 +1290,7 @@ docker_meta_write(){
     if ((${#mounts[@]})); then
       local i=0
       for m in "${mounts[@]}"; do
-        ((i++))
+        ((++i))
         printf '%s"%s"' "$([[ $i -gt 1 ]] && echo ", " || echo "")" "$(json_escape "$m")"
       done
     fi
@@ -1296,7 +1301,7 @@ docker_meta_write(){
       for pair in "${env_pairs[@]}"; do
         key="${pair%%=*}"
         val="${pair#*=}"
-        ((i++))
+        ((++i))
         printf '%s"%s": "%s"' \
           "$([[ $i -gt 1 ]] && echo ", " || echo "")" \
           "$(json_escape "$key")" "$(json_escape "$val")"
@@ -1309,7 +1314,17 @@ docker_meta_write(){
     printf '  "root": "%s",\n' "$(json_escape "$root")"
     printf '  "created_at": "%s"\n' "$(json_escape "$created")"
     printf '}\n'
-  } > "$file"
+  } > "$tmp_file"; then
+    rm -f -- "$tmp_file"
+    err "Unable to write Docker metadata for $app"
+    return 1
+  fi
+
+  if ! mv -f -- "$tmp_file" "$file"; then
+    rm -f -- "$tmp_file"
+    err "Unable to replace Docker metadata for $app"
+    return 1
+  fi
   ok "Docker metadata saved → $file"
 }
 

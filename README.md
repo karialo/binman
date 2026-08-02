@@ -8,13 +8,20 @@ BinMan turns loose scripts and small multi-file projects into commands you can
 run from anywhere. It is written in Bash, prefers boring portable tools, and
 has enough K.A.R.I. attitude to stop your toolbox becoming a landfill.
 
-```console
-$ binman install ./weather.py
-✓ Installed: ~/.local/bin/weather
+BinMan is not just the thing that installs your tools. It ships useful ones
+too. Here is `sysclean` being installed and run against a real machine:
 
-$ weather Sunderland
-Rain. Obviously.
-```
+![BinMan SysClean hero demonstration](docs/assets/binman-sysclean-hero.png)
+
+*SysClean reports disk usage, surfaces oversized files, and presents cleanup
+candidates. The screenshot is deliberately candid: the current script exits
+with status 1 after its cleanup path, so this is a real workflow capture—not a
+carefully airbrushed K.A.R.I. success story.*
+
+![BinMan home screen](docs/assets/binman-home-screen.png)
+
+*BinMan's home screen: one toolbox, fifteen ways to get into trouble, and a
+quit option for when K.A.R.I. has had enough.*
 
 No cloud dashboard. No subscription. Just your little tool, promoted from
 "file I hope I can find later" to "command I can run anywhere".
@@ -754,6 +761,11 @@ as a BinMan command, can prepare Git/GitHub, and can optionally generate Docker
 files and BinMan container metadata. It ends with a celebratory K.A.R.I.
 message, because even scaffolding deserves a tiny parade.
 
+![BinMan project Wizard](docs/assets/binman-wizard.png)
+
+*The Wizard asks the questions so you can spend your time making the tool,
+not arguing with a blank directory.*
+
 <details>
 <summary><strong>Pro mode</strong> — technical details</summary>
 
@@ -878,6 +890,11 @@ binman install ./PythonTool --entry 'python3 -m tool' --venv
 If BinMan cannot decide safely, choose an entry in the wizard or provide
 `--entry` yourself.
 
+![BinMan Python app installation](docs/assets/binman-python-app-install.png)
+
+*Here BinMan finds the Python app, lets the user choose its entry point, shows
+the install plan, and leaves behind a runnable `DemoApp` command.*
+
 <details>
 <summary><strong>Pro mode</strong> — technical details</summary>
 
@@ -1000,6 +1017,11 @@ binman scripts
 
 The descriptions below are based on the current implementation and its actual
 help text, not on marketing promises from an earlier K.A.R.I. fever dream.
+
+![BinMan bundled scripts browser](docs/assets/binman-bundled-scripts.png)
+
+*Browse the built-in toolbox, inspect a script's description and status, then
+install it without spelunking through the repository by hand.*
 
 ---
 
