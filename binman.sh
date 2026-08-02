@@ -61,8 +61,23 @@ if [[ "${1:-}" == "--_preview_fields" ]]; then
   # Args: type name ver path desc  (5 separate args from fzf {1..5})
   type="${2:-}"; name="${3:-}"; ver="${4:-}"; path="${5:-}"; desc="${6:-}"
 
-  stripq(){ local s="$1"; [[ ${s:0:1} == "'" || ${s:0:1} == '"' ]] && s="${s:1}"; [[ ${s: -1} == "'" || ${s: -1} == '"' ]] && s="${s:0:${#s}-1}"; printf '%s' "$s"; }
+  stripq(){
+    local s="$1"
+    [[ ${s:0:1} == "'" || ${s:0:1} == '"' ]] && s="${s:1}"
+    [[ ${s: -1} == "'" || ${s: -1} == '"' ]] && s="${s:0:${#s}-1}"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+  }
   type="$(stripq "$type")"; name="$(stripq "$name")"; ver="$(stripq "$ver")"; path="$(stripq "$path")"; desc="$(stripq "$desc")"
+
+  if [[ "$type" == "script" ]]; then
+    printf "\033[1m%s\033[0m  [%s]  — script\n" "${name:-?}" "${ver:-unknown}"
+    printf "\n\033[1mDescription:\033[0m\n"
+    printf "%s\n" "${desc:-No description}" | fold -s -w 52
+    printf "\n\033[1mInstall with:\033[0m\nbinman install %q\n" "$path"
+    exit 0
+  fi
 
   printf "\033[1m%s\033[0m  [%s]  — %s\n" "${name:-?}" "${ver:-unknown}" "${type:-?}"
   [[ -n "$desc" ]] && printf "%s\n" "$desc"
