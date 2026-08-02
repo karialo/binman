@@ -72,9 +72,47 @@ if [[ "${1:-}" == "--_preview_fields" ]]; then
   type="$(stripq "$type")"; name="$(stripq "$name")"; ver="$(stripq "$ver")"; path="$(stripq "$path")"; desc="$(stripq "$desc")"
 
   if [[ "$type" == "script" ]]; then
+    preview_script_version(){
+      local f="$1" v
+      v="$(grep -m1 -E '^(VERSION=|# *Version:|__version__ *=)' "$f" 2>/dev/null || true)"
+      [[ -n "$v" ]] && printf '%s\n' "$v" | sed -E 's/^[# ]*Version:? *//; s/^VERSION=//; s/__version__ *= *//; s/[\"\x27]//g' || printf '%s\n' unknown
+    }
+    version_order(){
+      local a="$1" b="$2" first
+      [[ "$a" == "$b" ]] && { printf '0'; return; }
+      first="$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)"
+      [[ "$first" == "$a" ]] && printf '%s' '-1' || printf '%s' '1'
+    }
+
+    install_name="${name%.sh}"; installed_path=""; installed_version=""
+    candidate=""
+    for candidate in \
+      "${HOME}/.local/bin/${install_name}" \
+      "${HOME}/.local/bin/${name}" \
+      "/usr/local/bin/${install_name}" \
+      "/usr/bin/${install_name}"; do
+      if [[ -f "$candidate" ]]; then
+        installed_path="$candidate"
+        installed_version="$(preview_script_version "$candidate")"
+        break
+      fi
+    done
+
     printf "\033[1m%s\033[0m  [%s]  — script\n" "${name:-?}" "${ver:-unknown}"
     printf "\n\033[1mDescription:\033[0m\n"
     printf "%s\n" "${desc:-No description}" | fold -s -w 52
+    printf "\n\033[2m──────────────────────────────────────────────────────────────\033[0m\n"
+    printf "\n\033[1mStatus:\033[0m\n"
+    if [[ -z "$installed_path" ]]; then
+      printf "\033[2mNot installed\033[0m\n"
+    elif [[ "$installed_version" == "$ver" ]]; then
+      printf "\033[92mInstalled v%s — current\033[0m\n" "$installed_version"
+    elif [[ "$installed_version" != unknown && "$ver" != unknown ]] && [[ "$(version_order "$installed_version" "$ver")" == '-1' ]]; then
+      printf "\033[91mInstalled v%s — older than bundled v%s\033[0m\n" "$installed_version" "$ver"
+    else
+      printf "\033[93mInstalled v%s — differs from bundled v%s\033[0m\n" "$installed_version" "$ver"
+    fi
+    [[ -n "$installed_path" ]] && printf "\033[2mPath: %s\033[0m\n" "$installed_path"
     printf "\n\033[1mInstall with:\033[0m\nbinman install %q\n" "$path"
     exit 0
   fi
