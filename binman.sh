@@ -6010,7 +6010,7 @@ op_scripts(){
       name="$(basename "$path")"
       ver="$(script_version "$path")"
       desc="$(script_desc "$path")"
-      rows+=("${name}\t${ver:-unknown}\t${desc:-No description}\t${path}")
+      rows+=("${name}"$'\t'"${ver:-unknown}"$'\t'"${desc:-No description}"$'\t'"${path}")
     done
     sel="$(printf '%s\n' "${rows[@]}" | fzf_run --prompt='Bundled scripts > ' --height=70% --reverse \
       --delimiter=$'\t' --with-nth=1,2,3 --header='Select a bundled script to install')" || true
