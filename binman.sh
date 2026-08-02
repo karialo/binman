@@ -1712,7 +1712,7 @@ docker_offer_install(){
   [[ "$choice" == "none" ]] && return 1
 
   script_dir="$(cd "$(dirname "$BINMAN_SELF")" && pwd)"
-  installer="${script_dir}/Scripts/kari-install.sh"
+  installer="${script_dir}/Scripts/kinstall.sh"
   if [[ ! -x "$installer" ]]; then
     warn "Installer not found: $installer"
     return 1
