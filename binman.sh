@@ -6015,8 +6015,12 @@ op_scripts(){
       printf -v display '%-24s %-8s %s' "$name" "${ver:-unknown}" "$desc"
       rows+=("${display}"$'\t'"${path}")
     done
-    sel="$(printf '%s\n' "${rows[@]}" | fzf_run --prompt='Bundled scripts > ' --height=70% --reverse \
-      --delimiter=$'\t' --with-nth=1 --header='Script                     Version  Description')" || true
+    local preview_cmd
+    preview_cmd='source "$BINMAN_SELF"; p="{2}"; printf "\033[1m%s\033[0m\\n\\nVersion: %s\\nPath: %s\\n\\nDescription:\\n%s\\n\\nInstall with:\\nbinman install %q\\n" "$(basename "$p")" "$(script_version "$p")" "$p" "$(script_desc "$p")" "$p"'
+    sel="$(printf '%s\n' "${rows[@]}" | fzf_run --ansi --border --height=100% --layout=reverse \
+      --delimiter=$'\t' --with-nth=1 --preview "$preview_cmd" \
+      --preview-window=right,55%,wrap --prompt='Bundled Scripts ▸ ' \
+      --header='↑↓ navigate • Enter=Install • Esc=Back')" || true
     [[ -n "$sel" ]] || { say "Cancelled."; return 0; }
     path="${sel#*$'\t'}"
   else
