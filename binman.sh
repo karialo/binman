@@ -5993,7 +5993,7 @@ binman_source_scripts_dir(){
 }
 
 op_scripts(){
-  local scripts_dir script sel path name ver desc choice i
+  local scripts_dir script sel path name ver desc display choice i
   scripts_dir="$(binman_source_scripts_dir || true)"
   if [[ -z "$scripts_dir" ]]; then
     warn "Bundled scripts are not cached yet. Run 'binman self-update' first."
@@ -6010,12 +6010,15 @@ op_scripts(){
       name="$(basename "$path")"
       ver="$(script_version "$path")"
       desc="$(script_desc "$path")"
-      rows+=("${name}"$'\t'"${ver:-unknown}"$'\t'"${desc:-No description}"$'\t'"${path}")
+      desc="${desc:-No description}"
+      if (( ${#desc} > 72 )); then desc="${desc:0:69}..."; fi
+      printf -v display '%-24s %-8s %s' "$name" "${ver:-unknown}" "$desc"
+      rows+=("${display}"$'\t'"${path}")
     done
     sel="$(printf '%s\n' "${rows[@]}" | fzf_run --prompt='Bundled scripts > ' --height=70% --reverse \
-      --delimiter=$'\t' --with-nth=1,2,3 --header='Select a bundled script to install')" || true
+      --delimiter=$'\t' --with-nth=1 --header='Script                     Version  Description')" || true
     [[ -n "$sel" ]] || { say "Cancelled."; return 0; }
-    IFS=$'\t' read -r name ver desc path <<<"$sel"
+    path="${sel#*$'\t'}"
   else
     echo
     printf '%sBundled scripts%s\n' "$UI_BOLD" "$UI_RESET"
