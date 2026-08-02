@@ -296,22 +296,36 @@ toggle_system() {
   return 0
 }
 
-# Print the correct rehash command for the parent shell (best-effort)
+# Print the correct rehash command for the parent shell (best-effort).
+# A child process cannot mutate its parent's shell hash table, so this is
+# necessarily a hint unless BinMan was wrapped by a shell function.
 rehash_hint() {
-  local parent_shell
+  local parent_shell refresh_cmd
   parent_shell="$(ps -p "${PPID}" -o comm= 2>/dev/null || true)"
+  parent_shell="${parent_shell##*/}"
+  [[ -n "$parent_shell" ]] || parent_shell="${SHELL##*/}"
 
   case "$parent_shell" in
     zsh|zsh-*)
-      say "${C_OK:-}[BinMan] -> run: ${BOLD:-}rehash${RESET:-} to refresh your shell."
+      refresh_cmd='rehash'
       ;;
-    bash|bash-*)
-      say "${C_OK:-}[BinMan] -> run: ${BOLD:-}hash -r${RESET:-} to refresh your shell."
+    bash|bash-*|ksh|ksh-*|sh|dash|ash)
+      refresh_cmd='hash -r'
+      ;;
+    csh|csh-*|tcsh|tcsh-*)
+      refresh_cmd='rehash'
+      ;;
+    fish|fish-*)
+      # fish does not keep a command hash table that needs clearing.
+      say "${C_OK:-}[BinMan] -> fish refreshes command paths automatically."
+      return 0
       ;;
     *)
-      say "${C_OK:-}[BinMan] -> refresh your shell: ${BOLD:-}rehash${RESET:-} (zsh) or ${BOLD:-}hash -r${RESET:-} (bash)."
+      refresh_cmd='hash -r'
       ;;
   esac
+
+  say "${C_OK:-}[BinMan] -> run: ${BOLD:-}${refresh_cmd}${RESET:-} to refresh your shell."
 }
 
 # Remove zero-length/whitespace args from "$@"
@@ -6074,9 +6088,11 @@ op_scripts(){
         --preview-window=right,55%,wrap --prompt='Bundled Scripts ▸ ' \
         --header='Script                         Version • ↑↓ navigate • Enter=Install • Esc=Back')" || true
       [[ -n "$sel" ]] || return 0
-      path="${sel#*$'\t'}"
-      path="${path#*$'\t'}"
-      path="${path#*$'\t'}"
+      # Rows are: display name, version, absolute path, description.
+      # Read exactly the third field; stripping three tabs used to select the
+      # description instead of the script path.
+      IFS=$'\t' read -r _display_name _display_version path _description <<< "$sel"
+      [[ -n "$path" && -f "$path" ]] || { err "Could not resolve the selected bundled script."; return 2; }
   else
     echo
     printf '%sBundled scripts%s\n' "$UI_BOLD" "$UI_RESET"
