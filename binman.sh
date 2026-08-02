@@ -5936,7 +5936,7 @@ op_restore(){
 # SELF-UPDATE — clone the full repo and reinstall the binman shim
 # --------------------------------------------------------------------------------------------------
 _clone_binman_source(){
-  local target="$1" tmp_repo
+  local tmp_repo
   command -v git >/dev/null 2>&1 || { err "Need git for self-update"; return 2; }
   tmp_repo="$(mktemp -d "${TMPDIR:-/tmp}/binman.source.XXXXXX")" || { err "mktemp failed"; return 2; }
   if ! git clone --depth 1 --branch main "$BINMAN_REPO_URL" "$tmp_repo/repo" >/dev/null 2>&1; then
