@@ -5993,7 +5993,7 @@ binman_source_scripts_dir(){
 }
 
 op_scripts(){
-  local scripts_dir script sel path name ver desc display choice i
+  local scripts_dir script sel path name ver desc display display_name display_version choice i
   scripts_dir="$(binman_source_scripts_dir || true)"
   if [[ -z "$scripts_dir" ]]; then
     warn "Bundled scripts are not cached yet. Run 'binman self-update' first."
@@ -6010,7 +6010,9 @@ op_scripts(){
         name="$(basename "$path")"
         ver="$(script_version "$path")"
         desc="$(script_desc "$path")"
-        rows+=("${name}"$'\t'"${ver:-unknown}"$'\t'"${path}"$'\t'"${desc}")
+        printf -v display_name '%-28s' "$name"
+        printf -v display_version '%8s' "${ver:-unknown}"
+        rows+=("${display_name}"$'\t'"${display_version}"$'\t'"${path}"$'\t'"${desc}")
       done
       local preview_cmd
       preview_cmd='"$BINMAN_SELF" --_preview_fields script "{1}" "{2}" "{3}" "{4}"'
