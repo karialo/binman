@@ -5916,6 +5916,29 @@ _backup_copy_curated_to_stage(){
   done
 }
 
+_zip_curated_payload(){
+  local outfile="$1" include_venvs="$2" app
+  shift 2
+  local app_parent="$(dirname "$APP_STORE")"
+  local bin_parent="$(dirname "$BIN_DIR")"
+  local -a excludes=()
+  if [[ "$include_venvs" != "1" ]]; then
+    excludes=(-x '*/.venv/*' '*/__pycache__/*' '*/.cache/*' '*/node_modules/*' '*/target/*' '*/build/*' '*/dist/*')
+  fi
+
+  for app in "$@"; do
+    [[ -e "$APP_STORE/$app" ]] || continue
+    if ((${#excludes[@]})); then
+      (cd "$app_parent" && zip -qr "$outfile" "apps/$app" "${excludes[@]}")
+    else
+      (cd "$app_parent" && zip -qr "$outfile" "apps/$app")
+    fi
+    if [[ -f "$BIN_DIR/$app" ]]; then
+      (cd "$bin_parent" && zip -q "$outfile" "bin/$app")
+    fi
+  done
+}
+
 _backup_create_curated(){
   local outfile="$1" include_venvs="$2" force="$3" app meta_dir tmp
   shift 3
@@ -5942,10 +5965,12 @@ _backup_create_curated(){
 
   (
     set -e
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "${tmp:-}"' EXIT
-    _backup_copy_curated_to_stage "$tmp" "$include_venvs" "${apps[@]}"
-    cat > "$tmp/meta/info.txt" <<EOF
+    if (( prefer_zip )); then
+      _zip_curated_payload "$outfile" "$include_venvs" "${apps[@]}"
+      meta_dir="$(mktemp -d)"
+      trap 'rm -rf "${meta_dir:-}"' EXIT
+      mkdir -p "$meta_dir/meta"
+      if ! cat > "$meta_dir/meta/info.txt" <<EOF
 Created: $(iso_now)
 BinMan:  ${SCRIPT_NAME} v${VERSION}
 BIN_DIR: ${BIN_DIR}
@@ -5954,9 +5979,28 @@ Scope: curated apps only
 Virtual environments: $([[ "$include_venvs" == "1" ]] && echo included || echo excluded)
 Host: $(uname -a)
 EOF
-    if (( prefer_zip )); then
-      (cd "$tmp" && zip -qr "$outfile" bin apps meta)
+      then
+        err "Unable to write backup metadata; archive was not completed"
+        return 1
+      fi
+      (cd "$meta_dir" && zip -q "$outfile" meta/info.txt)
     else
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "${tmp:-}"' EXIT
+      _backup_copy_curated_to_stage "$tmp" "$include_venvs" "${apps[@]}"
+      if ! cat > "$tmp/meta/info.txt" <<EOF
+Created: $(iso_now)
+BinMan:  ${SCRIPT_NAME} v${VERSION}
+BIN_DIR: ${BIN_DIR}
+APP_STORE: ${APP_STORE}
+Scope: curated apps only
+Virtual environments: $([[ "$include_venvs" == "1" ]] && echo included || echo excluded)
+Host: $(uname -a)
+EOF
+      then
+        err "Unable to write backup metadata; archive was not completed"
+        return 1
+      fi
       (cd "$tmp" && tar -czf "$outfile" bin apps meta)
     fi
     local abs_out; abs_out="$(realpath_f "$outfile")"
@@ -6240,24 +6284,42 @@ op_bundle(){
 
   (
     set -e
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "${tmp:-}"' EXIT
+    if [[ "$out" == *.zip ]]; then
+      _zip_curated_payload "$out" 1 "${apps[@]}"
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "${tmp:-}"' EXIT
+    else
+      tmp="$(mktemp -d)"
+      trap 'rm -rf "${tmp:-}"' EXIT
+      _backup_copy_curated_to_stage "$tmp" 1 "${apps[@]}"
+    fi
 
-    _backup_copy_curated_to_stage "$tmp" 1 "${apps[@]}"
-
-    {
+    if ! {
       echo "# BinMan bundle manifest"
       echo "created=$(iso_now)"
       echo "bin_dir=$BIN_DIR"
       echo "app_store=$APP_STORE"
       echo
-      echo "[bin]";  find "$tmp/bin"  -maxdepth 1 -type f -printf "%f\n" 2>/dev/null || true
+      echo "[bin]"
+      if [[ -d "$tmp/bin" ]]; then
+        find "$tmp/bin" -maxdepth 1 -type f -printf "%f\n" 2>/dev/null || true
+      else
+        for app in "${apps[@]}"; do [[ -f "$BIN_DIR/$app" ]] && echo "$app"; done
+      fi
       echo
-      echo "[apps]"; find "$tmp/apps" -maxdepth 1 -mindepth 1 -type d -printf "%f\n" 2>/dev/null || true
-    } > "$tmp/manifest.txt"
+      echo "[apps]"
+      if [[ -d "$tmp/apps" ]]; then
+        find "$tmp/apps" -maxdepth 1 -mindepth 1 -type d -printf "%f\n" 2>/dev/null || true
+      else
+        printf '%s\n' "${apps[@]}"
+      fi
+    } > "$tmp/manifest.txt"; then
+      err "Unable to write bundle manifest; bundle was not completed"
+      return 1
+    fi
 
     if [[ "$out" == *.zip ]]; then
-      (cd "$tmp" && zip -qr "$out" bin apps manifest.txt)
+      (cd "$tmp" && zip -q "$out" manifest.txt)
     else
       out="${out%.tar.gz}.tar.gz"
       (cd "$tmp" && tar -czf "$out" bin apps manifest.txt)
