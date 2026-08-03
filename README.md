@@ -468,6 +468,8 @@ binman list
 See installed commands and versions. With `fzf`, the list becomes a searchable
 browser with previews.
 
+![BinMan searchable inventory](docs/assets/binman-list-screen.png)
+
 <details>
 <summary><strong>Pro mode</strong> — technical details</summary>
 
