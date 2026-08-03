@@ -37,11 +37,18 @@ debugging, automating, packaging, or deciding whether to trust an operation,
 open Pro mode too. The technical sections still contain the jokes; K.A.R.I.
 has never believed that a warning needs to sound like a tax form.
 
+## Documentation
+
+This README is the friendly front door. For longer guides, deeper internals,
+and troubleshooting pages, visit the [BinMan Wiki](https://github.com/karialo/binman/wiki).
+For the compact terminal reference, see [`binman.1`](binman.1).
+
 Version documented here: **v1.9.0**
 
 ## Table of Contents
 
 - [What BinMan Is](#what-binman-is)
+- [Documentation](#documentation)
 - [Highlights](#highlights)
 - [Quick Start](#quick-start)
 - [Common Examples](#common-examples)
