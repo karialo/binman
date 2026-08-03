@@ -1,6 +1,7 @@
 
 # BinMan artifacts
 binman_backup-*.zip
+binman_bundle-*.zip
 bundle*.zip
 
 # BinMan artifacts
